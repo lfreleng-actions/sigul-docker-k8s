@@ -389,10 +389,6 @@ run_sigul_client_cmd() {
     local client_container_name="sigul-client-integration"
 
     # Show the exact command being executed for debugging
-    # Validate password format for batch commands
-    validate_batch_password_format "${cmd[*]}" || return 1
-    # Validate command format
-    validate_sigul_batch_command "${cmd[@]}" || return 1
     log "🔧 EXECUTING: docker exec $client_container_name ${cmd[*]}"
     # Show actual command with proper escaping for debugging
     if [[ "$VERBOSE_MODE" == "true" ]]; then
