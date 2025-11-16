@@ -26,6 +26,8 @@
 #   CA_SUBJECT - CA subject (default: CN=Sigul CA)
 #   KEY_SIZE - RSA key size (default: 2048)
 #   VALIDITY_MONTHS - Certificate validity in months (default: 120)
+#   FORCE_CLEAN_DB - Force clean NSS database before generation (default: false)
+#   DEBUG - Enable debug output (default: false)
 
 set -euo pipefail
 
@@ -34,7 +36,11 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
 NC='\033[0m'
+
+# Debug flag
+DEBUG="${DEBUG:-false}"
 
 # Logging functions
 log() {
@@ -56,6 +62,12 @@ error() {
 fatal() {
     error "$*"
     exit 1
+}
+
+debug() {
+    if [[ "$DEBUG" == "true" ]]; then
+        echo -e "${PURPLE}[CERT-GEN-DEBUG]${NC} $*"
+    fi
 }
 
 # Validate required environment variables
@@ -99,6 +111,7 @@ setup_configuration() {
     CA_SUBJECT="${CA_SUBJECT:-CN=Sigul CA}"
     KEY_SIZE="${KEY_SIZE:-2048}"
     VALIDITY_MONTHS="${VALIDITY_MONTHS:-120}"
+    FORCE_CLEAN_DB="${FORCE_CLEAN_DB:-false}"
     CA_NICKNAME="sigul-ca"
     CERT_NICKNAME="sigul-${COMPONENT}-cert"
 
@@ -109,6 +122,8 @@ setup_configuration() {
     log "  CA Subject: ${CA_SUBJECT}"
     log "  Key Size: ${KEY_SIZE}"
     log "  Validity: ${VALIDITY_MONTHS} months"
+    log "  Force Clean DB: ${FORCE_CLEAN_DB}"
+    log "  Debug Mode: ${DEBUG}"
 }
 
 # Create NSS database directory
@@ -151,12 +166,46 @@ create_noise_file() {
     log "Noise file created: ${NOISE_FILE}"
 }
 
+# Clean existing NSS database if requested
+clean_nss_database() {
+    if [ "${FORCE_CLEAN_DB}" != "true" ]; then
+        return 0
+    fi
+
+    log "Force cleaning NSS database..."
+
+    if [ -f "${NSS_DB_DIR}/cert9.db" ]; then
+        rm -f "${NSS_DB_DIR}/cert9.db"
+        debug "Removed: ${NSS_DB_DIR}/cert9.db"
+    fi
+
+    if [ -f "${NSS_DB_DIR}/key4.db" ]; then
+        rm -f "${NSS_DB_DIR}/key4.db"
+        debug "Removed: ${NSS_DB_DIR}/key4.db"
+    fi
+
+    if [ -f "${NSS_DB_DIR}/pkcs11.txt" ]; then
+        rm -f "${NSS_DB_DIR}/pkcs11.txt"
+        debug "Removed: ${NSS_DB_DIR}/pkcs11.txt"
+    fi
+
+    success "NSS database cleaned"
+}
+
 # Initialize NSS database
 initialize_nss_database() {
     log "Initializing NSS database (cert9.db format)..."
 
     # Check if database already exists
     if [ -f "${NSS_DB_DIR}/cert9.db" ]; then
+        debug "NSS database already exists"
+        
+        # List existing certificates for debugging
+        if [[ "$DEBUG" == "true" ]]; then
+            debug "Existing certificates in database:"
+            certutil -L -d "sql:${NSS_DB_DIR}" 2>/dev/null || debug "Could not list certificates"
+        fi
+        
         warn "NSS database already exists, skipping initialization"
         return 0
     fi
@@ -182,9 +231,10 @@ generate_ca_certificate() {
 
     log "Generating CA certificate..."
 
-    # Generate random serial number to avoid collisions (hex format with 0x prefix for certutil -m)
-    local ca_serial
-    ca_serial="0x$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    # Note: Omitting -m flag to let certutil auto-generate unique serial numbers.
+    # Manual serial specification via -m flag is broken in some certutil versions
+    # (e.g., Rocky Linux 9), where all serials become 0, causing SEC_ERROR_REUSED_ISSUER_AND_SERIAL.
+    # Auto-generated serials work correctly and ensure uniqueness.
 
     # Generate self-signed CA certificate with noise file for non-interactive mode
     if ! certutil -S \
@@ -197,7 +247,6 @@ generate_ca_certificate() {
         -z "${NOISE_FILE}" \
         -Z SHA256 \
         -v "${VALIDITY_MONTHS}" \
-        -m "${ca_serial}" \
         -d "sql:${NSS_DB_DIR}" \
         -f "${NSS_PASSWORD_FILE}" \
         --keyUsage certSigning,crlSigning \
@@ -298,9 +347,10 @@ generate_component_certificate() {
 
     log "Generating ${COMPONENT} certificate with FQDN and SAN..."
 
-    # Generate random serial number to avoid collisions (hex format with 0x prefix for certutil -m)
-    local cert_serial
-    cert_serial="0x$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    # Note: Omitting -m flag to let certutil auto-generate unique serial numbers.
+    # Manual serial specification via -m flag is broken in some certutil versions
+    # (e.g., Rocky Linux 9), where all serials become 0, causing SEC_ERROR_REUSED_ISSUER_AND_SERIAL.
+    # Auto-generated serials work correctly and ensure uniqueness.
 
     # Generate certificate with:
     # - FQDN as CN
@@ -317,7 +367,6 @@ generate_component_certificate() {
         -z "${NOISE_FILE}" \
         -Z SHA256 \
         -v "${VALIDITY_MONTHS}" \
-        -m "${cert_serial}" \
         -d "sql:${NSS_DB_DIR}" \
         -f "${NSS_PASSWORD_FILE}" \
         --extKeyUsage serverAuth,clientAuth \
@@ -390,6 +439,9 @@ main() {
     create_nss_directory
     create_password_file
     create_noise_file
+
+    # Clean database if requested
+    clean_nss_database
 
     # Initialize NSS database if needed
     initialize_nss_database
