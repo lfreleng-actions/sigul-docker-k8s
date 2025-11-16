@@ -280,6 +280,38 @@ export_ca_certificate() {
     success "CA certificate exported: ${ca_cert_file}"
 }
 
+# Export CA certificate and private key as PKCS#12 for server import
+export_ca_with_private_key() {
+    local ca_export_dir="${NSS_DB_DIR}/../ca-export"
+    local ca_p12_file="${ca_export_dir}/ca.p12"
+    local ca_p12_password_file="${ca_export_dir}/ca-p12-password"
+
+    log "Exporting CA with private key (PKCS#12)..."
+
+    mkdir -p "${ca_export_dir}"
+    chmod 700 "${ca_export_dir}"
+
+    # Generate a random password for PKCS#12
+    local ca_p12_password
+    ca_p12_password=$(head -c 32 /dev/urandom | base64 | tr -d '\n=+/' | head -c 32)
+    echo "${ca_p12_password}" > "${ca_p12_password_file}"
+    chmod 600 "${ca_p12_password_file}"
+
+    # Export CA certificate and private key as PKCS#12
+    if ! pk12util -o "${ca_p12_file}" \
+        -n "${CA_NICKNAME}" \
+        -d "sql:${NSS_DB_DIR}" \
+        -k "${NSS_PASSWORD_FILE}" \
+        -w "${ca_p12_password_file}" \
+        2>/dev/null; then
+        warn "Failed to export CA with private key"
+        return 1
+    fi
+
+    chmod 600 "${ca_p12_file}"
+    success "CA with private key exported: ${ca_p12_file}"
+}
+
 # Import CA certificate (for server/client components)
 import_ca_certificate() {
     local ca_import_dir="${NSS_DB_DIR}/../ca-import"
@@ -331,6 +363,68 @@ import_ca_certificate() {
     fi
 
     success "CA certificate imported: ${CA_NICKNAME}"
+}
+
+# Import CA with private key from PKCS#12 (for server to sign its own cert)
+import_ca_with_private_key() {
+    local ca_import_dir="${NSS_DB_DIR}/../ca-import"
+    local ca_p12_file="${ca_import_dir}/ca.p12"
+    local ca_p12_password_file="${ca_import_dir}/ca-p12-password"
+
+    if ca_exists; then
+        log "CA certificate already imported: ${CA_NICKNAME}"
+        return 0
+    fi
+
+    # For bridge component, CA should already exist (we just generated it)
+    if [ "${COMPONENT}" = "bridge" ]; then
+        return 0
+    fi
+
+    log "Importing CA with private key from bridge..."
+
+    # Wait for CA PKCS#12 file to be available
+    local max_attempts=30
+    local attempt=1
+
+    while [ $attempt -le $max_attempts ]; do
+        if [ -f "${ca_p12_file}" ] && [ -s "${ca_p12_file}" ] && [ -f "${ca_p12_password_file}" ]; then
+            log "CA PKCS#12 file found"
+            break
+        fi
+
+        if [ $attempt -eq 1 ]; then
+            log "Waiting for CA PKCS#12 file from bridge..."
+        fi
+
+        sleep 2
+        attempt=$((attempt + 1))
+    done
+
+    if [ ! -f "${ca_p12_file}" ] || [ ! -s "${ca_p12_file}" ] || [ ! -f "${ca_p12_password_file}" ]; then
+        fatal "CA PKCS#12 file not found: ${ca_p12_file}"
+    fi
+
+    # Import CA certificate and private key from PKCS#12
+    if ! pk12util -i "${ca_p12_file}" \
+        -d "sql:${NSS_DB_DIR}" \
+        -k "${NSS_PASSWORD_FILE}" \
+        -w "${ca_p12_password_file}" \
+        2>/dev/null; then
+        fatal "Failed to import CA with private key"
+    fi
+
+    # Set proper trust flags for the imported CA
+    if ! certutil -M \
+        -d "sql:${NSS_DB_DIR}" \
+        -n "${CA_NICKNAME}" \
+        -t "CT,C,C" \
+        -f "${NSS_PASSWORD_FILE}" \
+        2>/dev/null; then
+        warn "Failed to set CA trust flags (may be OK)"
+    fi
+
+    success "CA with private key imported: ${CA_NICKNAME}"
 }
 
 # Check if component certificate exists
@@ -450,8 +544,9 @@ main() {
     if [ "${COMPONENT}" = "bridge" ]; then
         generate_ca_certificate
         export_ca_certificate
+        export_ca_with_private_key
     else
-        import_ca_certificate
+        import_ca_with_private_key
     fi
 
     # Generate component certificate

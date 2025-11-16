@@ -301,20 +301,29 @@ generate_certificates() {
         fatal "Failed to generate bridge certificates"
     fi
 
-    # Copy CA certificate from bridge export to server import location
-    log "Sharing CA certificate from bridge to server..."
+    # Copy CA certificate and private key from bridge export to server import location
+    log "Sharing CA certificate and private key from bridge to server..."
     local ca_export_path="/etc/pki/sigul/bridge/../ca-export/ca.crt"
+    local ca_p12_export_path="/etc/pki/sigul/bridge/../ca-export/ca.p12"
+    local ca_p12_password_export_path="/etc/pki/sigul/bridge/../ca-export/ca-p12-password"
     local ca_import_dir="/etc/pki/sigul/server/../ca-import"
     local ca_import_path="$ca_import_dir/ca.crt"
+    local ca_p12_import_path="$ca_import_dir/ca.p12"
+    local ca_p12_password_import_path="$ca_import_dir/ca-p12-password"
 
     if [[ ! -f "$ca_export_path" ]]; then
         error "Bridge CA certificate not found at: $ca_export_path"
         fatal "CA certificate export failed"
     fi
 
+    if [[ ! -f "$ca_p12_export_path" ]]; then
+        error "Bridge CA PKCS#12 file not found at: $ca_p12_export_path"
+        fatal "CA PKCS#12 export failed"
+    fi
+
     debug "Creating CA import directory: $ca_import_dir"
     mkdir -p "$ca_import_dir"
-    chmod 755 "$ca_import_dir"
+    chmod 700 "$ca_import_dir"
 
     debug "Copying CA certificate from bridge export to server import"
     if cp "$ca_export_path" "$ca_import_path"; then
@@ -323,6 +332,23 @@ generate_certificates() {
         debug "CA certificate available at: $ca_import_path"
     else
         fatal "Failed to copy CA certificate for server"
+    fi
+
+    debug "Copying CA PKCS#12 file from bridge export to server import"
+    if cp "$ca_p12_export_path" "$ca_p12_import_path"; then
+        chmod 600 "$ca_p12_import_path"
+        debug "CA PKCS#12 file available at: $ca_p12_import_path"
+    else
+        fatal "Failed to copy CA PKCS#12 file for server"
+    fi
+
+    debug "Copying CA PKCS#12 password from bridge export to server import"
+    if cp "$ca_p12_password_export_path" "$ca_p12_password_import_path"; then
+        chmod 600 "$ca_p12_password_import_path"
+        success "CA with private key shared: bridge → server"
+        debug "CA PKCS#12 password available at: $ca_p12_password_import_path"
+    else
+        fatal "Failed to copy CA PKCS#12 password for server"
     fi
 
     # Generate server certificates (will import CA)
@@ -383,10 +409,9 @@ generate_bridge_config() {
 
     debug "Generating bridge configuration: $config_file"
 
-    # Only generate if it doesn't exist
+    # Always generate fresh config to ensure correct values
     if [[ -f "$config_file" ]]; then
-        debug "Bridge config already exists, skipping generation"
-        return 0
+        debug "Bridge config exists, regenerating with current values"
     fi
 
     cat > "$config_file" << EOF
@@ -425,10 +450,9 @@ generate_server_config() {
 
     debug "Generating server configuration: $config_file"
 
-    # Only generate if it doesn't exist
+    # Always generate fresh config to ensure correct values
     if [[ -f "$config_file" ]]; then
-        debug "Server config already exists, skipping generation"
-        return 0
+        debug "Server config exists, regenerating with current values"
     fi
 
     cat > "$config_file" << EOF

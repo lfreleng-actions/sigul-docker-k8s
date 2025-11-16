@@ -47,9 +47,8 @@ services:
       DEBUG: ${DEBUG:-false}
     volumes:
       # FHS-compliant volume mounts for certificate generation
-      - sigul_bridge_config:/etc/sigul:rw
+      - sigul_shared_config:/etc/sigul:rw
       - sigul_bridge_nss:/etc/pki/sigul/bridge:rw
-      - sigul_server_config:/etc/sigul:rw
       - sigul_server_nss:/etc/pki/sigul/server:rw
     networks:
       - sigul-network
@@ -81,7 +80,7 @@ services:
       SERVER_FQDN: ${SERVER_FQDN:-sigul-server.example.org}
     volumes:
       # FHS-compliant volume mounts
-      - sigul_server_config:/etc/sigul:rw
+      - sigul_shared_config:/etc/sigul:rw
       - sigul_server_nss:/etc/pki/sigul/server:rw
       - sigul_server_data:/var/lib/sigul/server:rw
       - sigul_server_logs:/var/log/sigul/server:rw
@@ -126,7 +125,7 @@ services:
         condition: service_completed_successfully
     volumes:
       # FHS-compliant volume mounts
-      - sigul_bridge_config:/etc/sigul:rw
+      - sigul_shared_config:/etc/sigul:rw
       - sigul_bridge_nss:/etc/pki/sigul/bridge:rw
       - sigul_bridge_data:/var/lib/sigul/bridge:rw
       - sigul_bridge_logs:/var/log/sigul/bridge:rw
@@ -398,12 +397,13 @@ services:
         tail -f /dev/null
 
 volumes:
-  # Sigul Server volumes (FHS-compliant)
-  sigul_server_config:
+  # Sigul shared configuration volume
+  sigul_shared_config:
     driver: local
     labels:
-      description: "Server configuration files (/etc/sigul)"
+      description: "Shared configuration files for all components (/etc/sigul)"
       backup: "required"
+  # Sigul Server volumes (FHS-compliant)
   sigul_server_nss:
     driver: local
     labels:
@@ -426,11 +426,6 @@ volumes:
       backup: "no"
 
   # Sigul Bridge volumes (FHS-compliant)
-  sigul_bridge_config:
-    driver: local
-    labels:
-      description: "Bridge configuration files (/etc/sigul)"
-      backup: "required"
   sigul_bridge_nss:
     driver: local
     labels:
