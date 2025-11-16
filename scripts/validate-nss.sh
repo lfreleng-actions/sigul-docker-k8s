@@ -33,7 +33,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-NSS_BASE_DIR="${NSS_DIR:-/var/sigul/nss}"
+NSS_BASE_DIR="${NSS_DIR:-/etc/pki/sigul}"
 SECRETS_DIR="${SECRETS_DIR:-/var/sigul/secrets}"
 
 # Validation counters

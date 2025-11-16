@@ -925,31 +925,29 @@ jobs:
             fi
           done
 
-          # Collect volume diagnostics using dynamic volume name resolution
+          # Collect volume diagnostics using FHS-compliant paths
           if docker ps -a --format "{{.Names}}" | grep -q "^sigul-bridge$"; then
             echo "Collecting bridge volume diagnostics..."
-            bridge_volume=$(docker inspect sigul-bridge \
+            bridge_nss_volume=$(docker inspect sigul-bridge \
               --format \
-              '{{range .Mounts}}{{if eq .Destination "/var/sigul"}}' \
+              '{{range .Mounts}}{{if eq .Destination "/etc/pki/sigul/bridge"}}' \
               '{{.Name}}{{end}}{{end}}' \
               2>/dev/null || echo "")
-            if [[ -n "$bridge_volume" ]]; then
-              echo "Bridge volume name: $bridge_volume"
-              docker run --rm -v "${bridge_volume}":/var/sigul \
+            if [[ -n "$bridge_nss_volume" ]]; then
+              echo "Bridge NSS volume name: $bridge_nss_volume"
+              docker run --rm -v "${bridge_nss_volume}":/nss-data \
                 alpine:3.19 sh -c '
-                echo "=== Bridge Volume Directory Structure ===" > \
+                echo "=== Bridge NSS Volume Directory Structure ===" > \
                   /tmp/bridge-volume.txt
-                find /var/sigul -type f -exec ls -la {} \; >> \
+                find /nss-data -type f -exec ls -la {} \; >> \
                   /tmp/bridge-volume.txt 2>&1 || true
-                echo "=== Bridge NSS Database ===" >> /tmp/bridge-volume.txt
-                if [ -d /var/sigul/nss/bridge ]; then
-                  ls -la /var/sigul/nss/bridge >> \
-                    /tmp/bridge-volume.txt 2>&1 || true
-                fi
+                echo "=== Bridge NSS Database Files ===" >> /tmp/bridge-volume.txt
+                ls -la /nss-data/*.db /nss-data/pkcs11.txt >> \
+                  /tmp/bridge-volume.txt 2>&1 || true
                 cat /tmp/bridge-volume.txt
               ' > diagnostics/bridge-volume.txt 2>&1 || true
             else
-              echo "Could not determine bridge volume name" > \
+              echo "Could not determine bridge NSS volume name" > \
                 diagnostics/bridge-volume.txt
             fi
           fi
@@ -1161,7 +1159,7 @@ jobs:
 
           # Validate NSS certificates inside the bridge container
           echo "🔍 Validating bridge NSS certificates..."
-          if docker exec sigul-bridge \
+          if docker exec -e NSS_DIR=/etc/pki/sigul sigul-bridge \
             /usr/local/bin/validate-nss.sh bridge; then
             echo "✅ Bridge NSS validation passed"
           else
@@ -1171,7 +1169,7 @@ jobs:
 
           # Validate NSS certificates inside the server container
           echo "🔍 Validating server NSS certificates..."
-          if docker exec sigul-server \
+          if docker exec -e NSS_DIR=/etc/pki/sigul sigul-server \
             /usr/local/bin/validate-nss.sh server; then
             echo "✅ Server NSS validation passed"
           else
