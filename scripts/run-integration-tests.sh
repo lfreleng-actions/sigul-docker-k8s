@@ -109,27 +109,27 @@ get_sigul_network_name() {
     echo "${project_name}_sigul-network"
 }
 
-# Check if bridge is ready and has exported CA certificate
-wait_for_bridge_ca() {
-    log "Waiting for bridge to export CA certificate..."
+# Check if bridge is ready with NSS certificates
+wait_for_bridge_ready() {
+    log "Waiting for bridge to be ready with NSS certificates..."
 
     local max_attempts=30
     local attempt=1
 
     while [[ $attempt -le $max_attempts ]]; do
-        if docker exec sigul-bridge test -f /var/sigul/ca-export/bridge-ca.crt 2>/dev/null; then
-            success "Bridge CA certificate is ready"
-            verbose "Bridge CA export contents:"
-            docker exec sigul-bridge ls -la /var/sigul/ca-export/ 2>/dev/null || true
+        # Check if bridge has NSS database with CA certificate
+        if docker exec sigul-bridge certutil -L -d sql:/etc/pki/sigul/bridge -n sigul-ca >/dev/null 2>&1 && \
+           docker exec sigul-bridge certutil -L -d sql:/etc/pki/sigul/bridge -n sigul-bridge-cert >/dev/null 2>&1; then
+            success "Bridge NSS certificates are ready"
             return 0
         fi
 
-        verbose "Waiting for bridge CA certificate (attempt $attempt/$max_attempts)..."
+        verbose "Waiting for bridge NSS certificates (attempt $attempt/$max_attempts)..."
         sleep 2
         ((attempt++))
     done
 
-    error "Bridge CA certificate not ready after $max_attempts attempts"
+    error "Bridge NSS certificates not ready after $max_attempts attempts"
     error "Bridge container logs:"
     docker logs sigul-bridge 2>&1 | tail -20 || true
     return 1
@@ -182,7 +182,8 @@ start_client_container() {
     local client_container_name="sigul-client-integration"
 
     # Wait for bridge to be ready first
-    if ! wait_for_bridge_ca; then
+    # Wait for bridge to be ready with NSS certificates
+    if ! wait_for_bridge_ready; then
         error "Bridge not ready for client initialization"
         return 1
     fi
@@ -210,7 +211,7 @@ start_client_container() {
         --network "$network_name" \
         --user sigul \
         -v "${PROJECT_ROOT}:/workspace:rw" \
-        -v "${bridge_volume}":/var/sigul/bridge-shared:ro \
+        -v "${bridge_volume}":/etc/pki/sigul/bridge-shared:ro \
         -w /workspace \
         -e SIGUL_ROLE=client \
         -e SIGUL_BRIDGE_HOSTNAME=sigul-bridge \
@@ -239,45 +240,31 @@ start_client_container() {
     verbose "Client container logs before init:"
     docker logs "$client_container_name" 2>/dev/null || true
 
-    # Debug: Check what's available in the bridge-shared volume
-    verbose "Debugging bridge-shared volume contents:"
-    docker exec "$client_container_name" sh -c 'ls -la /var/sigul/bridge-shared/ 2>/dev/null || echo "bridge-shared not accessible"'
-    docker exec "$client_container_name" sh -c 'ls -la /var/sigul/bridge-shared/ca-export/ 2>/dev/null || echo "ca-export directory not found"'
-    docker exec "$client_container_name" sh -c 'find /var/sigul/bridge-shared/ -name "*ca*" -type f 2>/dev/null || echo "no CA files found"'
+    # Debug: Check what's available in the bridge-shared NSS volume
+    verbose "Debugging bridge-shared NSS volume contents:"
+    docker exec "$client_container_name" sh -c 'ls -la /etc/pki/sigul/bridge-shared/ 2>/dev/null || echo "bridge-shared not accessible"'
+    docker exec "$client_container_name" sh -c 'ls -la /etc/pki/sigul/bridge-shared/*.db 2>/dev/null || echo "NSS database files not found"'
 
     if docker exec "$client_container_name" /usr/local/bin/sigul-init.sh --role client 2>&1; then
         success "Client container initialized successfully"
 
         # Verify basic client functionality
         verbose "Testing basic client configuration..."
-        if docker exec "$client_container_name" test -f /var/sigul/config/client.conf; then
+        if docker exec "$client_container_name" test -f /etc/sigul/client.conf; then
             verbose "Client configuration file found"
         else
             warn "Client configuration file not found"
         fi
 
-        if docker exec "$client_container_name" test -d /var/sigul/nss/client; then
+        if docker exec "$client_container_name" test -d sql:/etc/pki/sigul/client; then
             verbose "Client NSS database found"
         else
             warn "Client NSS database not found"
         fi
 
-        # Apply SSL certificate fixes to resolve "Unexpected EOF in NSPR" error
-        verbose "Applying SSL certificate fixes for client-bridge authentication..."
-
-        # Import client certificate to bridge (for bridge to validate client)
-        if import_client_cert_to_bridge "$client_container_name"; then
-            verbose "Client certificate imported to bridge successfully"
-        else
-            warn "Client certificate import to bridge failed - SSL connections may not work"
-        fi
-
-        # Import bridge certificate to client (for client to validate bridge)
-        if import_bridge_cert_to_client "$client_container_name"; then
-            verbose "Bridge certificate imported to client successfully"
-        else
-            warn "Bridge certificate import to client failed - SSL connections may not work"
-        fi
+        # Client initialization handles all certificate setup
+        # No manual imports needed - client reads CA from bridge NSS volume
+        verbose "Client certificate setup completed by initialization"
 
         return 0
     else
@@ -288,123 +275,9 @@ start_client_container() {
     fi
 }
 
-# Fix SSL certificate issue by importing client certificate to bridge
-# This resolves the "Unexpected EOF in NSPR" error in SSL client authentication
-import_client_cert_to_bridge() {
-    local client_container="$1"
-    local bridge_container="sigul-bridge"
-
-    verbose "Importing client certificate to bridge for SSL authentication..."
-
-    # Wait for client container to be fully initialized with NSS database
-    local max_wait=30
-    local wait_count=0
-    while [[ $wait_count -lt $max_wait ]]; do
-        if docker exec "$client_container" test -f /var/sigul/nss/client/cert9.db 2>/dev/null; then
-            break
-        fi
-        sleep 1
-        ((wait_count++))
-    done
-
-    if [[ $wait_count -ge $max_wait ]]; then
-        verbose "Client NSS database not ready after ${max_wait}s"
-        return 1
-    fi
-
-    # Remove any existing/stale client certificate from bridge
-    docker exec "$bridge_container" certutil -D -d /var/sigul/nss/bridge -n sigul-client-cert 2>/dev/null || true
-
-    # Export current client certificate from client container
-    if ! docker exec "$client_container" certutil -L -d /var/sigul/nss/client -n sigul-client-cert -a > /tmp/current-client-cert.pem 2>/dev/null; then
-        verbose "Failed to export client certificate from client container"
-        return 1
-    fi
-
-    # Import to bridge with proper trust flags for SSL client authentication
-    docker cp /tmp/current-client-cert.pem "$bridge_container":/tmp/
-
-    if docker exec "$bridge_container" certutil -A -d /var/sigul/nss/bridge \
-        -n sigul-client-cert \
-        -t "P,," \
-        -a -i /tmp/current-client-cert.pem \
-        -f /var/sigul/secrets/nss-password 2>/dev/null; then
-
-        verbose "Client certificate imported to bridge NSS database"
-        return 0
-    else
-        verbose "Failed to import client certificate to bridge"
-        return 1
-    fi
-
-    # Cleanup temporary files
-    # shellcheck disable=SC2317  # Cleanup code may be unreachable in some execution paths
-    rm -f /tmp/current-client-cert.pem 2>/dev/null || true
-    # shellcheck disable=SC2317  # Cleanup code may be unreachable in some execution paths
-    docker exec "$bridge_container" rm -f /tmp/current-client-cert.pem 2>/dev/null || true
-}
-
-# Import bridge certificate to client for SSL server authentication
-# This ensures the client can validate the bridge's SSL certificate
-import_bridge_cert_to_client() {
-    local client_container="$1"
-    local bridge_container="sigul-bridge"
-
-    verbose "Importing bridge certificate to client for SSL server authentication..."
-
-    # Wait for bridge container to be fully initialized with NSS database
-    local max_wait=30
-    local wait_count=0
-    while [[ $wait_count -lt $max_wait ]]; do
-        if docker exec "$bridge_container" test -f /var/sigul/nss/bridge/cert9.db 2>/dev/null; then
-            break
-        fi
-        sleep 1
-        ((wait_count++))
-    done
-
-    if [[ $wait_count -ge $max_wait ]]; then
-        error "Timeout waiting for bridge NSS database initialization"
-        return 1
-    fi
-
-    # Remove any existing/stale bridge certificate from client
-    docker exec "$client_container" certutil -D -d /var/sigul/nss/client -n sigul-bridge-cert 2>/dev/null || true
-
-    # Export current bridge certificate from bridge container
-    if ! docker exec "$bridge_container" certutil -L -d /var/sigul/nss/bridge -n sigul-bridge-cert -a > /tmp/current-bridge-cert.pem 2>/dev/null; then
-        error "Failed to export bridge certificate from bridge container"
-        return 1
-    fi
-
-    # Import to client with proper trust flags for SSL server authentication
-    docker cp /tmp/current-bridge-cert.pem "$client_container":/tmp/
-
-    if docker exec "$client_container" certutil -A -d /var/sigul/nss/client \
-        -n sigul-bridge-cert \
-        -t "P,," \
-        -a -i /tmp/current-bridge-cert.pem \
-        -f /var/sigul/secrets/nss-password 2>/dev/null; then
-
-        success "Bridge certificate imported to client NSS database"
-
-        # Verify the import
-        if docker exec "$client_container" certutil -L -d /var/sigul/nss/client -n sigul-bridge-cert >/dev/null 2>&1; then
-            verbose "SSL certificate fix verified: bridge cert now in client NSS database"
-        else
-            warn "SSL certificate import verification failed"
-        fi
-    else
-        error "Failed to import bridge certificate to client"
-        return 1
-    fi
-
-    # Cleanup temporary files
-    rm -f /tmp/current-bridge-cert.pem 2>/dev/null || true
-    docker exec "$client_container" rm -f /tmp/current-bridge-cert.pem 2>/dev/null || true
-
-    return 0
-}
+# Certificate management is now handled by client initialization
+# Client reads CA from mounted bridge NSS volume and generates its own cert
+# No manual imports needed - all certs share the same CA trust chain
 
 # Stop the persistent client container
 stop_client_container() {
@@ -626,7 +499,7 @@ test_user_key_creation() {
     verbose "Using Docker network: $network_name"
 
     if run_sigul_client_cmd \
-        sh -c "printf '%s\\0%s\\0%s\\0' '$EPHEMERAL_ADMIN_PASSWORD' '$EPHEMERAL_TEST_PASSWORD' '$EPHEMERAL_TEST_PASSWORD' | sigul -c /var/sigul/config/client.conf --batch new-user --with-password integration-tester"; then
+        sh -c "printf '%s\\0%s\\0%s\\0' '$EPHEMERAL_ADMIN_PASSWORD' '$EPHEMERAL_TEST_PASSWORD' '$EPHEMERAL_TEST_PASSWORD' | sigul -c /etc/sigul/client.conf --batch new-user --with-password integration-tester"; then
 
         verbose "User creation succeeded"
     else
@@ -638,7 +511,7 @@ test_user_key_creation() {
         docker exec sigul-bridge nc -zv sigul-server 44333 2>/dev/null || true
         # Check if user already exists
         if run_sigul_client_cmd \
-            sh -c "printf '%s\\0' '$EPHEMERAL_ADMIN_PASSWORD' | sigul -c /var/sigul/config/client.conf --batch list-users" | grep -q "^integration-tester$"; then
+            sh -c "printf '%s\\0' '$EPHEMERAL_ADMIN_PASSWORD' | sigul -c /etc/sigul/client.conf --batch list-users" | grep -q "^integration-tester$"; then
             verbose "integration-tester already present in server database"
         fi
     fi
@@ -646,7 +519,7 @@ test_user_key_creation() {
     # Create signing key
     verbose "Creating test signing key..."
     if run_sigul_client_cmd \
-        sh -c "printf '%s\\0' '$EPHEMERAL_TEST_PASSWORD' | sigul -c /var/sigul/config/client.conf --batch --user-name integration-tester new-key --key-admin integration-tester test-signing-key"; then
+        sh -c "printf '%s\\0' '$EPHEMERAL_TEST_PASSWORD' | sigul -c /etc/sigul/client.conf --batch --user-name integration-tester new-key --key-admin integration-tester test-signing-key"; then
 
         verbose "Key creation succeeded"
         test_passed "$test_name"
@@ -656,10 +529,10 @@ test_user_key_creation() {
         verbose "Collecting diagnostics for key creation failure..."
         docker logs sigul-server --tail 25 2>/dev/null || true
         docker exec sigul-server ls -l /var/lib/sigul 2>/dev/null || true
-        run_sigul_client_cmd sh -c "printf '%s\\0' '$EPHEMERAL_TEST_PASSWORD' | sigul -c /var/sigul/config/client.conf --batch --user-name integration-tester list-keys" || true
+        run_sigul_client_cmd sh -c "printf '%s\\0' '$EPHEMERAL_TEST_PASSWORD' | sigul -c /etc/sigul/client.conf --batch --user-name integration-tester list-keys" || true
         # Test if key exists by trying to list it
         if run_sigul_client_cmd \
-           sh -c "printf '%s\\0' '$EPHEMERAL_TEST_PASSWORD' | sigul -c /var/sigul/config/client.conf --batch --user-name integration-tester list-keys" | grep -q "test-signing-key"; then
+           sh -c "printf '%s\\0' '$EPHEMERAL_TEST_PASSWORD' | sigul -c /etc/sigul/client.conf --batch --user-name integration-tester list-keys" | grep -q "test-signing-key"; then
             verbose "Test signing key already exists, proceeding with tests"
             test_passed "$test_name"
         else
@@ -679,7 +552,7 @@ test_basic_functionality() {
     network_name=$(get_sigul_network_name)
 
     if run_sigul_client_cmd \
-        sh -c "printf '%s\\0' '$EPHEMERAL_TEST_PASSWORD' | sigul -c /var/sigul/config/client.conf --batch --user-name integration-tester list-keys"; then
+        sh -c "printf '%s\\0' '$EPHEMERAL_TEST_PASSWORD' | sigul -c /etc/sigul/client.conf --batch --user-name integration-tester list-keys"; then
 
         test_passed "$test_name"
     else
@@ -704,7 +577,7 @@ test_file_signing() {
     network_name=$(get_sigul_network_name)
 
     if run_sigul_client_cmd \
-        sh -c "printf '%s\\0' '$EPHEMERAL_TEST_PASSWORD' | sigul -c /var/sigul/config/client.conf --batch --user-name integration-tester sign-data test-signing-key test-workspace/document1.txt"; then
+        sh -c "printf '%s\\0' '$EPHEMERAL_TEST_PASSWORD' | sigul -c /etc/sigul/client.conf --batch --user-name integration-tester sign-data test-signing-key test-workspace/document1.txt"; then
 
         # Check if signature was created
         if [[ -f "${signature_file}" ]]; then
@@ -742,7 +615,7 @@ test_rpm_signing() {
     network_name=$(get_sigul_network_name)
 
     if run_sigul_client_cmd \
-        sh -c "printf '%s\\0' '$EPHEMERAL_TEST_PASSWORD' | sigul -c /var/sigul/config/client.conf --batch --user-name integration-tester sign-rpm test-signing-key test-workspace/test-package.rpm"; then
+        sh -c "printf '%s\\0' '$EPHEMERAL_TEST_PASSWORD' | sigul -c /etc/sigul/client.conf --batch --user-name integration-tester sign-rpm test-signing-key test-workspace/test-package.rpm"; then
 
         test_passed "$test_name"
     else
@@ -750,7 +623,7 @@ test_rpm_signing() {
         warn "RPM signing failed (test file is not a valid RPM package)"
         # Check if the sigul command at least connected to the server
         if run_sigul_client_cmd \
-            sh -c "printf '%s\\0' '$EPHEMERAL_TEST_PASSWORD' | sigul -c /var/sigul/config/client.conf --batch --user-name integration-tester list-keys" >/dev/null; then
+            sh -c "printf '%s\\0' '$EPHEMERAL_TEST_PASSWORD' | sigul -c /etc/sigul/client.conf --batch --user-name integration-tester list-keys" >/dev/null; then
             verbose "Sigul connection works, RPM signing failed due to invalid RPM format"
             test_passed "$test_name"
         else
@@ -775,7 +648,7 @@ test_key_management() {
     network_name=$(get_sigul_network_name)
 
     if run_sigul_client_cmd \
-        sh -c "printf '%s\\0' '$EPHEMERAL_TEST_PASSWORD' | sigul -c /var/sigul/config/client.conf --batch --user-name integration-tester list-users"; then
+        sh -c "printf '%s\\0' '$EPHEMERAL_TEST_PASSWORD' | sigul -c /etc/sigul/client.conf --batch --user-name integration-tester list-users"; then
 
         verbose "List users command succeeded"
     else
@@ -785,7 +658,7 @@ test_key_management() {
     # Get public key to verify key management functionality
     verbose "Retrieving public key for test-signing-key..."
     if run_sigul_client_cmd \
-        sh -c "printf '%s\\0' '$EPHEMERAL_TEST_PASSWORD' | sigul -c /var/sigul/config/client.conf --batch --user-name integration-tester get-public-key test-signing-key > public-key.asc"; then
+        sh -c "printf '%s\\0' '$EPHEMERAL_TEST_PASSWORD' | sigul -c /etc/sigul/client.conf --batch --user-name integration-tester get-public-key test-signing-key > public-key.asc"; then
 
         if [[ -f "${public_key_file}" && -s "${public_key_file}" ]]; then
             # Verify it's a valid PGP public key
@@ -825,7 +698,7 @@ test_batch_operations() {
     for i in {1..3}; do
         verbose "Signing batch-test-${i}.txt..."
         if run_sigul_client_cmd \
-            sh -c "printf '%s\\0' '$EPHEMERAL_TEST_PASSWORD' | sigul -c /var/sigul/config/client.conf --batch --user-name integration-tester sign-data test-signing-key test-workspace/batch-test-${i}.txt"; then
+            sh -c "printf '%s\\0' '$EPHEMERAL_TEST_PASSWORD' | sigul -c /etc/sigul/client.conf --batch --user-name integration-tester sign-data test-signing-key test-workspace/batch-test-${i}.txt"; then
 
             verbose "Batch file ${i} signed successfully"
         else
@@ -1012,18 +885,18 @@ run_integration_tests() {
     local ssl_handshake_success=false
 
     # First, verify NSS database and certificates are accessible
-    if docker exec sigul-client-integration certutil -L -d /var/sigul/nss/client >/dev/null 2>&1; then
+    if docker exec sigul-client-integration certutil -L -d sql:/etc/pki/sigul/client >/dev/null 2>&1; then
         verbose "✓ Client NSS database is accessible"
 
         # Check if required certificates exist
-        if docker exec sigul-client-integration certutil -L -d /var/sigul/nss/client -n sigul-bridge-cert >/dev/null 2>&1; then
+        if docker exec sigul-client-integration certutil -L -d sql:/etc/pki/sigul/client -n sigul-bridge-cert >/dev/null 2>&1; then
             verbose "✓ Bridge certificate found in client NSS database"
 
             # Test actual SSL handshake using tstclnt
             if timeout 15 docker exec sigul-client-integration \
                 tstclnt -h sigul-bridge -p 44334 \
-                -d /var/sigul/nss/client \
-                -w /var/sigul/secrets/nss-password \
+                -d sql:/etc/pki/sigul/client \
+                -w  \
                 -v >/dev/null 2>&1; then
 
                 verbose "✓ SSL handshake successful - certificates and NSS are working"
@@ -1044,7 +917,7 @@ run_integration_tests() {
         else
             error "✗ Bridge certificate not found in client NSS database"
             verbose "Available certificates:"
-            docker exec sigul-client-integration certutil -L -d /var/sigul/nss/client || true
+            docker exec sigul-client-integration certutil -L -d sql:/etc/pki/sigul/client || true
         fi
     else
         error "✗ Client NSS database is not accessible"

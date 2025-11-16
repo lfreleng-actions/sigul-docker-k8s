@@ -146,7 +146,7 @@ USER sigul
 # Use the wrapper script as the default command
 CMD ["/usr/local/bin/client-wrapper.sh"]
 
-# Health check - NSS certificate validation
+# Health check - NSS certificate validation (FHS-compliant path)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD certutil -d sql:/var/sigul/nss/client -L -n sigul-ca >/dev/null 2>&1 && \
-        certutil -d sql:/var/sigul/nss/client -L -n sigul-client-cert >/dev/null 2>&1 || exit 1
+    CMD certutil -d sql:/etc/pki/sigul/client -L -n sigul-ca >/dev/null 2>&1 && \
+        certutil -d sql:/etc/pki/sigul/client -L -n sigul-client-cert >/dev/null 2>&1 || exit 1

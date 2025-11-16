@@ -294,11 +294,11 @@ setup_server_certificates() {
 #######################################
 
 setup_client_certificates() {
-    log "Setting up client certificates (production-aligned)"
+    log "Setting up client certificates (Sigul-compliant)"
 
     local client_nss_dir="$NSS_BASE_DIR/client"
+    local bridge_nss_dir="$NSS_BASE_DIR/bridge-shared"
     local client_fqdn="${CLIENT_FQDN:-sigul-client.example.org}"
-    local ca_import_dir="$NSS_BASE_DIR/bridge-shared/ca-export"
 
     # Check if certificates already exist
     if [[ -f "$client_nss_dir/cert9.db" ]] && \
@@ -308,47 +308,79 @@ setup_client_certificates() {
         return 0
     fi
 
-    # Wait for CA from bridge to be available
-    log "Waiting for CA certificate from bridge..."
-    local max_attempts=30
-    local attempt=1
-
-    while [[ $attempt -le $max_attempts ]]; do
-        if [[ -d "$ca_import_dir" ]] && [[ -f "$ca_import_dir/ca.crt" ]]; then
-            debug "CA certificate found from bridge"
-            break
-        fi
-        if [[ $attempt -eq 1 ]]; then
-            debug "Waiting for bridge CA..."
-        fi
-        sleep 2
-        ((attempt++))
-    done
-
-    if [[ $attempt -gt $max_attempts ]]; then
-        warn "Bridge CA not available, client will generate with fallback method"
+    # Verify bridge NSS database is accessible (per official Sigul docs)
+    log "Verifying bridge NSS database accessibility..."
+    if [[ ! -f "$bridge_nss_dir/cert9.db" ]]; then
+        fatal "Bridge NSS database not accessible at $bridge_nss_dir - cannot import CA certificate"
     fi
 
-    log "Generating production-aligned certificates for client..."
+    debug "Bridge NSS database found at $bridge_nss_dir"
 
-    # Use production-aligned certificate generation script
-    if [[ -x "/usr/local/bin/generate-production-aligned-certs.sh" ]]; then
-        NSS_DB_DIR="$client_nss_dir" \
-        NSS_PASSWORD="$(get_nss_password)" \
-        COMPONENT="client" \
-        FQDN="$client_fqdn" \
-        /usr/local/bin/generate-production-aligned-certs.sh
-    elif [[ -x "/workspace/pki/generate-production-aligned-certs.sh" ]]; then
-        NSS_DB_DIR="$client_nss_dir" \
-        NSS_PASSWORD="$(get_nss_password)" \
-        COMPONENT="client" \
-        FQDN="$client_fqdn" \
-        /workspace/pki/generate-production-aligned-certs.sh
+    # Create client NSS database
+    log "Creating client NSS database..."
+    mkdir -p "$client_nss_dir"
+    
+    # For container environment, use empty password file
+    local temp_password_file="/tmp/nss-empty-password-$$"
+    echo -n "" > "$temp_password_file"
+    certutil -N -d "sql:$client_nss_dir" -f "$temp_password_file"
+    rm -f "$temp_password_file"
+
+    # Import CA certificate from bridge NSS database (per official Sigul documentation)
+    # Reference: https://pagure.io/sigul - "Setting up the client" section
+    log "Importing CA certificate from bridge NSS database..."
+    
+    if ! certutil -L -d "sql:$bridge_nss_dir" -n "$CA_NICKNAME" -a > /tmp/ca-import.pem 2>/dev/null; then
+        fatal "Could not export CA certificate from bridge NSS database"
+    fi
+
+    # Import with empty password file
+    local temp_password_file="/tmp/nss-empty-password-$$"
+    echo -n "" > "$temp_password_file"
+    if ! certutil -A -d "sql:$client_nss_dir" -n "$CA_NICKNAME" -t CT,, -a -i /tmp/ca-import.pem -f "$temp_password_file" 2>/dev/null; then
+        rm -f /tmp/ca-import.pem "$temp_password_file"
+        fatal "Could not import CA certificate to client NSS database"
+    fi
+    rm -f "$temp_password_file"
+
+    rm -f /tmp/ca-import.pem
+    success "CA certificate imported successfully"
+
+    # Generate client certificate signed by CA (per official Sigul documentation)
+    log "Generating client certificate for $client_fqdn..."
+    
+    # Generate a random serial number
+    local serial_number=$((RANDOM * RANDOM))
+    
+    # Generate with empty password file
+    local temp_password_file="/tmp/nss-empty-password-$$"
+    echo -n "" > "$temp_password_file"
+    if ! certutil -S -d "sql:$client_nss_dir" \
+        -n "$CLIENT_CERT_NICKNAME" \
+        -s "CN=$client_fqdn,O=Sigul,C=US" \
+        -c "$CA_NICKNAME" \
+        -t u,, \
+        -m "$serial_number" \
+        -v 120 \
+        -f "$temp_password_file" \
+        --keyUsage digitalSignature,keyEncipherment 2>/dev/null; then
+        rm -f "$temp_password_file"
+        fatal "Failed to generate client certificate"
+    fi
+    rm -f "$temp_password_file"
+
+    success "Client certificate generated and signed by CA"
+
+    # Verify certificate setup
+    log "Verifying client certificate setup..."
+    if certutil -L -d "sql:$client_nss_dir" -n "$CA_NICKNAME" >/dev/null 2>&1 && \
+       certutil -L -d "sql:$client_nss_dir" -n "$CLIENT_CERT_NICKNAME" >/dev/null 2>&1; then
+        success "Client certificate setup completed successfully"
+        debug "Client certificates:"
+        certutil -L -d "sql:$client_nss_dir" 2>/dev/null | grep -E "^(sigul-|Certificate)" || true
     else
-        fatal "Production-aligned certificate generation script not found"
+        fatal "Client certificate verification failed"
     fi
-
-    success "Client certificates generated with FQDN and SAN"
 }
 
 #######################################
