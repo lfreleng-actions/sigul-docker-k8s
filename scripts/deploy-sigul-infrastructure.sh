@@ -936,7 +936,29 @@ deploy_sigul_services() {
     verbose "Using bridge image: ${SIGUL_BRIDGE_IMAGE}"
     verbose "Admin user creation: enabled"
 
-    # Start Sigul server first
+    # Start cert-init container first to pre-generate all certificates
+    log "Starting certificate initialization (cert-init)..."
+    if ${compose_cmd} -f "${COMPOSE_FILE}" up cert-init; then
+        success "Certificate initialization completed"
+        
+        # Verify cert-init completed successfully
+        local cert_init_exit_code
+        cert_init_exit_code=$(docker inspect sigul-cert-init --format '{{.State.ExitCode}}' 2>/dev/null || echo "1")
+        
+        if [[ "$cert_init_exit_code" != "0" ]]; then
+            error "Certificate initialization failed with exit code: $cert_init_exit_code"
+            error "Certificate initialization logs:"
+            docker logs sigul-cert-init 2>&1 | tail -50
+            return 1
+        fi
+        
+        verbose "All certificates pre-generated successfully on bridge"
+    else
+        error "Failed to run certificate initialization"
+        return 1
+    fi
+
+    # Start Sigul server
     log "Starting Sigul server..."
     if ${compose_cmd} -f "${COMPOSE_FILE}" up -d sigul-server; then
         success "Sigul server container started"

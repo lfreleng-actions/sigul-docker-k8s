@@ -193,7 +193,7 @@ start_client_container() {
     # Remove any existing client container
     docker rm -f "$client_container_name" 2>/dev/null || true
 
-    # Detect the bridge NSS volume name (contains certificates, not data)
+    # Detect the bridge NSS volume name (contains CA and all certificates)
     local bridge_nss_volume
     bridge_nss_volume=$(docker volume ls --format "{{.Name}}" | grep -E "(sigul.*bridge.*nss|bridge.*nss)" | head -n1)
 
@@ -206,42 +206,46 @@ start_client_container() {
 
     verbose "Using bridge NSS volume: $bridge_nss_volume"
 
-    # Detect or create client PKI volume (contains NSS databases for all components)
-    local client_pki_volume
+    # Create client NSS volume for integration tests
+    local client_nss_volume="sigul-integration-client-nss"
     
-    client_pki_volume=$(docker volume ls --format "{{.Name}}" | grep -E "(sigul.*client.*pki|client.*pki)" | head -n1)
-    if [[ -z "$client_pki_volume" ]]; then
-        verbose "Creating client PKI volume for integration tests"
-        client_pki_volume="sigul-integration-client-pki"
-        docker volume create "$client_pki_volume" >/dev/null
-        
-        # Initialize volume with correct ownership (UID 1000 = sigul user)
-        verbose "Setting ownership on client PKI volume"
-        docker run --rm -v "$client_pki_volume:/target" alpine:3.19 \
-            sh -c "mkdir -p /target && chown -R 1000:1000 /target" >/dev/null 2>&1
-    fi
-    verbose "Using client PKI volume: $client_pki_volume"
+    # Remove old volume if exists
+    docker volume rm "$client_nss_volume" 2>/dev/null || true
     
-    client_config_volume=$(docker volume ls --format "{{.Name}}" | grep -E "(sigul.*client.*config|client.*config)" | head -n1)
-    if [[ -z "$client_config_volume" ]]; then
-        verbose "Creating client config volume for integration tests"
-        client_config_volume="sigul-integration-client-config"
-        docker volume create "$client_config_volume" >/dev/null
-        
-        # Initialize volume with correct ownership (UID 1000 = sigul user)
-        verbose "Setting ownership on client config volume"
-        docker run --rm -v "$client_config_volume:/target" alpine:3.19 \
-            sh -c "mkdir -p /target && chown -R 1000:1000 /target" >/dev/null 2>&1
-    fi
+    verbose "Creating client NSS volume for integration tests"
+    docker volume create "$client_nss_volume" >/dev/null
+    
+    # Initialize volume with correct ownership (UID 1000 = sigul user)
+    verbose "Setting ownership on client NSS volume"
+    docker run --rm -v "$client_nss_volume:/target" alpine:3.19 \
+        sh -c "mkdir -p /target && chown -R 1000:1000 /target" >/dev/null 2>&1
+    
+    verbose "Using client NSS volume: $client_nss_volume"
+    
+    # Create client config volume for integration tests
+    local client_config_volume="sigul-integration-client-config"
+    
+    # Remove old volume if exists
+    docker volume rm "$client_config_volume" 2>/dev/null || true
+    
+    verbose "Creating client config volume for integration tests"
+    docker volume create "$client_config_volume" >/dev/null
+    
+    # Initialize volume with correct ownership (UID 1000 = sigul user)
+    verbose "Setting ownership on client config volume"
+    docker run --rm -v "$client_config_volume:/target" alpine:3.19 \
+        sh -c "mkdir -p /target && chown -R 1000:1000 /target" >/dev/null 2>&1
+    
     verbose "Using client config volume: $client_config_volume"
 
-    # Start the client container with unified initialization
+    # Start the client container with new PKI architecture
+    # Bridge NSS volume is mounted read-only at /etc/pki/sigul/bridge for certificate import
     if ! docker run -d --name "$client_container_name" \
         --network "$network_name" \
         --user sigul \
         -v "${PROJECT_ROOT}:/workspace:rw" \
-        -v "${bridge_nss_volume}":/etc/pki/sigul/bridge-shared:ro \
-        -v "${client_pki_volume}":/etc/pki/sigul:rw \
+        -v "${bridge_nss_volume}":/etc/pki/sigul/bridge:ro \
+        -v "${client_nss_volume}":/etc/pki/sigul/client:rw \
         -v "${client_config_volume}":/etc/sigul:rw \
         -w /workspace \
         -e SIGUL_ROLE=client \
@@ -266,49 +270,103 @@ start_client_container() {
         return 1
     fi
 
-    # Initialize the client in the container
-    verbose "Initializing sigul client in container..."
-    verbose "Client container logs before init:"
-    docker logs "$client_container_name" 2>/dev/null || true
+    # Initialize the client with new PKI architecture
+    verbose "Initializing client certificates (new PKI architecture)..."
+    
+    # Debug: Check what's available in the bridge NSS volume
+    verbose "Checking bridge NSS volume for certificate exports:"
+    docker exec "$client_container_name" sh -c 'ls -la /etc/pki/sigul/bridge/ca-export/ 2>/dev/null || echo "CA export not found"'
+    docker exec "$client_container_name" sh -c 'ls -la /etc/pki/sigul/bridge/client-export/ 2>/dev/null || echo "Client export not found"'
 
-    # Debug: Check what's available in the bridge-shared NSS volume
-    verbose "Debugging bridge-shared NSS volume contents:"
-    docker exec "$client_container_name" sh -c 'ls -la /etc/pki/sigul/bridge-shared/ 2>/dev/null || echo "bridge-shared not accessible"'
-    docker exec "$client_container_name" sh -c 'ls -la /etc/pki/sigul/bridge-shared/*.db 2>/dev/null || echo "NSS database files not found"'
+    # Run the new certificate import script
+    if docker exec "$client_container_name" /usr/local/bin/init-client-certs.sh 2>&1; then
+        success "Client certificates imported successfully"
 
-    if docker exec "$client_container_name" /usr/local/bin/sigul-init.sh --role client 2>&1; then
-        success "Client container initialized successfully"
-
-        # Verify basic client functionality
-        verbose "Testing basic client configuration..."
-        if docker exec "$client_container_name" test -f /etc/sigul/client.conf; then
-            verbose "Client configuration file found"
-        else
-            warn "Client configuration file not found"
-        fi
-
-        if docker exec "$client_container_name" test -d sql:/etc/pki/sigul/client; then
+        # Verify certificate import
+        verbose "Verifying client certificate setup..."
+        
+        # Check NSS database exists
+        if docker exec "$client_container_name" test -f /etc/pki/sigul/client/cert9.db; then
             verbose "Client NSS database found"
         else
             warn "Client NSS database not found"
         fi
 
-        # Client initialization handles all certificate setup
-        # No manual imports needed - client reads CA from bridge NSS volume
-        verbose "Client certificate setup completed by initialization"
+        # Check CA certificate imported (public only)
+        if docker exec "$client_container_name" certutil -L -d sql:/etc/pki/sigul/client -n sigul-ca &>/dev/null; then
+            verbose "CA certificate imported successfully"
+        else
+            warn "CA certificate not found in client database"
+        fi
 
+        # Check client certificate imported
+        if docker exec "$client_container_name" certutil -L -d sql:/etc/pki/sigul/client -n sigul-client-cert &>/dev/null; then
+            verbose "Client certificate imported successfully"
+        else
+            warn "Client certificate not found in client database"
+        fi
+
+        # Security check: Verify CA private key is NOT present
+        if docker exec "$client_container_name" certutil -K -d sql:/etc/pki/sigul/client 2>/dev/null | grep -q "sigul-ca"; then
+            error "SECURITY ISSUE: CA private key found on client!"
+            return 1
+        else
+            verbose "Security check passed: CA private key NOT present on client"
+        fi
+
+        # Generate client configuration file
+        verbose "Generating client configuration file..."
+        docker exec "$client_container_name" sh -c 'cat > /etc/sigul/client.conf << EOF
+# Sigul Client Configuration
+# Auto-generated for integration testing
+
+[client]
+bridge-hostname: sigul-bridge
+bridge-port: 44334
+server-hostname: sigul-server
+
+[gnupg]
+gnupg-bin: /usr/bin/gpg2
+gnupg-key-type: RSA
+gnupg-key-length: 4096
+
+[nss]
+# Client certificate for TLS
+client-cert-nickname: sigul-client-cert
+# CA certificate for validating bridge connections (public only)
+nss-ca-cert-nickname: sigul-ca
+# NSS database location
+nss-dir: /etc/pki/sigul/client
+nss-password: ${NSS_PASSWORD}
+nss-min-tls: tls1.2
+
+# Security notes:
+# - Client has CA public certificate only (for validation)
+# - Client does NOT have CA private key
+# - Client cannot sign new certificates
+EOF
+'
+        
+        if docker exec "$client_container_name" test -f /etc/sigul/client.conf; then
+            verbose "Client configuration file generated successfully"
+        else
+            error "Failed to generate client configuration file"
+            return 1
+        fi
+
+        verbose "Client certificate setup completed successfully"
         return 0
     else
-        error "Failed to initialize client container"
+        error "Failed to initialize client certificates"
         verbose "Client initialization logs:"
         docker logs "$client_container_name" 2>/dev/null || true
         return 1
     fi
 }
 
-# Certificate management is now handled by client initialization
-# Client reads CA from mounted bridge NSS volume and generates its own cert
-# No manual imports needed - all certs share the same CA trust chain
+# Certificate management is now handled by init-client-certs.sh
+# Client imports pre-generated certificates from bridge exports
+# CA private key never leaves bridge (security best practice)
 
 # Stop the persistent client container
 stop_client_container() {

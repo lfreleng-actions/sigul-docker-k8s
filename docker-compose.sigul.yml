@@ -37,9 +37,10 @@ services:
       CERT_INIT_MODE: ${CERT_INIT_MODE:-auto}
       # NSS Database password for secure operation
       NSS_PASSWORD: ${NSS_PASSWORD:-auto_generated_ephemeral}
-      # FQDNs for certificate generation
+      # FQDNs for certificate generation (including client)
       BRIDGE_FQDN: ${BRIDGE_FQDN:-sigul-bridge.example.org}
       SERVER_FQDN: ${SERVER_FQDN:-sigul-server.example.org}
+      CLIENT_FQDN: ${CLIENT_FQDN:-sigul-client.example.org}
       # Certificate validity
       CA_VALIDITY_MONTHS: ${CA_VALIDITY_MONTHS:-120}
       CERT_VALIDITY_MONTHS: ${CERT_VALIDITY_MONTHS:-120}
@@ -47,9 +48,10 @@ services:
       DEBUG: ${DEBUG:-false}
     volumes:
       # FHS-compliant volume mounts for certificate generation
-      - sigul_shared_config:/etc/sigul:rw
+      # Bridge NSS volume - generates ALL certificates here
       - sigul_bridge_nss:/etc/pki/sigul/bridge:rw
-      - sigul_server_nss:/etc/pki/sigul/server:rw
+      # Shared config for configuration files
+      - sigul_shared_config:/etc/sigul:rw
     networks:
       - sigul-network
     restart: "no"
@@ -57,6 +59,7 @@ services:
     labels:
       org.sigul.component: "init"
       org.sigul.purpose: "certificate-initialization"
+      org.sigul.security: "pre-generates-all-certs-on-bridge"
 
   # Sigul Server Container
   sigul-server:
@@ -85,8 +88,9 @@ services:
       - sigul_server_data:/var/lib/sigul/server:rw
       - sigul_server_logs:/var/log/sigul/server:rw
       - sigul_server_run:/run/sigul/server:rw
-      # Server reads CA from bridge NSS volume
-      - sigul_bridge_nss:/etc/pki/sigul/bridge-shared:ro
+      # Server imports certificates from bridge (read-only access)
+      # Bridge exports: ca-export/, server-export/ (NO CA private key)
+      - sigul_bridge_nss:/etc/pki/sigul/bridge:ro
     networks:
       sigul-network:
         ipv4_address: 172.20.0.3
@@ -98,6 +102,13 @@ services:
         condition: service_completed_successfully
       sigul-bridge:
         condition: service_healthy
+    # Run certificate import before starting server
+    entrypoint:
+      - sh
+      - -c
+      - |
+        /usr/local/bin/init-server-certs.sh && \
+        exec /usr/local/bin/entrypoint.sh
 
 
   # Sigul Bridge Container
@@ -177,8 +188,9 @@ services:
       - sigul_client_config:/etc/sigul:rw
       - sigul_client_nss:/etc/pki/sigul/client:rw
       - sigul_client_data:/var/lib/sigul/client:rw
-      # Client reads CA from bridge NSS volume
-      - sigul_bridge_nss:/etc/pki/sigul/bridge-shared:ro
+      # Client imports certificates from bridge (read-only access)
+      # Bridge exports: ca-export/, client-export/ (NO CA private key)
+      - sigul_bridge_nss:/etc/pki/sigul/bridge:ro
     working_dir: /workspace
     networks:
       - sigul-network
@@ -189,6 +201,13 @@ services:
         condition: service_healthy
     profiles:
       - testing
+    # Run certificate import before starting client
+    entrypoint:
+      - sh
+      - -c
+      - |
+        /usr/local/bin/init-client-certs.sh && \
+        exec /usr/local/bin/entrypoint.sh
 
   # Bridge Monitor Sidecar (Passive Monitor v2)
   bridge-monitor:
@@ -312,10 +331,9 @@ services:
     container_name: sigul-network-tester
     volumes:
       - ./test-workspace:/debug/test-workspace:rw
-      - sigul_server_config:/debug/server-config:ro
+      - sigul_shared_config:/debug/shared-config:ro
       - sigul_server_nss:/debug/server-nss:ro
       - sigul_server_data:/debug/server-data:ro
-      - sigul_bridge_config:/debug/bridge-config:ro
       - sigul_bridge_nss:/debug/bridge-nss:ro
       - sigul_bridge_data:/debug/bridge-data:ro
       - sigul_client_config:/debug/client-config:ro
@@ -363,10 +381,9 @@ services:
     container_name: sigul-debug-helper
     volumes:
       - ./test-workspace:/debug/test-workspace:rw
-      - sigul_server_config:/debug/server-config:ro
+      - sigul_shared_config:/debug/shared-config:ro
       - sigul_server_nss:/debug/server-nss:ro
       - sigul_server_data:/debug/server-data:ro
-      - sigul_bridge_config:/debug/bridge-config:ro
       - sigul_bridge_nss:/debug/bridge-nss:ro
       - sigul_bridge_data:/debug/bridge-data:ro
       - sigul_client_config:/debug/client-config:ro
@@ -403,12 +420,30 @@ volumes:
     labels:
       description: "Shared configuration files for all components (/etc/sigul)"
       backup: "required"
+  # Sigul Bridge volumes (FHS-compliant)
+  sigul_bridge_nss:
+    driver: local
+    labels:
+      description: "Bridge NSS database - CA and all certificates (/etc/pki/sigul/bridge)"
+      backup: "critical"
+      security: "contains-ca-private-key"
+  sigul_bridge_data:
+    driver: local
+    labels:
+      description: "Bridge persistent data (/var/lib/sigul/bridge)"
+      backup: "required"
+  sigul_bridge_logs:
+    driver: local
+    labels:
+      description: "Bridge log files (/var/log/sigul/bridge)"
+      backup: "optional"
   # Sigul Server volumes (FHS-compliant)
   sigul_server_nss:
     driver: local
     labels:
       description: "Server NSS certificate database (/etc/pki/sigul/server)"
       backup: "required"
+      security: "no-ca-private-key"
   sigul_server_data:
     driver: local
     labels:
@@ -425,23 +460,6 @@ volumes:
       description: "Server runtime files (/run/sigul/server)"
       backup: "no"
 
-  # Sigul Bridge volumes (FHS-compliant)
-  sigul_bridge_nss:
-    driver: local
-    labels:
-      description: "Bridge NSS certificate database (/etc/pki/sigul/bridge)"
-      backup: "required"
-  sigul_bridge_data:
-    driver: local
-    labels:
-      description: "Bridge persistent data (/var/lib/sigul/bridge)"
-      backup: "required"
-  sigul_bridge_logs:
-    driver: local
-    labels:
-      description: "Bridge log files (/var/log/sigul/bridge)"
-      backup: "optional"
-
   # Sigul Client volumes (FHS-compliant) for testing
   sigul_client_config:
     driver: local
@@ -453,6 +471,7 @@ volumes:
     labels:
       description: "Client NSS certificate database (/etc/pki/sigul/client)"
       backup: "optional"
+      security: "no-ca-private-key"
   sigul_client_data:
     driver: local
     labels:
