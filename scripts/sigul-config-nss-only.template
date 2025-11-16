@@ -1,0 +1,223 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+
+# Sigul NSS-Only Configuration Template
+#
+# This template provides clean NSS-based configuration for all Sigul components
+# without any legacy PEM file references. All certificates are managed through
+# NSS databases with proper nicknames.
+#
+# Key Design Principles:
+# - NSS database paths with sql: prefix
+# - Certificate nicknames instead of file paths
+# - Consistent directory structure across components
+# - No PEM file references
+#
+# Template Variables:
+#   ${SIGUL_ROLE}           - Component role (bridge|server|client)
+#   ${CONFIG_DIR}           - Configuration directory (/etc/sigul)
+#   ${NSS_BASE_DIR}         - NSS database base directory (/etc/pki/sigul)
+#   ${DATA_BASE_DIR}        - Data directory (/var/lib/sigul)
+#   ${LOGS_DIR}             - Log directory (/var/log/sigul)
+#   ${NSS_PASSWORD_FILE}    - NSS database password file path
+#   ${BRIDGE_HOSTNAME}      - Bridge hostname for connections
+#   ${BRIDGE_CLIENT_PORT}   - Bridge client port (44334)
+#   ${BRIDGE_SERVER_PORT}   - Bridge server port (44333)
+
+#######################################
+# Bridge Configuration (NSS-Only)
+#######################################
+
+[bridge-server]
+# NSS database configuration
+nss-dir = sql:${NSS_BASE_DIR}/bridge
+nss-password-file = ${NSS_PASSWORD_FILE}
+
+# Certificate nicknames (NSS-based)
+ca-cert-nickname = sigul-ca
+bridge-cert-nickname = sigul-bridge-cert
+
+# Network configuration
+server-listen-address = 0.0.0.0
+server-listen-port = ${BRIDGE_SERVER_PORT}
+client-listen-address = 0.0.0.0
+client-listen-port = ${BRIDGE_CLIENT_PORT}
+
+# Security settings
+require-tls = true
+max-file-payload-size = 67108864
+
+# Logging
+log-level = INFO
+log-file = ${LOGS_DIR}/bridge/bridge.log
+
+[bridge-client]
+# NSS database configuration
+nss-dir = sql:${NSS_BASE_DIR}/bridge
+nss-password-file = ${NSS_PASSWORD_FILE}
+
+# Certificate nicknames (NSS-based)
+ca-cert-nickname = sigul-ca
+bridge-cert-nickname = sigul-bridge-cert
+
+# Security settings
+require-tls = true
+
+# Logging
+log-level = INFO
+log-file = ${LOGS_DIR}/bridge/bridge.log
+
+#######################################
+# Server Configuration (NSS-Only)
+#######################################
+
+[server]
+# Database configuration
+database-path = ${DATA_BASE_DIR}/server/sigul.db
+
+# NSS database configuration
+nss-dir = sql:${NSS_BASE_DIR}/server
+nss-password-file = ${NSS_PASSWORD_FILE}
+
+# Certificate nicknames (NSS-based)
+ca-cert-nickname = sigul-ca
+server-cert-nickname = sigul-server-cert
+
+# Bridge connection settings
+bridge-hostname = ${BRIDGE_HOSTNAME}
+bridge-port = ${BRIDGE_SERVER_PORT}
+
+# Security settings
+require-tls = true
+
+# Key storage
+gnupg-home = ${DATA_BASE_DIR}/server/gnupg
+
+# Logging
+log-level = INFO
+log-file = ${LOGS_DIR}/server/server.log
+
+#######################################
+# Client Configuration (NSS-Only)
+#######################################
+
+[client]
+# NSS database configuration
+nss-dir = sql:${NSS_BASE_DIR}/client
+nss-password-file = ${NSS_PASSWORD_FILE}
+
+# Certificate nicknames (NSS-based)
+ca-cert-nickname = sigul-ca
+client-cert-nickname = sigul-client-cert
+
+# Bridge connection settings
+bridge-hostname = ${BRIDGE_HOSTNAME}
+bridge-port = ${BRIDGE_CLIENT_PORT}
+
+# Security settings
+require-tls = true
+
+# User settings
+user-name = ${SIGUL_ADMIN_USER}
+
+# Logging
+log-level = INFO
+log-file = ${LOGS_DIR}/client/client.log
+
+#######################################
+# NSS Database Management
+#######################################
+
+# Standard NSS database initialization
+# Commands used by setup scripts:
+#
+# Create NSS database:
+#   certutil -N -d sql:${NSS_BASE_DIR}/${COMPONENT} -f ${NSS_PASSWORD_FILE}
+#
+# Import CA certificate:
+#   certutil -A -d sql:${NSS_BASE_DIR}/${COMPONENT} -n sigul-ca -t "CT,C,C" -i ${CA_CERT_FILE} -f ${NSS_PASSWORD_FILE}
+#
+# Generate component certificate:
+#   certutil -S -d sql:${NSS_BASE_DIR}/${COMPONENT} -n sigul-${COMPONENT}-cert -s "CN=sigul-${COMPONENT}" -c sigul-ca -t "u,u,u" -f ${NSS_PASSWORD_FILE}
+#
+# List certificates:
+#   certutil -L -d sql:${NSS_BASE_DIR}/${COMPONENT}
+#
+# Verify certificate:
+#   certutil -V -d sql:${NSS_BASE_DIR}/${COMPONENT} -n sigul-${COMPONENT}-cert -u S -f ${NSS_PASSWORD_FILE}
+
+#######################################
+# Directory Structure (NSS-Only)
+#######################################
+
+# Expected directory layout (FHS-compliant):
+# /etc/sigul/              # Configuration files
+# │   ├── bridge.conf      # Generated from this template
+# │   ├── server.conf      # Generated from this template
+# │   └── client.conf      # Generated from this template
+#
+# /etc/pki/sigul/          # NSS certificate databases
+# │   ├── bridge/          # Bridge NSS database
+# │   │   ├── cert9.db
+# │   │   ├── key4.db
+# │   │   └── pkcs11.txt
+# │   ├── server/          # Server NSS database
+# │   │   ├── cert9.db
+# │   │   ├── key4.db
+# │   │   └── pkcs11.txt
+# │   └── client/          # Client NSS database
+# │       ├── cert9.db
+# │       ├── key4.db
+# │       └── pkcs11.txt
+#
+# /var/lib/sigul/          # Persistent data
+# │   ├── secrets/
+# │   │   └── nss-password # NSS database password
+# │   ├── bridge/
+# │   ├── server/
+# │   │   ├── gnupg/       # GPG keyring directory
+# │   │   └── sigul.db     # SQLite database
+# │   └── client/
+#
+# /var/log/sigul/          # Log files
+# │   ├── bridge/
+# │   │   └── bridge.log
+# │   ├── server/
+# │   │   └── server.log
+# │   └── client/
+# │       └── client.log
+#
+# /run/sigul/              # Runtime files (tmpfs)
+# │   ├── bridge/
+# │   └── server/
+# │       └── server.pid
+
+#######################################
+# Certificate Nicknames (NSS Standard)
+#######################################
+
+# Standard certificate nicknames used across all components:
+#   sigul-ca           - Root CA certificate (all components)
+#   sigul-bridge-cert  - Bridge service certificate
+#   sigul-server-cert  - Server service certificate
+#   sigul-client-cert  - Client authentication certificate
+
+# Trust flags:
+#   CA certificates:     "CT,C,C" (Certificate Authority, trusted for SSL)
+#   Service certificates: "u,u,u"  (User certificate for SSL)
+
+#######################################
+# Health Check Commands (NSS-Only)
+#######################################
+
+# Bridge health check:
+#   certutil -d sql:${NSS_BASE_DIR}/bridge -L -n sigul-ca >/dev/null 2>&1
+#   certutil -d sql:${NSS_BASE_DIR}/bridge -L -n sigul-bridge-cert >/dev/null 2>&1
+#
+# Server health check:
+#   certutil -d sql:${NSS_BASE_DIR}/server -L -n sigul-ca >/dev/null 2>&1
+#   certutil -d sql:${NSS_BASE_DIR}/server -L -n sigul-server-cert >/dev/null 2>&1
+#
+# Client health check:
+#   certutil -d sql:${NSS_BASE_DIR}/client -L -n sigul-ca >/dev/null 2>&1
+#   certutil -d sql:${NSS_BASE_DIR}/client -L -n sigul-client-cert >/dev/null 2>&1

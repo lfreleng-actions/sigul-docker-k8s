@@ -1,0 +1,439 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+
+# Docker Compose file for Sigul Infrastructure Testing
+#
+# This compose file sets up a complete Sigul infrastructure for testing
+# using the unified sigul-init.sh approach for all components:
+# - Sigul Server (with SQLite database)
+# - Sigul Bridge
+# - Test environment for Sigul Client
+#
+# Key design principles:
+# - All containers use unified /var/sigul directory structure
+# - Clean NSS certificate management
+# - Each container initializes itself with NSS-only approach
+# - Consistent UID/GID 1000 (sigul user) across all containers
+#
+# Usage:
+#   docker compose -f docker-compose.sigul.yml up -d
+#   docker compose -f docker-compose.sigul.yml down
+
+# yamllint disable rule:line-length
+
+services:
+  # Sigul Server Container
+  sigul-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: sigul-server
+    hostname: sigul-server.example.org
+    user: "1000:1000"
+    environment:
+      # NSS Database password for secure operation
+      NSS_PASSWORD: ${NSS_PASSWORD:-auto_generated_ephemeral}
+      # Admin user configuration
+      SIGUL_ADMIN_PASSWORD: ${SIGUL_ADMIN_PASSWORD:-auto_generated_ephemeral}
+      SIGUL_ADMIN_USER: ${SIGUL_ADMIN_USER:-admin}
+      # Debug mode
+      DEBUG: ${DEBUG:-false}
+      # Role for unified initialization
+      SIGUL_ROLE: server
+      # FQDN for certificate generation
+      SERVER_FQDN: ${SERVER_FQDN:-sigul-server.example.org}
+    volumes:
+      # FHS-compliant volume mounts
+      - sigul_server_config:/etc/sigul:rw
+      - sigul_server_nss:/etc/pki/sigul/server:rw
+      - sigul_server_data:/var/lib/sigul/server:rw
+      - sigul_server_logs:/var/log/sigul/server:rw
+      - sigul_server_run:/run/sigul/server:rw
+      # Server reads CA from bridge NSS volume
+      - sigul_bridge_nss:/etc/pki/sigul/bridge-shared:ro
+    networks:
+      sigul-network:
+        ipv4_address: 172.20.0.3
+        aliases:
+          - sigul-server.example.org
+          - sigul-server
+    depends_on:
+      sigul-bridge:
+        condition: service_healthy
+
+
+  # Sigul Bridge Container
+  sigul-bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.bridge
+    container_name: sigul-bridge
+    hostname: sigul-bridge.example.org
+    user: "1000:1000"
+    environment:
+      # Bridge port configuration
+      SIGUL_BRIDGE_CLIENT_PORT: 44334
+      SIGUL_BRIDGE_SERVER_PORT: 44333
+      # NSS Database password for secure operation
+      NSS_PASSWORD: ${NSS_PASSWORD:-auto_generated_ephemeral}
+      # Debug mode
+      DEBUG: ${DEBUG:-false}
+      # Role for unified initialization
+      SIGUL_ROLE: bridge
+      # FQDN for certificate generation
+      BRIDGE_FQDN: ${BRIDGE_FQDN:-sigul-bridge.example.org}
+    volumes:
+      # FHS-compliant volume mounts
+      - sigul_bridge_config:/etc/sigul:rw
+      - sigul_bridge_nss:/etc/pki/sigul/bridge:rw
+      - sigul_bridge_data:/var/lib/sigul/bridge:rw
+      - sigul_bridge_logs:/var/log/sigul/bridge:rw
+    ports:
+      - "44333:44333"
+      - "44334:44334"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "44333"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      sigul-network:
+        ipv4_address: 172.20.0.2
+        aliases:
+          - sigul-bridge.example.org
+          - sigul-bridge
+    security_opt:
+      - no-new-privileges:true
+
+  # Sigul Client Test Environment
+  sigul-client-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    container_name: sigul-client-test
+    hostname: sigul-client-test
+    user: "1000:1000"
+    environment:
+      # Client configuration
+      SIGUL_ROLE: client
+      SIGUL_BRIDGE_HOSTNAME: sigul-bridge
+      SIGUL_BRIDGE_CLIENT_PORT: 44334
+      SIGUL_MOCK_MODE: 'false'
+      # NSS Database password for secure operation
+      NSS_PASSWORD: ${NSS_PASSWORD:-auto_generated_ephemeral}
+      # Debug mode
+      DEBUG: ${DEBUG:-false}
+      # FQDN for certificate generation
+      CLIENT_FQDN: ${CLIENT_FQDN:-sigul-client.example.org}
+    volumes:
+      # Test workspace for file operations
+      - ./test-workspace:/workspace:rw
+      # FHS-compliant volume mounts
+      - sigul_client_config:/etc/sigul:rw
+      - sigul_client_nss:/etc/pki/sigul/client:rw
+      - sigul_client_data:/var/lib/sigul/client:rw
+      # Client reads CA from bridge NSS volume
+      - sigul_bridge_nss:/etc/pki/sigul/bridge-shared:ro
+    working_dir: /workspace
+    networks:
+      - sigul-network
+    depends_on:
+      sigul-bridge:
+        condition: service_healthy
+    profiles:
+      - testing
+
+  # Bridge Monitor Sidecar (Passive Monitor v2)
+  bridge-monitor:
+    image: alpine:3.19
+    container_name: sigul-bridge-monitor
+    hostname: bridge-monitor
+    user: "1000:1000"
+    environment:
+      MONITOR_TARGET: bridge
+      MONITOR_INTERVAL: 30
+      MONITOR_OUTPUT_DIR: /monitor/heartbeats
+      SIGUL_CONTAINER_NAME: sigul-bridge
+      DEBUG: ${DEBUG:-false}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./scripts:/scripts:ro
+      - sigul_monitor_data:/monitor
+    networks:
+      - sigul-network
+    profiles:
+      - monitoring
+    restart: unless-stopped
+    depends_on:
+      - sigul-bridge
+    command: |
+      sh -c "
+        apk add --no-cache jq netcat-openbsd curl
+        chmod +x /scripts/sigul-monitor.sh
+        exec /scripts/sigul-monitor.sh --target bridge --debug
+      "
+
+  # Server Monitor Sidecar (Passive Monitor v2)
+  server-monitor:
+    image: alpine:3.19
+    container_name: sigul-server-monitor
+    hostname: server-monitor
+    user: "1000:1000"
+    environment:
+      MONITOR_TARGET: server
+      MONITOR_INTERVAL: 30
+      MONITOR_OUTPUT_DIR: /monitor/heartbeats
+      SIGUL_CONTAINER_NAME: sigul-server
+      DEBUG: ${DEBUG:-false}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./scripts:/scripts:ro
+      - sigul_monitor_data:/monitor
+    networks:
+      - sigul-network
+    profiles:
+      - monitoring
+    restart: unless-stopped
+    depends_on:
+      - sigul-server
+    command: |
+      sh -c "
+        apk add --no-cache jq netcat-openbsd curl
+        chmod +x /scripts/sigul-monitor.sh
+        exec /scripts/sigul-monitor.sh --target server --debug
+      "
+
+  # Sigul Infrastructure Health Monitor
+  health-monitor:
+    image: >-
+      alpine:3.19@sha256:3be987e6cde1d07e873c012bf6cfe941e6e85d16ca5fc5b8bedc675451d2de67
+    container_name: sigul-health-monitor
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - sigul-network
+    profiles:
+      - monitoring
+    restart: unless-stopped
+    command: |
+      sh -c "
+        apk add --no-cache curl netcat-openbsd jq
+        echo '[$(date)] Sigul Infrastructure Health Monitor Started'
+
+        while true; do
+          echo '[$(date)] === Health Check Report ==='
+
+          # Server Health Check (NSS-based)
+          echo -n '  Sigul Server (NSS certificate check): '
+          if docker exec sigul-server certutil -d sql:/etc/pki/sigul/server -L -n sigul-ca >/dev/null 2>&1 && \
+             docker exec sigul-server certutil -d sql:/etc/pki/sigul/server -L -n sigul-server-cert >/dev/null 2>&1; then
+            echo '✅ OK'
+          else
+            echo '❌ FAIL'
+          fi
+
+          # Sigul Bridge Health Check (NSS + Network)
+          echo -n '  Sigul Bridge (NSS + Network): '
+          if nc -z sigul-bridge 44334 2>/dev/null; then
+            echo '✅ OK (Network)'
+          else
+            echo '❌ FAIL (Network)'
+          fi
+
+          # Container Status Check
+          echo '  Container Status:'
+          docker ps --filter 'name=sigul' --format '    {{.Names}}: {{.Status}}' 2>/dev/null || echo '    Unable to check container status'
+
+          # Network Connectivity Test
+          echo -n '  Inter-service Network: '
+          if nc -z sigul-bridge 44334 2>/dev/null; then
+            echo '✅ OK'
+          else
+            echo '❌ FAIL'
+          fi
+
+          echo '  ==================================='
+          echo ''
+          sleep 60
+        done
+      "
+
+  # Network Testing and Debug Helper Container
+  network-tester:
+    image: >-
+      alpine:3.19@sha256:3be987e6cde1d07e873c012bf6cfe941e6e85d16ca5fc5b8bedc675451d2de67
+    container_name: sigul-network-tester
+    volumes:
+      - ./test-workspace:/debug/test-workspace:rw
+      - sigul_server_config:/debug/server-config:ro
+      - sigul_server_nss:/debug/server-nss:ro
+      - sigul_server_data:/debug/server-data:ro
+      - sigul_bridge_config:/debug/bridge-config:ro
+      - sigul_bridge_nss:/debug/bridge-nss:ro
+      - sigul_bridge_data:/debug/bridge-data:ro
+      - sigul_client_config:/debug/client-config:ro
+      - sigul_client_nss:/debug/client-nss:ro
+      - sigul_client_data:/debug/client-data:ro
+    networks:
+      - sigul-network
+    profiles:
+      - debug
+      - testing
+    restart: "no"
+    command:
+      - sh
+      - -c
+      - |
+        apk add --no-cache curl netcat-openbsd openssl file bind-tools
+        echo '[$(date)] Network Testing Container Started'
+        echo 'Container hostname: $(hostname)'
+        echo 'Container IP: $(hostname -i 2>/dev/null || echo unknown)'
+        echo ''
+        echo 'Running NSS-based network tests...'
+        echo ''
+        echo "Testing network connectivity to sigul services..."
+        echo "✓ Server connects to bridge (no listening port)"
+        nc -z sigul-bridge 44334 && echo "✓ Bridge reachable" || echo "✗ Bridge unreachable"
+        echo ''
+        echo 'Network tests completed. Container will remain running for manual testing.'
+        echo ''
+        echo 'Available manual commands (NSS-only):'
+        echo '  - Test network connectivity: nc -z <service> <port>'
+        echo '  - Check NSS certificates: certutil -L -d sql:/debug/server-nss'
+        echo '  - View configurations: cat /debug/server-config/<config>'
+        echo '  - Test connectivity: nc -z <service> <port>'
+        echo ''
+        echo 'Services to test:'
+        echo '  - sigul-bridge:44334 (bridge listens for connections)'
+        echo '  - sigul-server: NSS certificate check only (connects to bridge)'
+        echo ''
+        tail -f /dev/null
+
+  # Development and Debug Helper Container
+  debug-helper:
+    image: >-
+      alpine:3.19@sha256:3be987e6cde1d07e873c012bf6cfe941e6e85d16ca5fc5b8bedc675451d2de67
+    container_name: sigul-debug-helper
+    volumes:
+      - ./test-workspace:/debug/test-workspace:rw
+      - sigul_server_config:/debug/server-config:ro
+      - sigul_server_nss:/debug/server-nss:ro
+      - sigul_server_data:/debug/server-data:ro
+      - sigul_bridge_config:/debug/bridge-config:ro
+      - sigul_bridge_nss:/debug/bridge-nss:ro
+      - sigul_bridge_data:/debug/bridge-data:ro
+      - sigul_client_config:/debug/client-config:ro
+      - sigul_client_nss:/debug/client-nss:ro
+      - sigul_client_data:/debug/client-data:ro
+    networks:
+      - sigul-network
+    profiles:
+      - debug
+    restart: "no"
+    command:
+      - sh
+      - -c
+      - |
+        apk add --no-cache curl netcat-openbsd openssl file
+        echo '[$(date)] Debug Helper Container Started (NSS-Only)'
+        echo 'Available commands:'
+        echo '  - Test network connectivity: nc -z <service> <port>'
+        echo '  - Check NSS certificates: certutil -L -d sql:/debug/server-nss'
+        echo '  - List NSS certificates: certutil -L -d sql:/debug/server-nss'
+        echo '  - View configurations: cat /debug/server-config/<config>'
+        echo '  - Inspect volumes: ls -la /debug/<volume>/'
+        echo ''
+        echo 'Services available:'
+        echo '  - sigul-bridge:44334 (bridge listens for connections)'
+        echo '  - sigul-server: NSS certificate check only (connects to bridge)'
+        echo ''
+        tail -f /dev/null
+
+volumes:
+  # Sigul Server volumes (FHS-compliant)
+  sigul_server_config:
+    driver: local
+    labels:
+      description: "Server configuration files (/etc/sigul)"
+      backup: "required"
+  sigul_server_nss:
+    driver: local
+    labels:
+      description: "Server NSS certificate database (/etc/pki/sigul/server)"
+      backup: "required"
+  sigul_server_data:
+    driver: local
+    labels:
+      description: "Server persistent data (/var/lib/sigul/server)"
+      backup: "required"
+  sigul_server_logs:
+    driver: local
+    labels:
+      description: "Server log files (/var/log/sigul/server)"
+      backup: "optional"
+  sigul_server_run:
+    driver: local
+    labels:
+      description: "Server runtime files (/run/sigul/server)"
+      backup: "no"
+
+  # Sigul Bridge volumes (FHS-compliant)
+  sigul_bridge_config:
+    driver: local
+    labels:
+      description: "Bridge configuration files (/etc/sigul)"
+      backup: "required"
+  sigul_bridge_nss:
+    driver: local
+    labels:
+      description: "Bridge NSS certificate database (/etc/pki/sigul/bridge)"
+      backup: "required"
+  sigul_bridge_data:
+    driver: local
+    labels:
+      description: "Bridge persistent data (/var/lib/sigul/bridge)"
+      backup: "required"
+  sigul_bridge_logs:
+    driver: local
+    labels:
+      description: "Bridge log files (/var/log/sigul/bridge)"
+      backup: "optional"
+
+  # Sigul Client volumes (FHS-compliant) for testing
+  sigul_client_config:
+    driver: local
+    labels:
+      description: "Client configuration files (/etc/sigul)"
+      backup: "optional"
+  sigul_client_nss:
+    driver: local
+    labels:
+      description: "Client NSS certificate database (/etc/pki/sigul/client)"
+      backup: "optional"
+  sigul_client_data:
+    driver: local
+    labels:
+      description: "Client persistent data (/var/lib/sigul/client)"
+      backup: "optional"
+
+  # Monitor data directory for heartbeat files
+  sigul_monitor_data:
+    driver: local
+    labels:
+      description: "Monitor heartbeat data"
+      backup: "no"
+
+networks:
+  sigul-network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.20.0.0/16
+          gateway: 172.20.0.1
+    enable_ipv6: false
+    labels:
+      org.sigul.network.purpose: "testing"
+      org.sigul.network.version: "unified"

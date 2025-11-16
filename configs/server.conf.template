@@ -1,0 +1,74 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+
+# Sigul Server Configuration Template
+# Production-aligned configuration structure
+#
+# This template matches the production configuration from AWS deployment
+# extracted on 2025-11-16. It uses FHS-compliant paths and production
+# configuration patterns.
+#
+# Template variables:
+#   ${NSS_PASSWORD} - NSS database password (will be substituted)
+#   ${SERVER_FQDN} - Server fully qualified domain name
+#   ${BRIDGE_FQDN} - Bridge fully qualified domain name
+#   ${BRIDGE_PORT} - Bridge port (default: 44333)
+
+[server]
+# Bridge connection details
+# Production: Bridge hostname and port for server connection
+bridge-hostname: ${BRIDGE_FQDN}
+bridge-port: ${BRIDGE_PORT}
+
+# Payload size limits (matching production)
+# Production values from AWS deployment
+max-file-payload-size: 1073741824
+max-memory-payload-size: 1048576
+max-rpms-payload-size: 10737418240
+
+# Certificate nickname must match the FQDN in the NSS database
+# Production pattern: Use FQDN as certificate nickname
+server-cert-nickname: ${SERVER_FQDN}
+
+# Signing timeout in seconds
+# Production: 60 seconds
+signing-timeout: 60
+
+[database]
+# SQLite database location (FHS-compliant)
+# Production: /var/lib/sigul/server.sqlite
+database-path: /var/lib/sigul/server/sigul.db
+
+[gnupg]
+# GnuPG configuration directory (FHS-compliant)
+# Production: /var/lib/sigul/gnupg
+gnupg-home: /var/lib/sigul/server/gnupg
+
+# Key generation parameters
+# Production: RSA 2048-bit signing keys
+gnupg-key-type: RSA
+gnupg-key-length: 2048
+gnupg-key-usage: sign
+
+# Passphrase generation
+# Production: 64-character passphrases
+passphrase-length: 64
+
+[daemon]
+# User and group for privilege dropping
+# Production: sigul user and group
+unix-user: sigul
+unix-group: sigul
+
+[nss]
+# NSS database directory (FHS-compliant)
+# Production: /etc/pki/sigul
+nss-dir: /etc/pki/sigul
+
+# NSS password stored directly in config file
+# Production pattern: Password embedded in config (not external file)
+nss-password: ${NSS_PASSWORD}
+
+# TLS version constraints (modern TLS only)
+# Production: TLS 1.2 minimum, no upper limit (containers support TLS 1.3)
+nss-min-tls: tls1.2

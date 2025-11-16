@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+
+
+# Logging and output formatting
+colorama>=0.4.4,<1.0.0
+configparser>=5.3.0,<6.0.0
+
+# Docker integration
+docker>=6.0.0,<7.0.0
+ipython>=8.0.0,<9.0.0
+
+# Development and debugging
+pdbpp>=0.10.3,<1.0.0; python_version >= "3.7"
+
+# Process and system utilities
+psutil>=5.9.0,<6.0.0
+# Integration Test Dependencies for Sigul Stack
+#
+# This file specifies the Python dependencies required for running
+# the comprehensive integration tests for the Sigul signing infrastructure.
+#
+# Install with:
+#   pip install -r tests/integration/requirements.txt
+#
+# Or in a virtual environment:
+#   python3 -m venv test-env
+#   source test-env/bin/activate
+#   pip install -r tests/integration/requirements.txt
+
+# Core testing framework
+pytest>=7.0.0,<8.0.0
+pytest-cov>=4.0.0,<5.0.0
+pytest-html>=3.1.0,<4.0.0
+
+# Optional: For advanced test reporting
+pytest-json-report>=1.5.0,<2.0.0
+
+# Optional: For parallel test execution
+pytest-parallel>=0.1.1,<1.0.0
+pytest-timeout>=2.1.0,<3.0.0
+pytest-xdist>=3.0.0,<4.0.0
+
+# Date and time utilities
+python-dateutil>=2.8.0,<3.0.0
+
+# Configuration and data handling
+PyYAML>=5.3.0,<6.0
+
+# HTTP requests for health checks
+requests>=2.28.0,<3.0.0
+rich>=12.0.0,<14.0.0
+urllib3>=1.26.0,<2.0.0

@@ -1,0 +1,84 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+
+# Temporary and binary files
+public-key.asc
+artifacts/
+test-integration-workspace/
+*~
+*.py[cod]
+*.so
+*.cfg
+!.isort.cfg
+!setup.cfg
+*.orig
+*.log
+*.pot
+__pycache__/*
+.cache/*
+.*.swp
+*/.ipynb_checkpoints/*
+.DS_Store
+
+# Project files
+.ropeproject
+.project
+.pydevproject
+.settings
+.idea
+.vscode
+tags
+
+# Package files
+*.egg
+*.eggs/
+.installed.cfg
+*.egg-info
+
+# Unittest and coverage
+htmlcov/*
+.coverage
+.coverage.*
+.tox
+junit*.xml
+coverage.xml
+.pytest_cache/
+
+# Build and docs folder/files
+build/*
+dist/*
+sdist/*
+docs/api/*
+docs/_rst/*
+docs/_build/*
+cover/*
+MANIFEST
+
+# Per-project virtualenvs
+.venv*/
+.conda*/
+.python-version
+
+# Node
+node_modules/*
+# PKI files - NSS certificate management
+# Allow configuration templates and documentation
+!pki/*.conf.template
+!pki/README.md
+# Ignore any generated files
+pki/client-pki-encrypted.asc
+
+# Generated test directories and artifacts (should not be committed)
+test-artifacts/
+test-workspace/
+
+# Ephemeral environment files with dynamic passwords (should not be committed)
+.env
+.env.*
+*.conf.backup.*
+/tmp/nss_password*.tmp
+
+# NSS databases (generated at runtime)
+nss/*/cert9.db
+nss/*/key4.db
+nss/*/pkcs11.txt

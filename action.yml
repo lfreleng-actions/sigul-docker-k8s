@@ -1,0 +1,123 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+
+name: "sigul-sign-docker"
+description: "Sign artifacts with Sigul"
+
+inputs:
+  sign-type:
+    description: "Either 'sign-data' or 'sign-git-tag'"
+    required: false
+    default: "sign-data"
+  sign-object:
+    description: "File or git tag to sign"
+    required: true
+  sigul-ip:
+    description: "IP address of sigul server"
+    required: true
+  sigul-uri:
+    description: "URI of sigul server"
+    required: true
+  sigul-conf:
+    description: "Config file for sigul connection"
+    required: true
+  sigul-key-name:
+    description: "The key name on the server to utilize"
+    required: true
+  sigul-pass:
+    description: "Password for sigul connection"
+    required: true
+  sigul-pki:
+    description: "PKI info for sigul connection"
+    required: true
+  gh-user:
+    description: "GitHub user for pushing signed tags"
+    required: false
+  gh-key:
+    description: "GitHub API key for pushing signed tags"
+    required: false
+  sigul-mock-mode:
+    description: "Mock mode testing (operates without a Sigul server)"
+    required: false
+    default: "false"
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Set GitHub user default"
+      shell: bash
+      run: |
+        if [[ -z "${{ inputs.gh-user }}" ]]; then
+          echo "GH_USER=${{ github.actor }}" >> $GITHUB_ENV
+        else
+          echo "GH_USER=${{ inputs.gh-user }}" >> $GITHUB_ENV
+        fi
+
+    - name: "Detect platform architecture"
+      shell: bash
+      run: |
+        # Detect the current platform architecture
+        ARCH=$(uname -m)
+        case "$ARCH" in
+          x86_64)
+            PLATFORM="linux/amd64"
+            PLATFORM_ID="linux-amd64"
+            ;;
+          aarch64|arm64)
+            PLATFORM="linux/arm64"
+            PLATFORM_ID="linux-arm64"
+            ;;
+          *)
+            echo "❌ Unsupported architecture: $ARCH"
+            exit 1
+            ;;
+        esac
+        echo "PLATFORM=$PLATFORM" >> $GITHUB_ENV
+        echo "PLATFORM_ID=$PLATFORM_ID" >> $GITHUB_ENV
+        echo "Detected platform: $PLATFORM ($PLATFORM_ID)"
+
+    - name: "Build sigul signing container"
+      shell: bash
+      run: |
+        CLIENT_IMAGE="client-${PLATFORM_ID}-image"
+        CLIENT_TAG="client-${PLATFORM_ID}-image:${PLATFORM_ID}"
+        CLIENT_ACTION_TAG="client-${PLATFORM_ID}-image:action"
+
+        # Check if the container image already exists
+        if docker images --format "table {{.Repository}}:{{.Tag}}" |\
+          grep -q "${CLIENT_TAG}"; then
+          echo "Docker image '${CLIENT_TAG}' already exists"
+          echo "Tagging as '${CLIENT_ACTION_TAG}'"
+          docker tag "${CLIENT_TAG}" "${CLIENT_ACTION_TAG}"
+        elif docker images --format "table {{.Repository}}:{{.Tag}}" |\
+          grep -q "${CLIENT_ACTION_TAG}"; then
+          echo "Docker image '${CLIENT_ACTION_TAG}' already exists"
+          echo "Skipping build"
+        else
+          echo "Docker image not found, building new image for ${PLATFORM}"
+          docker build --platform "${PLATFORM}" \
+            -f "${{ github.action_path }}/Dockerfile.client" \
+            -t "${CLIENT_ACTION_TAG}" "${{ github.action_path }}"
+        fi
+
+    - name: "Run sigul signing container"
+      shell: bash
+      run: |
+        docker run --rm --platform "${PLATFORM}" \
+          -e "SIGN_TYPE=${{ inputs.sign-type }}" \
+          -e "SIGN_OBJECT=${{ inputs.sign-object }}" \
+          -e "SIGUL_IP=${{ inputs.sigul-ip }}" \
+          -e "SIGUL_URI=${{ inputs.sigul-uri }}" \
+          -e "SIGUL_CONF=${{ inputs.sigul-conf }}" \
+          -e "SIGUL_KEY_NAME=${{ inputs.sigul-key-name }}" \
+          -e "SIGUL_PASS=${{ inputs.sigul-pass }}" \
+          -e "SIGUL_PKI=${{ inputs.sigul-pki }}" \
+          -e "GH_USER=${GH_USER}" \
+          -e "GH_KEY=${{ inputs.gh-key }}" \
+          -e "SIGUL_MOCK_MODE=${{ inputs.sigul-mock-mode }}" \
+          -e "GITHUB_WORKSPACE=${GITHUB_WORKSPACE}" \
+          -e "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}" \
+          -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" \
+          -w "${GITHUB_WORKSPACE}" \
+          "client-${PLATFORM_ID}-image:action"

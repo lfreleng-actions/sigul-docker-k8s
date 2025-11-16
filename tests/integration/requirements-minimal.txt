@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+
+
+# Output formatting
+colorama>=0.4.4,<1.0.0
+
+# Docker integration
+docker>=6.0.0,<7.0.0
+
+# Process utilities
+psutil>=5.9.0,<6.0.0
+# Minimal Integration Test Dependencies for Sigul Stack
+#
+# This file contains only the essential dependencies required for running
+# the integration tests, avoiding complex dependency conflicts.
+
+# Core testing framework
+pytest>=7.0.0,<8.0.0
+pytest-timeout>=2.1.0,<3.0.0
+
+# HTTP requests for health checks
+requests>=2.28.0,<3.0.0

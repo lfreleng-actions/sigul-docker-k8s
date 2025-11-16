@@ -1,0 +1,81 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+
+# Docker build context optimization
+# Exclude files that don't need to be in the build context
+
+# Git and version control
+.git/
+.gitignore
+.gitlint
+
+# GitHub workflows and configs (not needed in containers)
+.github/
+.readthedocs.yml
+.pre-commit-config.yaml
+
+# Documentation
+docs/
+*.md
+README*
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build artifacts and caches
+*.tar.gz
+*.tar
+*.zip
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+
+# Test artifacts (keep pki for builds but exclude test artifacts)
+test-artifacts/
+*.log
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+
+# OS specific files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local development files
+.env
+.env.local
+*.local
+
+# Container runtime files
+docker-compose.override.yml
+
+# Linting and code quality
+.yamllint
+.codespell
+REUSE.toml
+
+# License files (included via COPY if needed)
+LICENSES/
+LICENSE
+
+# Keep essential files:
+# - Dockerfile*
+# - entrypoint.sh
+# - action.yml
+# - scripts/
+# - configs/
+# - pki/ (needed for builds)
+# - test-metadata/ (may be needed)

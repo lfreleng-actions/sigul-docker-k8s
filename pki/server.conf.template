@@ -1,0 +1,132 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+
+# Sigul Server Configuration - NSS Based
+# This configuration uses NSS databases for certificate management
+# and inherits CA capabilities from the bridge component.
+
+[server]
+# Bridge connection configuration
+bridge-hostname = sigul-bridge
+bridge-port = 44333
+max-file-payload-size = 2097152
+
+# Server listening configuration
+# Note: Server doesn't listen directly - communicates through bridge
+server-hostname = sigul-server
+
+# Database Configuration - SQLite for Sigul data
+[database]
+# Main Sigul database path (corrected from /var/lib/sigul)
+database-path = /var/sigul/database/sigul.db
+
+# Database connection pool settings
+max-connections = 20
+connection-timeout = 30
+
+# NSS Configuration for certificate management
+[nss]
+# NSS database directory (contains cert9.db, key4.db, pkcs11.txt)
+nss-dir = /var/sigul/nss/server
+
+# NSS database password file
+nss-password-file = /var/sigul/secrets/nss-password
+
+# Certificate nickname for server service certificate
+server-cert-nickname = sigul-server-cert
+
+# CA certificate nickname (inherited from bridge)
+ca-cert-nickname = sigul-ca
+
+# Enable TLS requirement
+require-tls = true
+
+# FIPS mode (set to false for testing, true for production)
+fips-mode = false
+
+[daemon]
+uid = sigul
+gid = sigul
+
+# Process management
+pidfile = /var/run/sigul/server.pid
+daemonize = false
+
+# Logging configuration
+[logging]
+# Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+log-level = INFO
+
+# Log file location
+log-file = /var/log/sigul/server.log
+
+# Enable console logging
+console-logging = true
+
+# Log rotation settings
+log-max-size = 10MB
+log-backup-count = 5
+
+# Security settings
+[security]
+# Enable certificate verification
+verify-certificates = true
+
+# Allowed client certificate subjects (regex patterns)
+allowed-client-subjects = ^CN=.*,O=Sigul Infrastructure,OU=Client$
+
+# Session timeout in seconds
+session-timeout = 3600
+
+# Maximum signing operations per session
+max-operations-per-session = 1000
+
+# GPG configuration for signing operations
+[gpg]
+# GPG home directory
+gnupg-home = /var/sigul/gnupg
+
+# Default GPG key ID for signing (will be configured during setup)
+default-key-id =
+
+# GPG executable path
+gpg-executable = /usr/bin/gpg2
+
+# Performance tuning
+[performance]
+# Worker thread pool size for signing operations
+worker-threads = 2
+
+# Buffer size for file transfers
+buffer-size = 8192
+
+# Maximum concurrent signing operations
+max-concurrent-operations = 5
+
+# Signing operation timeout in seconds
+operation-timeout = 300
+
+# Client certificate management
+[client-management]
+# Enable automatic client certificate creation
+auto-create-client-certs = true
+
+# Default client certificate validity in days
+client-cert-validity = 365
+
+# Client certificate key size
+client-cert-key-size = 2048
+
+# Backup and recovery
+[backup]
+# Enable automatic database backups
+enable-backups = true
+
+# Backup directory
+backup-dir = /var/sigul/backups
+
+# Backup retention period in days
+backup-retention = 30
+
+# Backup frequency in hours
+backup-frequency = 24

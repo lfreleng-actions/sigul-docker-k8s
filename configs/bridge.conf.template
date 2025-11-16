@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+
+# Sigul Bridge Configuration Template
+# Production-aligned configuration structure
+#
+# This template matches the production configuration from AWS deployment
+# extracted on 2025-11-16. It uses FHS-compliant paths and production
+# configuration patterns.
+#
+# Template variables:
+#   ${NSS_PASSWORD} - NSS database password (will be substituted)
+#   ${BRIDGE_FQDN} - Bridge fully qualified domain name
+#   ${CLIENT_PORT} - Client-facing port (default: 44334)
+#   ${SERVER_PORT} - Server-facing port (default: 44333)
+
+[bridge]
+# Certificate nickname must match the FQDN in the NSS database
+# Production pattern: Use FQDN as certificate nickname
+bridge-cert-nickname: ${BRIDGE_FQDN}
+
+# Client-facing port (for sigul client connections)
+client-listen-port: ${CLIENT_PORT}
+
+# Server-facing port (for sigul_server connections)
+server-listen-port: ${SERVER_PORT}
+
+[koji]
+# Koji integration section
+# Production: This section is present but empty (Koji not used)
+
+[daemon]
+# User and group for privilege dropping
+# Production: sigul user and group
+unix-user: sigul
+unix-group: sigul
+
+[nss]
+# NSS database directory (FHS-compliant)
+# Production: /etc/pki/sigul
+nss-dir: /etc/pki/sigul
+
+# NSS password stored directly in config file
+# Production pattern: Password embedded in config (not external file)
+nss-password: ${NSS_PASSWORD}
+
+# TLS version constraints (modern TLS only)
+# Production: TLS 1.2 minimum, no upper limit (containers support TLS 1.3)
+nss-min-tls: tls1.2

@@ -1,0 +1,1348 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+
+name: 'Sigul Build/Test 🐳'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+    inputs:
+      docker_buildkit:
+        description: 'Use Docker BuildKit for advanced caching and optimization'
+        required: false
+        default: 1
+        type: number
+      force_rebuild:
+        description: 'Force rebuild containers (bypasses cache)'
+        required: false
+        default: false
+        type: boolean
+      cache_version:
+        description: 'Cache version (increment to bust cache)'
+        required: false
+        default: v2
+        type: string
+      purge_cache:
+        description: 'Clear Docker buildkit cache'
+        required: false
+        default: false
+        type: boolean
+
+  push:
+    branches: ['main']
+  pull_request:
+    branches: ['main']
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/sigul-sign-docker
+  # Enable BuildKit for advanced caching and optimization
+  DOCKER_BUILDKIT: ${{ github.event.inputs.docker_buildkit || '0' }}
+  BUILDKIT_PROGRESS: plain
+  # Cache version for manual cache busting - increment to force rebuild
+  CACHE_VERSION: ${{ github.event.inputs.cache_version || 'v2' }}
+  FORCE_REBUILD: ${{ github.event.inputs.force_rebuild || false }}
+  PURGE_CACHE: true
+
+jobs:
+  ### Build Sigul Client Container ###
+  build-containers:
+    name: "Build: ${{ matrix.component }} (${{ matrix.platform }})"
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    timeout-minutes: 3
+    strategy:
+      fail-fast: false
+      matrix:
+        # Use ubuntu-latest for AMD64 builds (x86_64 runners)
+        # Use ubuntu-24.04-arm for ARM64 builds (native ARM64 runners)
+        # This avoids QEMU emulation which can cause timeouts and failures
+        include:
+          - component: 'client'
+            platform: 'linux/amd64'
+            runner: ubuntu-24.04
+          - component: 'client'
+            platform: 'linux/arm64'
+            runner: ubuntu-24.04-arm
+          - component: 'server'
+            platform: 'linux/amd64'
+            runner: ubuntu-24.04
+          - component: 'server'
+            platform: 'linux/arm64'
+            runner: ubuntu-24.04-arm
+          - component: 'bridge'
+            platform: 'linux/amd64'
+            runner: ubuntu-24.04
+          - component: 'bridge'
+            platform: 'linux/arm64'
+            runner: ubuntu-24.04-arm
+    outputs:
+      client-amd64-digest: ${{ steps.build-client-amd64.outputs.digest }}
+      client-arm64-digest: ${{ steps.build-client-arm64.outputs.digest }}
+      server-amd64-digest: ${{ steps.build-server-amd64.outputs.digest }}
+      server-arm64-digest: ${{ steps.build-server-arm64.outputs.digest }}
+      bridge-amd64-digest: ${{ steps.build-bridge-amd64.outputs.digest }}
+      bridge-arm64-digest: ${{ steps.build-bridge-arm64.outputs.digest }}
+      client-image-tag: ${{ steps.meta.outputs.tags }}
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: 'Set up Docker Buildx'
+        # yamllint disable-line rule:line-length
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435  # v3.11.1
+
+      - name: 'Optionally purge the cache when requested'
+        if: ${{ github.event.inputs.purge_cache == 'true' }}
+        run: |
+          # Purge the cache
+          docker buildx prune -f || true
+          gh cache delete --all || true
+          if [ "${{ github.event.inputs.purge_cache }}" == 'true' ]; then
+            echo "BUILDKIT_INLINE_CACHE=0" >> "$GITHUB_ENV"
+          else
+            echo "BUILDKIT_INLINE_CACHE=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: 'Extract platform identifier'
+        id: platform
+        shell: bash
+        run: |
+          platform_id="${{ matrix.platform }}"
+          platform_id="${platform_id//\//-}"
+          echo "id=${platform_id}" >> "$GITHUB_OUTPUT"
+          echo "Platform ID: ${platform_id}"
+
+      - name: 'Extract metadata for tagging (client only)'
+        id: meta
+        if: matrix.component == 'client'
+        # yamllint disable-line rule:line-length
+        uses: docker/metadata-action@c1e51972afc2121e065aed6d45c65596fe445f3f  # v5.8.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # yamllint disable rule:line-length
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=main-,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=pr-,enable=${{ github.event_name == 'pull_request' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: "Build ${{ matrix.component }} container for ${{ matrix.platform }}"
+        # yamllint disable-line rule:line-length
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83  # v6.18.0
+        id: docker-build
+        with:
+          context: .
+          file: Dockerfile.${{ matrix.component }}
+          platforms: ${{ matrix.runner == 'ubuntu-24.04-arm' && '' || matrix.platform }}
+          tags: |
+            ${{ matrix.component }}:${{ steps.platform.outputs.id }}
+            ${{ matrix.component == 'client' && steps.meta.outputs.tags || '' }}
+          outputs: |
+            type=docker,dest=/tmp/${{ matrix.component }}-${{ steps.platform.outputs.id }}.tar
+          push: false
+          cache-from: ${{ github.event.inputs.force_rebuild == true && 'type=registry,ref=localhost/null' || format('type=gha,scope={0}-{1}-{2}-{3}', env.CACHE_VERSION, matrix.component, matrix.platform, matrix.runner) }}
+          cache-to: type=gha,mode=max,scope=${{ env.CACHE_VERSION }}-${{ matrix.component }}-${{ matrix.platform }}-${{ matrix.runner }}
+          build-args: |
+            BUILDKIT_INLINE_CACHE=${{ env.BUILDKIT_INLINE_CACHE }}
+
+      - name: 'Set build outputs for client amd64'
+        id: build-client-amd64
+        if: matrix.component == 'client' && matrix.platform == 'linux/amd64'
+        run: |
+          echo "digest=${{ steps.docker-build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+      - name: 'Set build outputs for client arm64'
+        id: build-client-arm64
+        if: matrix.component == 'client' && matrix.platform == 'linux/arm64'
+        run: |
+          echo "digest=${{ steps.docker-build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+      - name: 'Set build outputs for server amd64'
+        id: build-server-amd64
+        if: matrix.component == 'server' && matrix.platform == 'linux/amd64'
+        run: |
+          echo "digest=${{ steps.docker-build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+      - name: 'Set build outputs for server arm64'
+        id: build-server-arm64
+        if: matrix.component == 'server' && matrix.platform == 'linux/arm64'
+        run: |
+          echo "digest=${{ steps.docker-build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+      - name: 'Set build outputs for bridge amd64'
+        id: build-bridge-amd64
+        if: matrix.component == 'bridge' && matrix.platform == 'linux/amd64'
+        run: |
+          echo "digest=${{ steps.docker-build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+      - name: 'Set build outputs for bridge arm64'
+        id: build-bridge-arm64
+        if: matrix.component == 'bridge' && matrix.platform == 'linux/arm64'
+        run: |
+          echo "digest=${{ steps.docker-build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+      - name: 'Upload ${{ matrix.component }} image as artifact'
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        if: success()
+        with:
+          name: ${{ matrix.component }}-${{ steps.platform.outputs.id }}-image
+          path: /tmp/${{ matrix.component }}-${{ steps.platform.outputs.id }}.tar
+          retention-days: 7
+
+  ### Test Sigul Client Container ###
+  client-mock-test:
+    name: "Test Client: ${{ matrix.platform }}"
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    timeout-minutes: 2
+    needs: build-containers
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            run-mock-tests: true
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            run-mock-tests: true
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Checkout repository'
+        if: matrix.run-mock-tests == true
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: 'Extract platform identifier'
+        id: platform
+        shell: bash
+        run: |
+          platform_id="${{ matrix.platform }}"
+          platform_id="${platform_id//\//-}"
+          echo "id=${platform_id}" >> "$GITHUB_OUTPUT"
+
+      - name: 'Download Docker image artifact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        continue-on-error: true
+        id: download
+        with:
+          name: client-${{ steps.platform.outputs.id }}-image
+          path: /tmp
+
+      - name: 'Load Docker image'
+        shell: bash
+        if: steps.download.outcome == 'success'
+        run: |
+          file_path="/tmp/client-${{ steps.platform.outputs.id }}.tar"
+          if [ -f "${file_path}" ]; then
+            docker load --input "${file_path}"
+            docker images
+            echo "✅ Image loaded successfully for ${{ matrix.platform }}"
+          else
+            echo "❌ Image file not found for ${{ matrix.platform }}"
+            exit 1
+          fi
+
+      - name: 'Test container binary: sigul --version'
+        shell: bash
+        if: steps.download.outcome == 'success'
+        run: |
+          echo 'Testing ${{ matrix.platform }}...'
+          docker run --rm \
+            client:${{ steps.platform.outputs.id }} \
+            sigul --version
+
+      - name: 'Skip test for failed build'
+        shell: bash
+        if: steps.download.outcome != 'success'
+        run: |
+          echo "⚠️ Skipping test for ${{ matrix.platform }}"
+          echo "Build artifact not available"
+
+      - name: 'Create test files for mock signing'
+        shell: bash
+        if: matrix.run-mock-tests == true && steps.download.outcome == 'success'
+        run: |
+          mkdir -p test-workspace/files
+          echo 'Test document for mock signing' > test-workspace/files/document1.txt
+          echo 'Another test file' > test-workspace/files/document2.txt
+          echo 'Binary test data' > test-workspace/files/test.dat
+          echo 'Unicode test: àáâãäåæçèéêë' > test-workspace/files/unicode.txt
+
+          echo 'Created test files:'
+          ls -la test-workspace/files/
+
+      - name: 'Test single file mock signing'
+        shell: bash
+        if: matrix.run-mock-tests == true && steps.download.outcome == 'success'
+        run: |
+          echo '=== Testing single file mock signing ==='
+          output=$(docker run --rm \
+            -v "$PWD/test-workspace:/workspace" \
+            -w /workspace \
+            -e SIGN_TYPE=sign-data \
+            -e SIGN_OBJECT=files/document1.txt \
+            -e SIGUL_KEY_NAME=test-signing-key \
+            -e SIGUL_MOCK_MODE=true \
+            client:${{ steps.platform.outputs.id }})
+
+          echo "Container output:"
+          echo "$output"
+
+          # Validate mock signature output
+          if echo "$output" | grep -q "SIGUL_MOCK_SIGNATURE_START"; then
+            echo "✅ Mock signature format detected"
+          else
+            echo "❌ Mock signature format not found"
+            exit 1
+          fi
+
+          if echo "$output" | grep -q "FILE: files/document1.txt"; then
+            echo "✅ Correct file referenced in signature"
+          else
+            echo "❌ File reference missing or incorrect"
+            exit 1
+          fi
+
+          if echo "$output" | grep -q "TYPE: sign-data"; then
+            echo "✅ Correct signing type in output"
+          else
+            echo "❌ Signing type missing or incorrect"
+            exit 1
+          fi
+
+          echo "✅ Single file mock test passed"
+
+      - name: 'Test wildcard mock signing'
+        shell: bash
+        if: matrix.run-mock-tests == true && steps.download.outcome == 'success'
+        run: |
+          echo '=== Testing wildcard mock signing ==='
+          output=$(docker run --rm \
+            -v "$PWD/test-workspace:/workspace" \
+            -w /workspace \
+            -e SIGN_TYPE=sign-data \
+            -e SIGN_OBJECT='files/*.txt' \
+            -e SIGUL_KEY_NAME=test-signing-key \
+            -e SIGUL_MOCK_MODE=true \
+            client:${{ steps.platform.outputs.id }})
+
+          echo "Container output:"
+          echo "$output"
+
+          # Count expected signatures (should be 3 .txt files)
+          expected_files=("document1.txt" "document2.txt" "unicode.txt")
+
+          for file in "${expected_files[@]}"; do
+            if echo "$output" | grep -q "FILE: files/$file"; then
+              echo "✅ Found signature for $file"
+            else
+              echo "❌ Missing signature for $file"
+              exit 1
+            fi
+          done
+
+          echo "✅ Wildcard mock test passed"
+
+      - name: 'Test multiline mock signing'
+        shell: bash
+        if: matrix.run-mock-tests == true && steps.download.outcome == 'success'
+        run: |
+          echo '=== Testing multiline mock signing ==='
+          output=$(docker run --rm \
+            -v "$PWD/test-workspace:/workspace" \
+            -w /workspace \
+            -e SIGN_TYPE=sign-data \
+            -e SIGN_OBJECT=$'files/document1.txt\nfiles/document2.txt\nfiles/test.dat' \
+            -e SIGUL_KEY_NAME=test-signing-key \
+            -e SIGUL_MOCK_MODE=true \
+            client:${{ steps.platform.outputs.id }})
+
+          echo "Container output:"
+          echo "$output"
+
+          expected_files=("document1.txt" "document2.txt" "test.dat")
+
+          for file in "${expected_files[@]}"; do
+            if echo "$output" | grep -q "FILE: files/$file"; then
+              echo "✅ Found signature for $file"
+            else
+              echo "❌ Missing signature for $file"
+              exit 1
+            fi
+          done
+
+          echo "✅ Multiline mock test passed"
+
+      - name: 'Test git tag mock signing'
+        shell: bash
+        if: matrix.run-mock-tests == true && steps.download.outcome == 'success'
+        run: |
+          echo '=== Testing git tag mock signing ==='
+
+          # Create minimal git repo for testing
+          mkdir -p test-workspace/git-repo
+          cd test-workspace/git-repo
+          git init
+          git config user.name "Test User"
+          git config user.email "test@example.com"
+          echo "test" > README.md
+          git add README.md
+          git commit -m "Initial commit"
+          git tag v1.0.0-test
+
+          output=$(docker run --rm \
+            -v "$PWD:/workspace" \
+            -w /workspace \
+            -e SIGN_TYPE=sign-git-tag \
+            -e SIGN_OBJECT=v1.0.0-test \
+            -e SIGUL_KEY_NAME=test-signing-key \
+            -e SIGUL_MOCK_MODE=true \
+            client:${{ steps.platform.outputs.id }})
+
+          echo "Container output:"
+          echo "$output"
+
+          if echo "$output" | grep -q "FILE: v1.0.0-test"; then
+            echo "✅ Git tag signature found"
+          else
+            echo "❌ Git tag signature missing"
+            exit 1
+          fi
+
+          if echo "$output" | grep -q "TYPE: sign-git-tag"; then
+            echo "✅ Correct git tag signing type"
+          else
+            echo "❌ Git tag signing type incorrect"
+            exit 1
+          fi
+
+          echo "✅ Git tag mock test passed"
+
+      - name: 'Test error handling'
+        shell: bash
+        if: matrix.run-mock-tests == true && steps.download.outcome == 'success'
+        run: |
+          echo '=== Testing error handling ==='
+
+          # Test missing file
+          if docker run --rm \
+            -v "$PWD/test-workspace:/workspace" \
+            -w /workspace \
+            -e SIGN_TYPE=sign-data \
+            -e SIGN_OBJECT=files/nonexistent.txt \
+            -e SIGUL_KEY_NAME=test-signing-key \
+            -e SIGUL_MOCK_MODE=true \
+            client:${{ steps.platform.outputs.id }} 2>/dev/null; then
+            echo "❌ Should have failed for missing file"
+            exit 1
+          else
+            echo "✅ Correctly handled missing file"
+          fi
+
+          # Test missing sign type
+          if docker run --rm \
+            -v "$PWD/test-workspace:/workspace" \
+            -w /workspace \
+            -e SIGN_OBJECT=files/document1.txt \
+            -e SIGUL_KEY_NAME=test-signing-key \
+            -e SIGUL_MOCK_MODE=true \
+            client:${{ steps.platform.outputs.id }} 2>/dev/null; then
+            echo "❌ Should have failed for missing SIGN_TYPE"
+            exit 1
+          else
+            echo "✅ Correctly handled missing SIGN_TYPE"
+          fi
+
+          echo "✅ Error handling tests passed"
+
+  publish-ghcr:
+    name: 'Publish to GHCR'
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: read
+      packages: write
+    timeout-minutes: 3
+    needs: [build-containers, client-mock-test]
+    # Temporarily disable while debugging integration tests/stack
+    if: false
+    # if: github.event_name != 'pull_request'
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: 'Set up Docker Buildx'
+        # yamllint disable-line rule:line-length
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435  # v3.11.1
+
+      - name: 'Log in to GitHub Container Registry'
+        # yamllint disable-line rule:line-length
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1  # v3.5.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 'Download AMD64 Docker image artifact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        continue-on-error: true
+        id: download-amd64
+        with:
+          name: client-linux-amd64-image
+          path: /tmp
+
+      - name: 'Download ARM64 Docker image artifact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        continue-on-error: true
+        id: download-arm64
+        with:
+          name: client-linux-arm64-image
+          path: /tmp
+
+      - name: 'Load and prepare Docker images'
+        shell: bash
+        run: |
+          set -e
+
+          # Load and tag images
+          platforms_built=()
+
+          if [ "${{ steps.download-amd64.outcome }}" = "success" ] && [ -f "/tmp/client-linux-amd64.tar" ]; then
+            echo "Loading AMD64 image..."
+            docker load --input /tmp/client-linux-amd64.tar
+
+            # Get the loaded image name and retag it for pushing
+            amd64_image=$(docker images --format "table {{.Repository}}:{{.Tag}}" | grep "client:linux-amd64" | head -1)
+            if [ -n "$amd64_image" ]; then
+              platforms_built+=("linux/amd64")
+              echo "AMD64 image loaded: $amd64_image"
+            fi
+          fi
+
+          if [ "${{ steps.download-arm64.outcome }}" = "success" ] && [ -f "/tmp/client-linux-arm64.tar" ]; then
+            echo "Loading ARM64 image..."
+            docker load --input /tmp/client-linux-arm64.tar
+
+            # Get the loaded image name and retag it for pushing
+            arm64_image=$(docker images --format "table {{.Repository}}:{{.Tag}}" | grep "client:linux-arm64" | head -1)
+            if [ -n "$arm64_image" ]; then
+              platforms_built+=("linux/arm64")
+              echo "ARM64 image loaded: $arm64_image"
+            fi
+          fi
+
+          echo "Platforms available: ${platforms_built[*]}"
+
+          if [ ${#platforms_built[@]} -eq 0 ]; then
+            echo "❌ No platforms were successfully built and downloaded"
+            exit 1
+          fi
+
+      - name: 'Extract metadata for final push'
+        id: meta
+        # yamllint disable-line rule:line-length
+        uses: docker/metadata-action@c1e51972afc2121e065aed6d45c65596fe445f3f  # v5.8.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # yamllint disable rule:line-length
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=main-,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=pr-,enable=${{ github.event_name == 'pull_request' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      # yamllint enable rule:line-length
+      - name: 'Push pre-built images to registry'
+        shell: bash
+        run: |
+          set -e
+
+          # Push individual platform images first
+          if [ "${{ steps.download-amd64.outcome }}" = "success" ] && \
+             [ -f "/tmp/client-linux-amd64.tar" ]; then
+            echo "Pushing AMD64 image..."
+            # shellcheck disable=SC2043
+            readarray -t tags <<< "${{ steps.meta.outputs.tags }}"
+            for tag in "${tags[@]}"; do
+              docker tag client:linux-amd64 "${tag}-amd64"
+              docker push "${tag}-amd64"
+            done
+          fi
+
+          if [ "${{ steps.download-arm64.outcome }}" = "success" ] && \
+             [ -f "/tmp/client-linux-arm64.tar" ]; then
+            echo "Pushing ARM64 image..."
+            # shellcheck disable=SC2043
+            readarray -t tags <<< "${{ steps.meta.outputs.tags }}"
+            for tag in "${tags[@]}"; do
+              docker tag client:linux-arm64 "${tag}-arm64"
+              docker push "${tag}-arm64"
+            done
+          fi
+
+          # Create and push multi-platform manifests
+          # shellcheck disable=SC2043
+          readarray -t tags <<< "${{ steps.meta.outputs.tags }}"
+          for tag in "${tags[@]}"; do
+            echo "Creating manifest for: $tag"
+
+            manifest_args=()
+            if [ "${{ steps.download-amd64.outcome }}" = "success" ]; then
+              manifest_args+=("${tag}-amd64")
+            fi
+            if [ "${{ steps.download-arm64.outcome }}" = "success" ]; then
+              manifest_args+=("${tag}-arm64")
+            fi
+
+            if [ ${#manifest_args[@]} -gt 0 ]; then
+              docker manifest create "$tag" "${manifest_args[@]}"
+
+              # Annotate platform-specific images
+              if [ "${{ steps.download-amd64.outcome }}" = "success" ]; then
+                docker manifest annotate "$tag" "${tag}-amd64" \
+                  --arch amd64 --os linux
+              fi
+              if [ "${{ steps.download-arm64.outcome }}" = "success" ]; then
+                docker manifest annotate "$tag" "${tag}-arm64" \
+                  --arch arm64 --os linux
+              fi
+
+              docker manifest push "$tag"
+              echo "✅ Multi-platform manifest pushed: $tag"
+            fi
+          done
+
+      - name: 'Verify published images'
+        shell: bash
+        run: |
+          echo "=== Verifying published multi-platform images ==="
+          # shellcheck disable=SC2043
+          readarray -t tags <<< "${{ steps.meta.outputs.tags }}"
+          for tag in "${tags[@]}"; do
+            echo "Inspecting manifest for: ${tag}"
+            docker manifest inspect "${tag}" || echo "Failed to inspect ${tag}"
+
+            # Test pulling and running the image
+            echo "Testing image: ${tag}"
+            if docker pull "${tag}" 2>/dev/null; then
+              docker run --rm "${tag}" sigul --version
+              echo "✅ Image verification passed for ${tag}"
+            else
+              echo "⚠️ Could not pull ${tag} for verification"
+            fi
+          done
+
+  stack-deploy-test:
+    name: 'Stack Deployment Test: ${{ matrix.platform }}'
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    timeout-minutes: 6
+    needs: build-containers
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    outputs:
+      server-container: ${{ steps.deploy.outputs.server-container }}
+      bridge-container: ${{ steps.deploy.outputs.bridge-container }}
+      server-ip: ${{ steps.deploy.outputs.server-ip }}
+      bridge-ip: ${{ steps.deploy.outputs.bridge-ip }}
+      # yamllint disable-line rule:line-length
+      client-image: client-${{ steps.runner-arch.outputs.platform-id }}-image:test
+      runner-platform: ${{ steps.runner-arch.outputs.platform-id }}
+      docker-platform: ${{ steps.runner-arch.outputs.docker-platform }}
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: 'Set up Docker Buildx'
+        # yamllint disable-line rule:line-length
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435  # v3.11.1
+
+      - name: 'Detect runner architecture'
+        id: runner-arch
+        shell: bash
+        run: |
+          # Detect the runner architecture
+          ARCH=$(uname -m)
+          case $ARCH in
+            x86_64)
+              PLATFORM_ID="linux-amd64"
+              DOCKER_PLATFORM="linux/amd64"
+              ;;
+            aarch64|arm64)
+              PLATFORM_ID="linux-arm64"
+              DOCKER_PLATFORM="linux/arm64"
+              ;;
+            *)
+              echo "❌ Unsupported architecture: $ARCH"
+              exit 1
+              ;;
+          esac
+          echo "platform-id=${PLATFORM_ID}" >> "$GITHUB_OUTPUT"
+          echo "docker-platform=${DOCKER_PLATFORM}" >> "$GITHUB_OUTPUT"
+          echo "📍 Detected runner architecture: $ARCH -> $PLATFORM_ID"
+
+      - name: 'Download Sigul Client image artifact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: 'client-${{ steps.runner-arch.outputs.platform-id }}-image'
+          path: /tmp
+
+      - name: 'Download Sigul Server image artifact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: >-
+            server-${{ steps.runner-arch.outputs.platform-id }}-image
+          path: /tmp
+
+      - name: 'Download Sigul Bridge image artifact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: >-
+            bridge-${{ steps.runner-arch.outputs.platform-id }}-image
+          path: /tmp
+
+      - name: 'Showing downloaded docker images'
+        shell: bash
+        run: |
+          # Showing downloaded docker images
+          echo "🔍 Showing downloaded docker images"
+          echo "==================================="
+          ls -la /tmp/*.tar
+          echo "==================================="
+
+      - name: 'Loading/tagging container images'
+        shell: bash
+        run: |
+          # Loading/tagging container images
+          PLATFORM_ID="${{ steps.runner-arch.outputs.platform-id }}"
+          echo "🔧 Loading/tagging ${PLATFORM_ID} container images"
+
+          # Load sigul-client image
+          CLIENT_IMAGE_FILE="/tmp/client-${PLATFORM_ID}.tar"
+          if [ -f "${CLIENT_IMAGE_FILE}" ]; then
+            echo "Loading Sigul client image for ${PLATFORM_ID}..."
+            docker load --input "${CLIENT_IMAGE_FILE}"
+            # Tag the loaded image appropriately
+            docker tag "client:${PLATFORM_ID}" \
+              "client-${PLATFORM_ID}-image:test"
+            echo "✅ Sigul client image loaded and tagged"
+          else
+            echo "❌ Sigul client image not found: ${CLIENT_IMAGE_FILE}"
+            echo "Available files matching client pattern:"
+            ls -la /tmp/client*.tar 2>/dev/null || \
+              echo "No client .tar files found"
+            exit 1
+          fi
+
+          # Load server image
+          SERVER_IMAGE_FILE="/tmp/server-${PLATFORM_ID}.tar"
+          if [ -f "${SERVER_IMAGE_FILE}" ]; then
+            echo "Loading server image for ${PLATFORM_ID}..."
+            docker load --input "${SERVER_IMAGE_FILE}"
+            # Tag the loaded image appropriately
+            docker tag "server:${PLATFORM_ID}" \
+              "server-${PLATFORM_ID}-image:test"
+            echo "✅ Sigul server image loaded and tagged"
+          else
+            echo "❌ Sigul server image not found: ${SERVER_IMAGE_FILE}"
+            echo "Available files matching server pattern:"
+            ls -la /tmp/server*.tar 2>/dev/null || \
+              echo "No server .tar files found"
+            exit 1
+          fi
+
+          # Load bridge image
+          BRIDGE_IMAGE_FILE="/tmp/bridge-${PLATFORM_ID}.tar"
+          if [ -f "${BRIDGE_IMAGE_FILE}" ]; then
+            echo "Loading bridge image for ${PLATFORM_ID}..."
+            docker load --input "${BRIDGE_IMAGE_FILE}"
+            # Tag the loaded image appropriately
+            docker tag "bridge:${PLATFORM_ID}" \
+              "bridge-${PLATFORM_ID}-image:test"
+            echo "✅ Sigul bridge image loaded and tagged"
+          else
+            echo "❌ Sigul bridge image not found: ${BRIDGE_IMAGE_FILE}"
+            echo "Available files matching bridge pattern:"
+            ls -la /tmp/bridge*.tar 2>/dev/null || \
+              echo "No bridge .tar files found"
+            exit 1
+          fi
+
+          # Verify all images are loaded
+          echo "📋 Successfully loaded Docker images:"
+          docker images | grep -E "(client|server|bridge)" || \
+            echo "No Sigul images found"
+          echo ""
+          echo "✅ All Sigul images loaded successfully"
+
+      - name: 'Set client image output'
+        shell: bash
+        # yamllint disable rule:line-length
+        run: |
+          echo "image=client-${{ steps.runner-arch.outputs.platform-id }}-image:test" >> "$GITHUB_OUTPUT"
+
+      # yamllint enable rule:line-length
+      - name: 'Deploy Sigul infrastructure'
+        id: deploy
+        shell: bash
+        env:
+          SIGUL_PLATFORM_ID: ${{ steps.runner-arch.outputs.platform-id }}
+          DOCKER_PLATFORM: ${{ steps.runner-arch.outputs.docker-platform }}
+        run: |
+          PLATFORM="${SIGUL_PLATFORM_ID}"
+          echo "🚀 Deploying Sigul infrastructure for platform: ${PLATFORM}"
+          echo "📦 Sigul containers will be for platform: ${DOCKER_PLATFORM}"
+
+          # Export platform info for the deployment script
+          export SIGUL_RUNNER_PLATFORM="${SIGUL_PLATFORM_ID}"
+          export SIGUL_DOCKER_PLATFORM="${DOCKER_PLATFORM}"
+
+          # Use the unified deployment script
+          DEPLOY_SCRIPT="scripts/deploy-sigul-infrastructure.sh"
+          echo "Using deployment script: ${DEPLOY_SCRIPT}"
+
+          chmod +x "${DEPLOY_SCRIPT}"
+          "./${DEPLOY_SCRIPT}" --verbose
+
+          # Set outputs for subsequent jobs
+          {
+            echo "server-container=sigul-server"
+            echo "bridge-container=sigul-bridge"
+            echo "runner-platform=${SIGUL_PLATFORM_ID}"
+            echo "docker-platform=${DOCKER_PLATFORM}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "✅ Sigul infrastructure deployed for ${PLATFORM}"
+
+      - name: 'Upload PKI and config artifacts'
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: >-
+            sigul-infrastructure-config-${{
+              steps.runner-arch.outputs.platform-id
+            }}
+          path: |
+            pki/
+            configs/
+            test-artifacts/
+          retention-days: 1
+
+      - name: 'Collect container logs and diagnostics'
+        if: always()
+        shell: bash
+        run: |
+          echo "📋 Collecting container logs and diagnostic information..."
+
+          # Stream container logs immediately to workflow output for visibility
+          echo "::group::Container Log Streaming (Immediate Visibility)"
+          for container in sigul-server sigul-bridge; do
+            if docker ps -a --format "{{.Names}}" | \
+              grep -q "^${container}$"; then
+              echo "=== ${container} logs (last 100 lines) ==="
+              docker logs --tail 100 "${container}" 2>&1 || \
+                echo "Unable to fetch logs from ${container}"
+              echo ""
+              echo "=== ${container} container status ==="
+              docker container inspect "${container}" --format \
+                'Status: {{.State.Status}} (Exit: {{.State.ExitCode}})' \
+                2>/dev/null || echo "Cannot inspect ${container}"
+              echo ""
+            else
+              echo "Container not found: ${container}"
+            fi
+          done
+          echo "::endgroup::"
+
+          # Create diagnostics directory for artifacts
+          mkdir -p diagnostics
+
+          # Collect full container logs for artifacts
+          for container in sigul-server sigul-bridge; do
+            if docker ps -a --format "{{.Names}}" | \
+               grep -q "^${container}$"; then
+              echo "Collecting full logs for container: ${container}"
+              docker logs "${container}" > \
+                "diagnostics/${container}.log" 2>&1 || true
+              docker inspect "${container}" > \
+                "diagnostics/${container}.inspect.json" 2>/dev/null || true
+            else
+              echo "Container not found: ${container}"
+            fi
+          done
+
+          # Collect volume diagnostics using dynamic volume name resolution
+          if docker ps -a --format "{{.Names}}" | grep -q "^sigul-bridge$"; then
+            echo "Collecting bridge volume diagnostics..."
+            bridge_volume=$(docker inspect sigul-bridge \
+              --format \
+              '{{range .Mounts}}{{if eq .Destination "/var/sigul"}}' \
+              '{{.Name}}{{end}}{{end}}' \
+              2>/dev/null || echo "")
+            if [[ -n "$bridge_volume" ]]; then
+              echo "Bridge volume name: $bridge_volume"
+              docker run --rm -v "${bridge_volume}":/var/sigul \
+                alpine:3.19 sh -c '
+                echo "=== Bridge Volume Directory Structure ===" > \
+                  /tmp/bridge-volume.txt
+                find /var/sigul -type f -exec ls -la {} \; >> \
+                  /tmp/bridge-volume.txt 2>&1 || true
+                echo "=== Bridge NSS Database ===" >> /tmp/bridge-volume.txt
+                if [ -d /var/sigul/nss/bridge ]; then
+                  ls -la /var/sigul/nss/bridge >> \
+                    /tmp/bridge-volume.txt 2>&1 || true
+                fi
+                cat /tmp/bridge-volume.txt
+              ' > diagnostics/bridge-volume.txt 2>&1 || true
+            else
+              echo "Could not determine bridge volume name" > \
+                diagnostics/bridge-volume.txt
+            fi
+          fi
+
+          # Collect system state
+          docker ps -a > diagnostics/docker-containers.txt 2>&1 || true
+          docker volume ls > diagnostics/docker-volumes.txt 2>&1 || true
+          docker network ls > diagnostics/docker-networks.txt 2>&1 || true
+
+          echo "✅ Diagnostics collection completed"
+
+      - name: 'Upload container logs and diagnostics'
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        if: always()
+        with:
+          name: >-
+            sigul-container-diagnostics-${{
+              steps.runner-arch.outputs.platform-id
+            }}
+          path: |
+            diagnostics/
+          retention-days: 3
+
+  ### Functional Tests ###
+  functional-tests:
+    name: 'Functional Tests: ${{ matrix.platform }}'
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    timeout-minutes: 8
+    needs: build-containers
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: 'Set up Docker Buildx'
+        # yamllint disable-line rule:line-length
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435  # v3.11.1
+
+      - name: 'Detect runner architecture'
+        id: runner-arch
+        shell: bash
+        run: |
+          # Detect the runner architecture
+          ARCH=$(uname -m)
+          case $ARCH in
+            x86_64)
+              PLATFORM_ID="linux-amd64"
+              DOCKER_PLATFORM="linux/amd64"
+              ;;
+            aarch64|arm64)
+              PLATFORM_ID="linux-arm64"
+              DOCKER_PLATFORM="linux/arm64"
+              ;;
+            *)
+              echo "❌ Unsupported architecture: $ARCH"
+              exit 1
+              ;;
+          esac
+          echo "platform-id=${PLATFORM_ID}" >> "$GITHUB_OUTPUT"
+          echo "docker-platform=${DOCKER_PLATFORM}" >> "$GITHUB_OUTPUT"
+          echo "📍 Detected runner architecture: $ARCH -> $PLATFORM_ID"
+
+      - name: 'Download Sigul Client image artifact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: 'client-${{ steps.runner-arch.outputs.platform-id }}-image'
+          path: /tmp
+
+      - name: 'Download Sigul Server image artifact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: >-
+            server-${{ steps.runner-arch.outputs.platform-id }}-image
+          path: /tmp
+
+      - name: 'Download Sigul Bridge image artifact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: >-
+            bridge-${{ steps.runner-arch.outputs.platform-id }}-image
+          path: /tmp
+
+      - name: 'Load and tag container images'
+        shell: bash
+        run: |
+          # Loading/tagging container images
+          PLATFORM_ID="${{ steps.runner-arch.outputs.platform-id }}"
+          echo "🔧 Loading/tagging ${PLATFORM_ID} container images for" \
+            "functional tests"
+
+          # Load sigul-client image
+          CLIENT_IMAGE_FILE="/tmp/client-${PLATFORM_ID}.tar"
+          if [ -f "${CLIENT_IMAGE_FILE}" ]; then
+            echo "Loading Sigul client image for ${PLATFORM_ID}..."
+            docker load --input "${CLIENT_IMAGE_FILE}"
+            docker tag "client:${PLATFORM_ID}" \
+              "client-${PLATFORM_ID}-image:test"
+            echo "✅ Sigul client image loaded and tagged"
+          else
+            echo "❌ Sigul client image not found: ${CLIENT_IMAGE_FILE}"
+            exit 1
+          fi
+
+          # Load server image
+          SERVER_IMAGE_FILE="/tmp/server-${PLATFORM_ID}.tar"
+          if [ -f "${SERVER_IMAGE_FILE}" ]; then
+            echo "Loading server image for ${PLATFORM_ID}..."
+            docker load --input "${SERVER_IMAGE_FILE}"
+            docker tag "server:${PLATFORM_ID}" \
+              "server-${PLATFORM_ID}-image:test"
+            echo "✅ Sigul server image loaded and tagged"
+          else
+            echo "❌ Sigul server image not found: ${SERVER_IMAGE_FILE}"
+            exit 1
+          fi
+
+          # Load bridge image
+          BRIDGE_IMAGE_FILE="/tmp/bridge-${PLATFORM_ID}.tar"
+          if [ -f "${BRIDGE_IMAGE_FILE}" ]; then
+            echo "Loading bridge image for ${PLATFORM_ID}..."
+            docker load --input "${BRIDGE_IMAGE_FILE}"
+            docker tag "bridge:${PLATFORM_ID}" \
+              "bridge-${PLATFORM_ID}-image:test"
+            echo "✅ Sigul bridge image loaded and tagged"
+          else
+            echo "❌ Sigul bridge image not found: ${BRIDGE_IMAGE_FILE}"
+            exit 1
+          fi
+
+          echo "✅ All Sigul images loaded successfully for functional tests"
+
+      - name: 'Deploy fresh Sigul infrastructure for functional tests'
+        shell: bash
+        env:
+          SIGUL_PLATFORM_ID: ${{ steps.runner-arch.outputs.platform-id }}
+          DOCKER_PLATFORM: ${{ steps.runner-arch.outputs.docker-platform }}
+        run: |
+          PLATFORM="${SIGUL_PLATFORM_ID}"
+          echo "🚀 Deploying fresh Sigul infrastructure for functional tests"
+          echo "📦 Platform: ${PLATFORM} (${DOCKER_PLATFORM})"
+
+          # Export platform info for the deployment script
+          export SIGUL_RUNNER_PLATFORM="${SIGUL_PLATFORM_ID}"
+          export SIGUL_DOCKER_PLATFORM="${DOCKER_PLATFORM}"
+
+          # Use the unified deployment script to deploy fresh stack
+          DEPLOY_SCRIPT="scripts/deploy-sigul-infrastructure.sh"
+          chmod +x "${DEPLOY_SCRIPT}"
+          "./${DEPLOY_SCRIPT}" --verbose
+
+          echo "✅ Fresh Sigul infrastructure deployed for functional tests"
+
+      - name: 'Validate NSS certificates in containers'
+        shell: bash
+        run: |
+          echo '🔍 Validating NSS certificates inside containers...'
+
+          # Debug: Show all running containers
+          echo "📋 Current container status:"
+          docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+
+          # Check that containers are running and healthy
+          BRIDGE_STATUS=$(docker ps --filter "name=sigul-bridge" \
+            --format "{{.Status}}" || echo "not found")
+          SERVER_STATUS=$(docker ps --filter "name=sigul-server" \
+            --format "{{.Status}}" || echo "not found")
+
+          echo "🔍 Container status check:"
+          echo "  Bridge: $BRIDGE_STATUS"
+          echo "  Server: $SERVER_STATUS"
+
+          if ! docker ps --format "{{.Names}}" | grep -q "^sigul-bridge$"; then
+            echo "❌ sigul-bridge container not running (status: $BRIDGE_STATUS)"
+            echo "📋 All containers:"
+            docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+            echo "📋 Bridge container logs:"
+            docker logs sigul-bridge 2>&1 | tail -20 || echo "No logs available"
+            exit 1
+          fi
+
+          if ! docker ps --format "{{.Names}}" | grep -q "^sigul-server$"; then
+            echo "❌ sigul-server container not running (status: $SERVER_STATUS)"
+            echo "📋 All containers:"
+            docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+            echo "📋 Server container logs:"
+            docker logs sigul-server 2>&1 | tail -20 || echo "No logs available"
+            exit 1
+          fi
+
+          # Validate NSS certificates inside the bridge container
+          echo "🔍 Validating bridge NSS certificates..."
+          if docker exec sigul-bridge \
+            /usr/local/bin/validate-nss.sh bridge; then
+            echo "✅ Bridge NSS validation passed"
+          else
+            echo "❌ Bridge NSS validation failed"
+            exit 1
+          fi
+
+          # Validate NSS certificates inside the server container
+          echo "🔍 Validating server NSS certificates..."
+          if docker exec sigul-server \
+            /usr/local/bin/validate-nss.sh server; then
+            echo "✅ Server NSS validation passed"
+          else
+            echo "❌ Server NSS validation failed"
+            exit 1
+          fi
+
+          echo "✅ All NSS certificate validations passed"
+
+      - name: 'Run integration tests'
+        shell: bash
+        env:
+          SIGUL_CLIENT_IMAGE: >-
+            client-${{ steps.runner-arch.outputs.platform-id }}-image:test
+          SIGUL_SERVER_IMAGE: >-
+            server-${{ steps.runner-arch.outputs.platform-id }}-image:test
+          SIGUL_BRIDGE_IMAGE: >-
+            bridge-${{ steps.runner-arch.outputs.platform-id }}-image:test
+        run: |
+          echo 'Running Sigul integration tests against fresh infrastructure...'
+          chmod +x scripts/run-integration-tests.sh
+          ./scripts/run-integration-tests.sh --verbose
+
+      - name: 'Upload integration test artifacts'
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        if: always()
+        with:
+          name: >-
+            integration-test-results-${{
+              steps.runner-arch.outputs.platform-id
+            }}
+          path: |
+            test-artifacts/
+            *.txt
+            *.asc
+            *.rpm
+          retention-days: 7
+
+      - name: 'Clean up functional test infrastructure'
+        if: always()
+        shell: bash
+        run: |
+          echo "🧹 Cleaning up functional test infrastructure..."
+
+          # Stop and remove containers from functional tests
+          containers_to_cleanup=(
+            "sigul-server"
+            "sigul-bridge"
+            "sigul-client-integration"
+          )
+          for container in "${containers_to_cleanup[@]}"; do
+            if docker ps -a --format "{{.Names}}" | \
+               grep -q "^${container}$"; then
+              echo "Stopping and removing ${container}..."
+              docker stop "${container}" >/dev/null 2>&1 || true
+              docker rm "${container}" >/dev/null 2>&1 || true
+            fi
+          done
+
+          # Clean up networks if they exist
+          docker network ls --filter "name=sigul" --format "{{.Name}}" | \
+            xargs -r docker network rm >/dev/null 2>&1 || true
+
+          # Clean up any test volumes
+          docker volume ls --filter "name=sigul" --format "{{.Name}}" | \
+            xargs -r docker volume rm >/dev/null 2>&1 || true
+
+          echo "✅ Functional test infrastructure cleanup completed"
+
+  ### Cleanup Sigul Infrastructure ###
+  cleanup-infrastructure:
+    name: 'Cleanup Infrastructure'
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: read
+    timeout-minutes: 2
+    needs: [stack-deploy-test, functional-tests]
+    if: always()
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Cleanup any remaining containers'
+        shell: bash
+        run: |
+          echo 'Performing final cleanup of any remaining containers...'
+
+          # Clean up any containers that might still be running
+          containers_to_cleanup=(
+            "test-sigul-server"
+            "test-sigul-bridge"
+            "sigul-client-test"
+          )
+
+          for container in "${containers_to_cleanup[@]}"; do
+            if docker ps -a --filter "name=${container}" \
+              --format "{{.Names}}" | grep -q "^${container}$"; then
+              echo "Cleaning up ${container}..."
+              docker stop "${container}" || true
+              docker rm "${container}" || true
+            fi
+          done
+
+          # Clean up any volumes or networks if needed
+          docker system prune -f --volumes || true
+
+          echo '✅ Infrastructure cleanup completed'
+
+  ### Sigul Build Summary ###
+  summary:
+    name: 'Build Summary'
+    runs-on: 'ubuntu-latest'
+    needs: [
+      build-containers,
+      client-mock-test,
+      publish-ghcr,
+      stack-deploy-test,
+      functional-tests
+    ]
+    if: always()
+    timeout-minutes: 1
+    # yamllint disable rule:line-length
+    steps:
+      - name: 'Generate build summary'
+        shell: bash
+        run: |
+          {
+            echo "## Sigul Build Summary 🐳"
+            echo ""
+
+            echo "### Build Results"
+            echo "| Platform | Build | Test | Stack Deploy | Integration | Status |"
+            echo "|----------|-------|------|--------------|-------------|--------|"
+
+            # Note: In real implementation, check actual job statuses
+            echo "| linux/amd64 | ${{ needs.build-containers.result }} |" \
+              " ${{ needs.client-mock-test.result }} | ${{ needs.stack-deploy-test.result }} |" \
+              " ${{ needs.functional-tests.result }} | Complete |"
+            echo "| linux/arm64 | ${{ needs.build-containers.result }} |" \
+              " ${{ needs.client-mock-test.result }} | ${{ needs.stack-deploy-test.result }} |" \
+              " ${{ needs.functional-tests.result }} | Complete |"
+            echo ""
+
+            echo "### Stack Deployment Tests"
+            echo "- **Status**: ${{ needs.stack-deploy-test.result }}"
+            echo "- **Includes**: Stack deployment validation, infrastructure setup"
+            echo ""
+            echo "### Functional Tests"
+            echo "- **Status**: ${{ needs.functional-tests.result }}"
+            echo "- **Includes**: Integration testing against fresh infrastructure"
+            echo ""
+
+            echo "### GHCR Publishing"
+            echo "- **Registry**: ${{ env.REGISTRY }}"
+            echo "- **Image**: ${{ env.IMAGE_NAME }}"
+            echo "- **Status**: ${{ needs.publish-ghcr.result }}"
+            echo "- **Method**: Pre-built artifacts (no rebuild)"
+            echo ""
+
+            if [ "${{ needs.publish-ghcr.result }}" = "success" ]; then
+              echo "✅ **Optimization Success**: Images were published using " \
+                "pre-built artifacts, avoiding duplicate builds!"
+            elif [ "${{ needs.publish-ghcr.result }}" = "skipped" ]; then
+              echo "⏭️ **Publishing Skipped**: " \
+              "pull requests cannot publish containers."
+            else
+              echo "❌ **Publishing Failed**: Check the publish-ghcr job " \
+                "logs for details."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

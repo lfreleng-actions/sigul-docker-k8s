@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+
+# Sigul Bridge Configuration - NSS Based
+# This configuration uses NSS databases for certificate management
+# instead of file-based certificates, following Sigul's required architecture.
+
+[bridge]
+# Bridge listening ports configuration (binds to all interfaces automatically)
+client-listen-port = 44334
+server-listen-port = 44333
+server-hostname = sigul-server
+max-file-payload-size = 2097152
+
+# NSS Configuration for certificate management
+[nss]
+# NSS database directory (contains cert9.db, key4.db, pkcs11.txt)
+nss-dir = /var/sigul/nss/bridge
+
+# NSS database password file
+nss-password-file = /var/sigul/secrets/nss-password
+
+# Certificate nickname for bridge service certificate
+bridge-cert-nickname = sigul-bridge-cert
+
+# CA certificate nickname (bridge acts as CA)
+ca-cert-nickname = sigul-ca
+
+# Enable TLS requirement
+require-tls = true
+
+# FIPS mode (set to false for testing, true for production)
+fips-mode = false
+
+[daemon]
+uid = sigul
+gid = sigul
+
+# Logging configuration
+[logging]
+# Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+log-level = INFO
+
+# Log file location
+log-file = /var/log/sigul/bridge.log
+
+# Enable console logging
+console-logging = true
+
+# Database configuration for bridge metadata
+[database]
+# Bridge uses a simple database for tracking connections and state
+database-path = /var/sigul/database/bridge.db
+
+# Security settings
+[security]
+# Maximum concurrent connections
+max-connections = 100
+
+# Connection timeout in seconds
+connection-timeout = 300
+
+# Enable certificate verification
+verify-certificates = true
+
+# Performance tuning
+[performance]
+# Worker thread pool size
+worker-threads = 4
+
+# Buffer size for file transfers
+buffer-size = 8192
+
+# Keep-alive timeout for connections
+keepalive-timeout = 60

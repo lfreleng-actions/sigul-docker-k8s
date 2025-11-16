@@ -1,0 +1,154 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+
+# Sigul Client Configuration - NSS Based
+# This configuration uses NSS databases for certificate management
+# and connects to the bridge component for signing operations.
+
+[client]
+# Bridge connection configuration
+bridge-hostname = sigul-bridge
+bridge-port = 44334
+server-hostname = sigul-server
+max-file-payload-size = 2097152
+
+# User configuration
+user-name = admin
+
+# Connection settings
+connection-timeout = 60
+retry-attempts = 3
+retry-delay = 5
+
+# NSS Configuration for certificate management
+[nss]
+# NSS database directory (contains cert9.db, key4.db, pkcs11.txt)
+nss-dir = /var/sigul/nss/client
+
+# NSS database password file
+nss-password-file = /var/sigul/secrets/nss-password
+
+# Certificate nickname for client certificate
+client-cert-nickname = sigul-client-cert
+
+# CA certificate nickname (from bridge)
+ca-cert-nickname = sigul-ca
+
+# Enable TLS requirement
+require-tls = true
+
+# FIPS mode (set to false for testing, true for production)
+fips-mode = false
+
+[daemon]
+uid = sigul
+gid = sigul
+
+# Process management
+pidfile = /var/run/sigul/client.pid
+daemonize = false
+
+# Logging configuration
+[logging]
+# Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+log-level = INFO
+
+# Log file location
+log-file = /var/log/sigul/client.log
+
+# Enable console logging
+console-logging = true
+
+# Log rotation settings
+log-max-size = 10MB
+log-backup-count = 5
+
+# Security settings
+[security]
+# Enable certificate verification
+verify-certificates = true
+
+# Session timeout in seconds
+session-timeout = 3600
+
+# Maximum file size for signing operations
+max-file-size = 100MB
+
+# Signing configuration
+[signing]
+# Default signing algorithm
+default-algorithm = sha256
+
+# Signing timeout in seconds
+signing-timeout = 300
+
+# Enable signature verification after signing
+verify-signatures = true
+
+# Output format for signatures (detached, clearsign, normal)
+default-output-format = detached
+
+# GPG configuration
+[gpg]
+# GPG executable path
+gpg-executable = /usr/bin/gpg2
+
+# GPG options for verification
+gpg-verify-options = --trust-model always
+
+# Performance tuning
+[performance]
+# Buffer size for file transfers
+buffer-size = 8192
+
+# Keep-alive timeout for connections
+keepalive-timeout = 30
+
+# Maximum concurrent operations
+max-concurrent-operations = 3
+
+# Cache settings
+[cache]
+# Enable response caching
+enable-cache = true
+
+# Cache directory
+cache-dir = /var/sigul/cache
+
+# Cache expiration time in seconds
+cache-expiration = 3600
+
+# Maximum cache size in MB
+max-cache-size = 100
+
+# UI and output settings
+[output]
+# Output format (json, text, xml)
+default-format = text
+
+# Enable colored output
+colored-output = true
+
+# Verbosity level (0=quiet, 1=normal, 2=verbose, 3=debug)
+verbosity = 1
+
+# Show progress indicators
+show-progress = true
+
+# Network settings
+[network]
+# Enable HTTP proxy support
+use-proxy = false
+
+# Proxy URL (if use-proxy is true)
+proxy-url =
+
+# Proxy authentication
+proxy-username =
+proxy-password =
+
+# Connection pool size
+connection-pool-size = 5
+
+# DNS timeout in seconds
+dns-timeout = 10
