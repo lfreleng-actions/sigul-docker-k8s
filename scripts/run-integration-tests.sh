@@ -249,7 +249,7 @@ start_client_container() {
         -v "${client_config_volume}":/etc/sigul:rw \
         -w /workspace \
         -e SIGUL_ROLE=client \
-        -e SIGUL_BRIDGE_HOSTNAME=sigul-bridge \
+        -e SIGUL_BRIDGE_HOSTNAME=sigul-bridge.example.org \
         -e SIGUL_BRIDGE_CLIENT_PORT=44334 \
         -e SIGUL_MOCK_MODE=false \
         -e NSS_PASSWORD="${EPHEMERAL_NSS_PASSWORD}" \
@@ -323,9 +323,9 @@ start_client_container() {
 # Auto-generated for integration testing
 
 [client]
-bridge-hostname: sigul-bridge
+bridge-hostname: sigul-bridge.example.org
 bridge-port: 44334
-server-hostname: sigul-server
+server-hostname: sigul-server.example.org
 
 [gnupg]
 gnupg-bin: /usr/bin/gpg2
