@@ -39,6 +39,7 @@ readonly SERVER_IMPORT_DIR="/etc/pki/sigul/bridge/server-export"
 
 # Certificate nicknames
 readonly CA_NICKNAME="sigul-ca"
+readonly BRIDGE_CERT_NICKNAME="sigul-bridge-cert"
 readonly SERVER_CERT_NICKNAME="sigul-server-cert"
 
 #######################################
@@ -189,6 +190,31 @@ import_ca_certificate() {
     success "CA certificate imported (public only, no private key)"
 }
 
+import_bridge_certificate() {
+    log "Importing bridge certificate (public only)..."
+
+    local password_file="${SERVER_NSS_DIR}/.nss-password"
+
+    # Check if bridge certificate already imported
+    if certutil -L -d "sql:${SERVER_NSS_DIR}" -f "${password_file}" -n "${BRIDGE_CERT_NICKNAME}" &>/dev/null; then
+        log "Bridge certificate already imported"
+        return 0
+    fi
+
+    # Import bridge certificate for SSL verification
+    if ! certutil -A \
+        -d "sql:${SERVER_NSS_DIR}" \
+        -n "${BRIDGE_CERT_NICKNAME}" \
+        -t "P,P,P" \
+        -a \
+        -f "${password_file}" \
+        -i "${CA_IMPORT_DIR}/bridge-cert.crt"; then
+        fatal "Failed to import bridge certificate"
+    fi
+
+    success "Bridge certificate imported (public only, for SSL verification)"
+}
+
 import_server_certificate() {
     log "Importing server certificate and private key..."
 
@@ -260,6 +286,14 @@ verify_certificates() {
         debug "CA certificate verified"
     fi
 
+    # Verify bridge certificate
+    if ! certutil -L -d "sql:${SERVER_NSS_DIR}" -f "${password_file}" -n "${BRIDGE_CERT_NICKNAME}" &>/dev/null; then
+        error "Bridge certificate verification failed"
+        verification_failed=1
+    else
+        debug "Bridge certificate verified"
+    fi
+
     # Verify server certificate
     if ! certutil -L -d "sql:${SERVER_NSS_DIR}" -f "${password_file}" -n "${SERVER_CERT_NICKNAME}" &>/dev/null; then
         warn "Server certificate not found with expected nickname"
@@ -309,6 +343,7 @@ display_certificate_info() {
     echo ""
     echo "  Security status:"
     echo "    ✓ CA certificate imported (public only)"
+    echo "    ✓ Bridge certificate imported (public only)"
     echo "    ✓ Server certificate and key imported"
     echo "    ✓ CA private key NOT present (correct)"
     echo ""
@@ -334,6 +369,7 @@ main() {
 
     # Import certificates
     import_ca_certificate
+    import_bridge_certificate
     import_server_certificate
 
     # Verify everything
