@@ -37,7 +37,7 @@ signing-timeout: 60
 [database]
 # SQLite database location (FHS-compliant)
 # Production: /var/lib/sigul/server.sqlite
-database-path: /var/lib/sigul/server/sigul.db
+database-path: /var/lib/sigul/server.sqlite
 
 [gnupg]
 # GnuPG configuration directory (FHS-compliant)

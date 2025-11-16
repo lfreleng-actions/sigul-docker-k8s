@@ -8,10 +8,7 @@
 # It matches the direct invocation pattern used in production deployments.
 #
 # Production Pattern:
-#   /usr/sbin/sigul_server -c /etc/sigul/server.conf \
-#       --internal-log-dir=/var/log/sigul-default \
-#       --internal-pid-dir=/run/sigul-default \
-#       -v
+#   /usr/sbin/sigul_server -c /etc/sigul/server.conf
 #
 # Key Design Principles:
 # - Minimal wrapper logic
@@ -33,9 +30,8 @@ readonly NC='\033[0m'
 readonly CONFIG_FILE="/etc/sigul/server.conf"
 readonly NSS_DIR="/etc/pki/sigul/server"
 readonly DATA_DIR="/var/lib/sigul"
-readonly GNUPG_DIR="$DATA_DIR/gnupg"
-readonly LOG_DIR="/var/log/sigul-default"
-readonly PID_DIR="/run/sigul-default"
+readonly SERVER_DATA_DIR="/var/lib/sigul/server"
+readonly GNUPG_DIR="$SERVER_DATA_DIR/gnupg"
 
 # Logging functions
 log() {
@@ -229,19 +225,52 @@ initialize_directories() {
         chmod 755 "$DATA_DIR"
     fi
 
-    # Ensure log directory exists
-    if [ ! -d "$LOG_DIR" ]; then
-        mkdir -p "$LOG_DIR"
-        chmod 755 "$LOG_DIR"
-    fi
-
-    # Ensure PID directory exists
-    if [ ! -d "$PID_DIR" ]; then
-        mkdir -p "$PID_DIR"
-        chmod 755 "$PID_DIR"
+    # Ensure server data directory exists
+    if [ ! -d "$SERVER_DATA_DIR" ]; then
+        log "Creating server data directory at $SERVER_DATA_DIR"
+        mkdir -p "$SERVER_DATA_DIR"
+        chmod 755 "$SERVER_DATA_DIR"
     fi
 
     success "Runtime directories initialized"
+}
+
+initialize_database() {
+    log "Initializing database..."
+
+    # Extract database path from configuration
+    local db_path
+    if ! db_path=$(grep "^database-path:" "$CONFIG_FILE" 2>/dev/null | cut -d: -f2 | tr -d ' '); then
+        warn "Cannot extract database-path from configuration, using default"
+        db_path="/var/lib/sigul/server.sqlite"
+    fi
+
+    if [ -z "$db_path" ]; then
+        warn "Database path not configured, using default"
+        db_path="/var/lib/sigul/server.sqlite"
+    fi
+
+    log "Database path: $db_path"
+
+    # Ensure database directory exists
+    local db_dir
+    db_dir=$(dirname "$db_path")
+    if [ ! -d "$db_dir" ]; then
+        log "Creating database directory at $db_dir"
+        mkdir -p "$db_dir"
+        chmod 755 "$db_dir"
+    fi
+
+    # Create empty database file if it doesn't exist
+    # Sigul will initialize the schema on first run
+    if [ ! -f "$db_path" ]; then
+        log "Creating database file at $db_path"
+        touch "$db_path"
+        chmod 644 "$db_path"
+        success "Database file created (schema will be initialized by Sigul)"
+    else
+        log "Database file already exists"
+    fi
 }
 
 #######################################
@@ -250,20 +279,15 @@ initialize_directories() {
 
 start_server_service() {
     log "Starting Sigul Server service..."
-    log "Command: /usr/sbin/sigul_server -c $CONFIG_FILE --internal-log-dir=$LOG_DIR --internal-pid-dir=$PID_DIR -v"
+    log "Command: /usr/sbin/sigul_server -c $CONFIG_FILE"
     log "Configuration: $CONFIG_FILE"
-    log "Log directory: $LOG_DIR"
-    log "PID directory: $PID_DIR"
 
     success "Server initialized successfully"
 
     # Execute server service with production-aligned command
     # Using exec to replace shell process with server process
     exec /usr/sbin/sigul_server \
-        -c "$CONFIG_FILE" \
-        --internal-log-dir="$LOG_DIR" \
-        --internal-pid-dir="$PID_DIR" \
-        -v
+        -c "$CONFIG_FILE"
 }
 
 #######################################
@@ -286,6 +310,7 @@ main() {
     # Initialize required directories
     initialize_gnupg_directory
     initialize_directories
+    initialize_database
 
     # Start the service
     start_server_service

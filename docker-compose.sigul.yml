@@ -133,7 +133,7 @@ services:
       - "44333:44333"
       - "44334:44334"
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "44333"]
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/localhost/44333' 2>/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5

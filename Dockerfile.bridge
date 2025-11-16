@@ -37,7 +37,7 @@ RUN dnf update -y && \
 
 # Install EPEL-dependent packages and Python packages via pip
 RUN dnf install -y --setopt=install_weak_deps=False \
-        python3-nss rpm-head-signing gnupg2 jq && \
+        python3-nss rpm-head-signing gnupg2 jq python3-fedora && \
     pip3 install SQLAlchemy==1.3.24 && \
     dnf clean all
 
@@ -90,6 +90,14 @@ RUN if getent passwd sigul >/dev/null; then \
     mkdir -p /var/lib/sigul/bridge && \
     mkdir -p /var/log/sigul/bridge && \
     mkdir -p /run/sigul/bridge && \
+    # Pre-create log file with correct ownership for sigul user
+    touch /var/log/sigul_bridge.log && \
+    chown sigul:sigul /var/log/sigul_bridge.log && \
+    chmod 644 /var/log/sigul_bridge.log && \
+    # Pre-create PID file with correct ownership for sigul user
+    touch /var/run/sigul_bridge.pid && \
+    chown sigul:sigul /var/run/sigul_bridge.pid && \
+    chmod 644 /var/run/sigul_bridge.pid && \
     chown -R sigul:sigul /etc/sigul /etc/pki/sigul /var/lib/sigul /var/log/sigul /run/sigul && \
     chmod 755 /etc/sigul /etc/pki/sigul /var/lib/sigul /var/log/sigul /run/sigul && \
     chmod 755 /etc/pki/sigul/bridge /var/lib/sigul/bridge /var/log/sigul/bridge /run/sigul/bridge && \

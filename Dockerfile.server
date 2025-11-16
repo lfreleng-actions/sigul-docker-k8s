@@ -37,7 +37,7 @@ RUN dnf update -y && \
 
 # Install EPEL-dependent packages and Python packages via pip
 RUN dnf install -y --setopt=install_weak_deps=False \
-        python3-nss rpm-head-signing gnupg2 jq && \
+        python3-nss rpm-head-signing gnupg2 jq python3-fedora && \
     pip3 install SQLAlchemy==1.3.24 && \
     dnf clean all
 
@@ -91,6 +91,14 @@ RUN if getent passwd sigul >/dev/null; then \
     mkdir -p /var/lib/sigul/server/gnupg && \
     mkdir -p /var/log/sigul/server && \
     mkdir -p /run/sigul/server && \
+    # Pre-create log file with correct ownership for sigul user
+    touch /var/log/sigul_server.log && \
+    chown sigul:sigul /var/log/sigul_server.log && \
+    chmod 644 /var/log/sigul_server.log && \
+    # Pre-create PID file with correct ownership for sigul user
+    touch /var/run/sigul_server.pid && \
+    chown sigul:sigul /var/run/sigul_server.pid && \
+    chmod 644 /var/run/sigul_server.pid && \
     chown -R sigul:sigul /etc/sigul /etc/pki/sigul /var/lib/sigul /var/log/sigul /run/sigul && \
     chmod 755 /etc/sigul /etc/pki/sigul /var/lib/sigul /var/log/sigul /run/sigul && \
     chmod 755 /etc/pki/sigul/server /var/lib/sigul/server /var/log/sigul/server /run/sigul/server && \

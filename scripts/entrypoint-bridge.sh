@@ -8,7 +8,7 @@
 # It matches the direct invocation pattern used in production deployments.
 #
 # Production Pattern:
-#   /usr/sbin/sigul_bridge -v
+#   /usr/sbin/sigul_bridge
 #
 # Key Design Principles:
 # - Minimal wrapper logic
@@ -160,14 +160,14 @@ validate_ca_certificate() {
 
 start_bridge_service() {
     log "Starting Sigul Bridge service..."
-    log "Command: /usr/sbin/sigul_bridge -v"
+    log "Command: /usr/sbin/sigul_bridge"
     log "Configuration: $CONFIG_FILE"
 
     success "Bridge initialized successfully"
 
     # Execute bridge service with production-aligned command
     # Using exec to replace shell process with bridge process
-    exec /usr/sbin/sigul_bridge -v
+    exec /usr/sbin/sigul_bridge
 }
 
 #######################################

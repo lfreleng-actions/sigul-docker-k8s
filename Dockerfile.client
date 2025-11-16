@@ -80,6 +80,10 @@ RUN if getent passwd sigul >/dev/null; then \
     mkdir -p /var/lib/sigul && \
     chown sigul:sigul /var/lib/sigul && \
     chmod 755 /var/lib/sigul && \
+    # Pre-create log file with correct ownership for sigul user
+    touch /var/log/sigul_client.log && \
+    chown sigul:sigul /var/log/sigul_client.log && \
+    chmod 644 /var/log/sigul_client.log && \
     # Set proper permissions on PKI files after user creation
     # Only chmod files that exist (some are generated at runtime)
     if ls /workspace/pki/*.crt >/dev/null 2>&1; then chmod 644 /workspace/pki/*.crt; fi && \
