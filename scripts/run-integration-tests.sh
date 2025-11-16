@@ -193,25 +193,56 @@ start_client_container() {
     # Remove any existing client container
     docker rm -f "$client_container_name" 2>/dev/null || true
 
-    # Detect the bridge volume name
-    local bridge_volume
-    bridge_volume=$(docker volume ls --format "{{.Name}}" | grep -E "(sigul.*bridge.*data|bridge.*data)" | head -n1)
+    # Detect the bridge NSS volume name (contains certificates, not data)
+    local bridge_nss_volume
+    bridge_nss_volume=$(docker volume ls --format "{{.Name}}" | grep -E "(sigul.*bridge.*nss|bridge.*nss)" | head -n1)
 
-    if [[ -z "$bridge_volume" ]]; then
-        error "Could not find bridge data volume"
+    if [[ -z "$bridge_nss_volume" ]]; then
+        error "Could not find bridge NSS volume"
         debug "Available volumes:"
         docker volume ls
         return 1
     fi
 
-    verbose "Using bridge volume: $bridge_volume"
+    verbose "Using bridge NSS volume: $bridge_nss_volume"
+
+    # Detect or create client PKI volume (contains NSS databases for all components)
+    local client_pki_volume
+    
+    client_pki_volume=$(docker volume ls --format "{{.Name}}" | grep -E "(sigul.*client.*pki|client.*pki)" | head -n1)
+    if [[ -z "$client_pki_volume" ]]; then
+        verbose "Creating client PKI volume for integration tests"
+        client_pki_volume="sigul-integration-client-pki"
+        docker volume create "$client_pki_volume" >/dev/null
+        
+        # Initialize volume with correct ownership (UID 1000 = sigul user)
+        verbose "Setting ownership on client PKI volume"
+        docker run --rm -v "$client_pki_volume:/target" alpine:3.19 \
+            sh -c "mkdir -p /target && chown -R 1000:1000 /target" >/dev/null 2>&1
+    fi
+    verbose "Using client PKI volume: $client_pki_volume"
+    
+    client_config_volume=$(docker volume ls --format "{{.Name}}" | grep -E "(sigul.*client.*config|client.*config)" | head -n1)
+    if [[ -z "$client_config_volume" ]]; then
+        verbose "Creating client config volume for integration tests"
+        client_config_volume="sigul-integration-client-config"
+        docker volume create "$client_config_volume" >/dev/null
+        
+        # Initialize volume with correct ownership (UID 1000 = sigul user)
+        verbose "Setting ownership on client config volume"
+        docker run --rm -v "$client_config_volume:/target" alpine:3.19 \
+            sh -c "mkdir -p /target && chown -R 1000:1000 /target" >/dev/null 2>&1
+    fi
+    verbose "Using client config volume: $client_config_volume"
 
     # Start the client container with unified initialization
     if ! docker run -d --name "$client_container_name" \
         --network "$network_name" \
         --user sigul \
         -v "${PROJECT_ROOT}:/workspace:rw" \
-        -v "${bridge_volume}":/etc/pki/sigul/bridge-shared:ro \
+        -v "${bridge_nss_volume}":/etc/pki/sigul/bridge-shared:ro \
+        -v "${client_pki_volume}":/etc/pki/sigul:rw \
+        -v "${client_config_volume}":/etc/sigul:rw \
         -w /workspace \
         -e SIGUL_ROLE=client \
         -e SIGUL_BRIDGE_HOSTNAME=sigul-bridge \
@@ -770,6 +801,11 @@ cleanup_containers() {
         docker rm sigul-server sigul-bridge sigul-client-test 2>/dev/null || true
         success "Direct container cleanup completed"
     fi
+
+    # Clean up integration test volumes if they were created
+    verbose "Cleaning up integration test volumes..."
+    docker volume rm sigul-integration-client-pki 2>/dev/null || true
+    docker volume rm sigul-integration-client-config 2>/dev/null || true
 
     success "Container cleanup completed"
 }

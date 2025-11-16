@@ -351,7 +351,7 @@ class TestCertificates:
         """Test that NSS databases are properly initialized"""
         # Test bridge NSS database
         exit_code, output, error = sigul_stack.run_command_in_container(
-            "bridge", ["certutil", "-L", "-d", "sql:/var/sigul/nss/bridge"]
+            "bridge", ["certutil", "-L", "-d", "sql:/etc/pki/sigul/bridge"]
         )
         assert exit_code == 0, f"Bridge NSS database not accessible: {error}"
         assert "sigul-ca" in output, "Bridge missing CA certificate"
@@ -359,7 +359,7 @@ class TestCertificates:
 
         # Test server NSS database
         exit_code, output, error = sigul_stack.run_command_in_container(
-            "server", ["certutil", "-L", "-d", "sql:/var/sigul/nss/server"]
+            "server", ["certutil", "-L", "-d", "sql:/etc/pki/sigul/server"]
         )
         assert exit_code == 0, f"Server NSS database not accessible: {error}"
         assert "sigul-ca" in output, "Server missing CA certificate"
@@ -369,7 +369,7 @@ class TestCertificates:
         """Test that CA certificates are properly shared between components"""
         # Check CA export from bridge
         exit_code, output, error = sigul_stack.run_command_in_container(
-            "bridge", ["ls", "-la", "/var/sigul/ca-export/"]
+            "bridge", ["ls", "-la", "/var/lib/sigul/ca-export/"]
         )
         assert exit_code == 0, f"Cannot access bridge CA export: {error}"
         assert "bridge-ca.crt" in output, "CA certificate not exported"
@@ -382,7 +382,7 @@ class TestCertificates:
                 "openssl",
                 "x509",
                 "-in",
-                "/var/sigul/ca-export/bridge-ca.crt",
+                "/var/lib/sigul/ca-export/bridge-ca.crt",
                 "-text",
                 "-noout",
             ],
@@ -395,14 +395,14 @@ class TestCertificates:
         # Check bridge CA trust flags
         exit_code, output, error = sigul_stack.run_command_in_container(
             "bridge",
-            ["certutil", "-L", "-d", "sql:/var/sigul/nss/bridge", "-n", "sigul-ca"],
+            ["certutil", "-L", "-d", "sql:/etc/pki/sigul/bridge", "-n", "sigul-ca"],
         )
         assert exit_code == 0, f"Cannot check bridge CA trust: {error}"
 
         # Check server CA trust flags
         exit_code, output, error = sigul_stack.run_command_in_container(
             "server",
-            ["certutil", "-L", "-d", "sql:/var/sigul/nss/server", "-n", "sigul-ca"],
+            ["certutil", "-L", "-d", "sql:/etc/pki/sigul/server", "-n", "sigul-ca"],
         )
         assert exit_code == 0, f"Cannot check server CA trust: {error}"
 
@@ -415,7 +415,7 @@ class TestCertificates:
                 "certutil",
                 "-V",
                 "-d",
-                "sql:/var/sigul/nss/bridge",
+                "sql:/etc/pki/sigul/bridge",
                 "-n",
                 "sigul-bridge-cert",
                 "-u",
@@ -431,7 +431,7 @@ class TestCertificates:
                 "certutil",
                 "-V",
                 "-d",
-                "sql:/var/sigul/nss/server",
+                "sql:/etc/pki/sigul/server",
                 "-n",
                 "sigul-server-cert",
                 "-u",
@@ -455,7 +455,7 @@ class TestCommunication:
     def test_bridge_configuration(self, sigul_stack):
         """Test bridge configuration is correct"""
         exit_code, output, error = sigul_stack.run_command_in_container(
-            "bridge", ["cat", "/var/sigul/config/bridge.conf"]
+            "bridge", ["cat", "/etc/sigul/bridge.conf"]
         )
         assert exit_code == 0, f"Cannot read bridge config: {error}"
 
@@ -474,7 +474,7 @@ class TestCommunication:
     def test_server_configuration(self, sigul_stack):
         """Test server configuration is correct"""
         exit_code, output, error = sigul_stack.run_command_in_container(
-            "server", ["cat", "/var/sigul/config/server.conf"]
+            "server", ["cat", "/etc/sigul/server.conf"]
         )
         assert exit_code == 0, f"Cannot read server config: {error}"
 
@@ -499,11 +499,11 @@ class TestCommunication:
             "--network",
             NETWORK_NAME,
             "-v",
-            "sigul-sign-docker_sigul_client_data:/var/sigul",
+            "sigul-sign-docker_sigul_client_config:/etc/sigul",
             "-v",
-            "sigul-sign-docker_sigul_bridge_data:/var/sigul/bridge-shared:ro",
-            "-e",
-            "DEBUG=true",
+            "sigul-sign-docker_sigul_client_nss:/etc/pki/sigul/client",
+            "-v",
+            "sigul-sign-docker_sigul_bridge_nss:/etc/pki/sigul/bridge-shared:ro",
             "-e",
             "SIGUL_ROLE=client",
             "-e",
@@ -529,10 +529,10 @@ class TestCommunication:
             "--user",
             "1000:1000",
             "-v",
-            "sigul-sign-docker_sigul_client_data:/var/sigul",
+            "sigul-sign-docker_sigul_client_config:/etc/sigul",
             CLIENT_IMAGE,
             "cat",
-            "/var/sigul/config/client.conf",
+            "/etc/sigul/client.conf",
         ]
 
         result = subprocess.run(config_cmd, capture_output=True, text=True, timeout=30)
@@ -598,13 +598,15 @@ class TestAuthentication:
             "--network",
             NETWORK_NAME,
             "-v",
-            "sigul-sign-docker_sigul_client_data:/var/sigul",
+            "sigul-sign-docker_sigul_client_config:/etc/sigul",
             "-v",
-            "sigul-sign-docker_sigul_bridge_data:/var/sigul/bridge-shared:ro",
+            "sigul-sign-docker_sigul_client_nss:/etc/pki/sigul/client",
+            "-v",
+            "sigul-sign-docker_sigul_bridge_nss:/etc/pki/sigul/bridge-shared:ro",
             CLIENT_IMAGE,
             "bash",
             "-c",
-            "timeout 10 sigul -c /var/sigul/config/client.conf list-users 2>&1 || true",
+            "timeout 10 sigul -c /etc/sigul/client.conf list-users 2>&1 || true",
         ]
 
         result = subprocess.run(
@@ -656,13 +658,13 @@ class TestFunctional:
         """Test that admin users can be created"""
         # Create database if not exists
         sigul_stack.run_command_in_container(
-            "server", ["sigul_server_create_db", "-c", "/var/sigul/config/server.conf"]
+            "server", ["sigul_server_create_db", "-c", "/etc/sigul/server.conf"]
         )
 
         # Add admin user using batch mode
         create_admin_cmd = """
         printf "testadmin123\\0testadmin123\\0" | \
-        sigul_server_add_admin -c /var/sigul/config/server.conf --name testadmin --batch
+        sigul_server_add_admin -c /etc/sigul/server.conf --name testadmin --batch
         """
 
         exit_code, output, error = sigul_stack.run_command_in_container(
@@ -697,9 +699,11 @@ class TestFunctional:
             "--network",
             NETWORK_NAME,
             "-v",
-            "sigul-sign-docker_sigul_client_data:/var/sigul",
+            "sigul-sign-docker_sigul_client_config:/etc/sigul",
             "-v",
-            "sigul-sign-docker_sigul_bridge_data:/var/sigul/bridge-shared:ro",
+            "sigul-sign-docker_sigul_client_nss:/etc/pki/sigul/client",
+            "-v",
+            "sigul-sign-docker_sigul_bridge_nss:/etc/pki/sigul/bridge-shared:ro",
             "-e",
             "SIGUL_ROLE=client",
             "-e",
@@ -722,11 +726,13 @@ class TestFunctional:
             "--network",
             NETWORK_NAME,
             "-v",
-            "sigul-sign-docker_sigul_client_data:/var/sigul",
+            "sigul-sign-docker_sigul_client_config:/etc/sigul",
+            "-v",
+            "sigul-sign-docker_sigul_client_nss:/etc/pki/sigul/client",
             CLIENT_IMAGE,
             "bash",
             "-c",
-            "echo 'test123' | timeout 15 sigul -c /var/sigul/config/client.conf list-users 2>&1 || true",
+            "echo 'test123' | timeout 15 sigul -c /etc/sigul/client.conf list-users 2>&1 || true",
         ]
 
         result = subprocess.run(
