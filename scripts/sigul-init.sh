@@ -502,7 +502,7 @@ server-cert-nickname: ${server_fqdn}
 signing-timeout: 60
 
 [database]
-database-path: ${DATA_BASE_DIR}/server/sigul.db
+database-path: /var/lib/sigul/server.sqlite
 
 [gnupg]
 gnupg-home: ${DATA_BASE_DIR}/server/gnupg

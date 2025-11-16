@@ -73,7 +73,7 @@ log-file = ${LOGS_DIR}/bridge/bridge.log
 
 [server]
 # Database configuration
-database-path = ${DATA_BASE_DIR}/server/sigul.db
+database-path = /var/lib/sigul/server.sqlite
 
 # NSS database configuration
 nss-dir = sql:${NSS_BASE_DIR}/server

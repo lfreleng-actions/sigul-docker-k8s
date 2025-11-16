@@ -445,6 +445,23 @@ export_client_certificate() {
     success "Client certificate exported to ${CLIENT_EXPORT_DIR}/"
 }
 
+export_bridge_certificate() {
+    log "Exporting bridge certificate (public only)..."
+
+    local cert_file="${CA_EXPORT_DIR}/bridge-cert.crt"
+
+    # Export bridge certificate (public only, for client verification)
+    if ! certutil -L \
+        -d "sql:${BRIDGE_NSS_DIR}" \
+        -n "${BRIDGE_CERT_NICKNAME}" \
+        -a > "${cert_file}"; then
+        fatal "Failed to export bridge certificate"
+    fi
+
+    chmod 644 "${cert_file}"
+    success "Bridge certificate exported to ${cert_file}"
+}
+
 generate_bridge_config() {
     log "Generating bridge configuration..."
 
@@ -518,7 +535,7 @@ bridge-hostname: ${BRIDGE_FQDN}
 bridge-port: 44333
 
 [database]
-database-path: /var/lib/sigul/server/server.sqlite
+database-path: /var/lib/sigul/server.sqlite
 
 [daemon]
 unix-user: sigul
@@ -571,6 +588,7 @@ generate_all_certificates() {
     export_ca_certificate
     export_server_certificate
     export_client_certificate
+    export_bridge_certificate
 
     # Generate configurations
     generate_bridge_config

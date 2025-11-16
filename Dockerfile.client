@@ -40,6 +40,11 @@ RUN chmod +x /tmp/install-sigul.sh && \
     /tmp/install-sigul.sh --verify client && \
     rm /tmp/install-sigul.sh
 
+# Create symlinks for NSS unsupported tools to make them accessible for testing
+RUN ln -sf /usr/lib64/nss/unsupported-tools/tstclnt /usr/local/bin/tstclnt && \
+    ln -sf /usr/lib64/nss/unsupported-tools/selfserv /usr/local/bin/selfserv && \
+    ln -sf /usr/lib64/nss/unsupported-tools/strsclnt /usr/local/bin/strsclnt
+
 # NSS-only initialization
 
 # Copy NSS-only initialization script and validation tools

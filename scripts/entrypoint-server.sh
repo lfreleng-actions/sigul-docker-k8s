@@ -261,15 +261,59 @@ initialize_database() {
         chmod 755 "$db_dir"
     fi
 
-    # Create empty database file if it doesn't exist
-    # Sigul will initialize the schema on first run
-    if [ ! -f "$db_path" ]; then
-        log "Creating database file at $db_path"
-        touch "$db_path"
-        chmod 644 "$db_path"
-        success "Database file created (schema will be initialized by Sigul)"
+    # Check if database needs initialization
+    if [ ! -f "$db_path" ] || [ ! -s "$db_path" ]; then
+        log "Database does not exist or is empty - initializing schema..."
+        
+        # Run database creation script
+        if ! sigul_server_create_db -c "$CONFIG_FILE"; then
+            fatal "Failed to create database schema"
+        fi
+        
+        success "Database schema created successfully"
+        
+        # Verify schema was actually created
+        if command -v sqlite3 &>/dev/null; then
+            local table_count
+            table_count=$(sqlite3 "$db_path" "SELECT COUNT(*) FROM sqlite_master WHERE type='table';" 2>/dev/null || echo "0")
+            if [ "$table_count" -gt 0 ]; then
+                log "Database schema verified: $table_count tables created"
+            else
+                fatal "Database schema initialization failed - no tables created"
+            fi
+        else
+            warn "sqlite3 not available - cannot verify database schema"
+        fi
+        
+        # Create admin user if credentials are provided
+        if [ -n "${SIGUL_ADMIN_USER:-}" ] && [ -n "${SIGUL_ADMIN_PASSWORD:-}" ]; then
+            log "Creating admin user: ${SIGUL_ADMIN_USER}"
+            
+            # Use printf to handle password with newline for sigul_server_add_admin
+            if ! printf "%s\n%s\n" "$SIGUL_ADMIN_PASSWORD" "$SIGUL_ADMIN_PASSWORD" | \
+                sigul_server_add_admin -c "$CONFIG_FILE" -n "$SIGUL_ADMIN_USER"; then
+                warn "Failed to create admin user - you may need to create it manually"
+            else
+                success "Admin user '$SIGUL_ADMIN_USER' created successfully"
+            fi
+        else
+            warn "SIGUL_ADMIN_USER or SIGUL_ADMIN_PASSWORD not set"
+            warn "No admin user created - you will need to create one manually with:"
+            warn "  docker exec -it sigul-server sigul_server_add_admin -c /etc/sigul/server.conf"
+        fi
     else
-        log "Database file already exists"
+        log "Database already initialized"
+        
+        # Verify database has tables (basic sanity check)
+        if command -v sqlite3 &>/dev/null; then
+            local table_count
+            table_count=$(sqlite3 "$db_path" "SELECT COUNT(*) FROM sqlite_master WHERE type='table';" 2>/dev/null || echo "0")
+            if [ "$table_count" -gt 0 ]; then
+                log "Database contains $table_count tables"
+            else
+                warn "Database file exists but appears empty - may need reinitialization"
+            fi
+        fi
     fi
 }
 

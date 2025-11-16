@@ -123,13 +123,13 @@ Check database integrity:
 
 ```bash
 # Database integrity check
-docker exec sigul-server sqlite3 /var/lib/sigul/server/sigul.db "PRAGMA integrity_check;"
+docker exec sigul-server sqlite3 /var/lib/sigul/server.sqlite "PRAGMA integrity_check;"
 
 # Database size
-docker exec sigul-server du -sh /var/lib/sigul/server/sigul.db
+docker exec sigul-server du -sh /var/lib/sigul/server.sqlite
 
 # Table count
-docker exec sigul-server sqlite3 /var/lib/sigul/server/sigul.db ".tables"
+docker exec sigul-server sqlite3 /var/lib/sigul/server.sqlite ".tables"
 ```
 
 ### Certificate Status
@@ -190,7 +190,7 @@ docker exec sigul-bridge test -f /etc/sigul/bridge.conf && echo "OK" || echo "MI
 docker exec sigul-server test -f /etc/sigul/server.conf && echo "OK" || echo "MISSING"
 
 # Database
-docker exec sigul-server test -f /var/lib/sigul/server/sigul.db && echo "OK" || echo "MISSING"
+docker exec sigul-server test -f /var/lib/sigul/server.sqlite && echo "OK" || echo "MISSING"
 
 # GnuPG home
 docker exec sigul-server test -d /var/lib/sigul/server/gnupg && echo "OK" || echo "MISSING"
@@ -217,16 +217,16 @@ docker exec sigul-server ls -la /var/lib/sigul/server/gnupg
 
 ```bash
 # List users
-docker exec sigul-server sqlite3 /var/lib/sigul/server/sigul.db "SELECT * FROM users;"
+docker exec sigul-server sqlite3 /var/lib/sigul/server.sqlite "SELECT * FROM users;"
 
 # Count users
-docker exec sigul-server sqlite3 /var/lib/sigul/server/sigul.db "SELECT COUNT(*) FROM users;"
+docker exec sigul-server sqlite3 /var/lib/sigul/server.sqlite "SELECT COUNT(*) FROM users;"
 
 # Database schema
-docker exec sigul-server sqlite3 /var/lib/sigul/server/sigul.db ".schema"
+docker exec sigul-server sqlite3 /var/lib/sigul/server.sqlite ".schema"
 
 # Database statistics
-docker exec sigul-server sqlite3 /var/lib/sigul/server/sigul.db "SELECT name, COUNT(*) FROM sqlite_master GROUP BY type;"
+docker exec sigul-server sqlite3 /var/lib/sigul/server.sqlite "SELECT name, COUNT(*) FROM sqlite_master GROUP BY type;"
 ```
 
 ### Restart Services
@@ -406,7 +406,7 @@ docker-compose -f docker-compose.sigul.yml up -d --force-recreate sigul-server
 
 ```bash
 # Check database integrity
-docker exec sigul-server sqlite3 /var/lib/sigul/server/sigul.db "PRAGMA integrity_check;"
+docker exec sigul-server sqlite3 /var/lib/sigul/server.sqlite "PRAGMA integrity_check;"
 ```
 
 **Recovery:**
@@ -422,7 +422,7 @@ docker-compose -f docker-compose.sigul.yml down
 docker-compose -f docker-compose.sigul.yml up -d
 
 # 4. Verify
-docker exec sigul-server sqlite3 /var/lib/sigul/server/sigul.db "PRAGMA integrity_check;"
+docker exec sigul-server sqlite3 /var/lib/sigul/server.sqlite "PRAGMA integrity_check;"
 ```
 
 ### Certificate Expiry
@@ -596,7 +596,7 @@ Monitor key performance indicators:
 time docker exec sigul-server nc -zv sigul-bridge.example.org 44333
 
 # Database query time
-time docker exec sigul-server sqlite3 /var/lib/sigul/server/sigul.db "SELECT COUNT(*) FROM users;"
+time docker exec sigul-server sqlite3 /var/lib/sigul/server.sqlite "SELECT COUNT(*) FROM users;"
 
 # Certificate validation time
 time docker exec sigul-bridge certutil -V -n "sigul-bridge.example.org" -u V -d sql:/etc/pki/sigul

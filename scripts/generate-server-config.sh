@@ -67,7 +67,7 @@ bridge-hostname: ${BRIDGE_FQDN}
 bridge-port: 44333
 
 [database]
-database-path: /var/lib/sigul/server/server.sqlite
+database-path: /var/lib/sigul/server.sqlite
 
 [daemon]
 unix-user: sigul

@@ -316,7 +316,9 @@ start_client_container() {
 
         # Generate client configuration file
         verbose "Generating client configuration file..."
-        docker exec "$client_container_name" sh -c 'cat > /etc/sigul/client.conf << EOF
+        
+        # Run as root to overcome permission issues with /etc/sigul
+        docker exec --user root "$client_container_name" bash -c "cat > /etc/sigul/client.conf << EOFCONFIG
 # Sigul Client Configuration
 # Auto-generated for integration testing
 
@@ -335,17 +337,23 @@ gnupg-key-length: 4096
 client-cert-nickname: sigul-client-cert
 # CA certificate for validating bridge connections (public only)
 nss-ca-cert-nickname: sigul-ca
+# Bridge certificate for SSL verification
+nss-bridge-cert-nickname: sigul-bridge-cert
 # NSS database location
 nss-dir: /etc/pki/sigul/client
-nss-password: ${NSS_PASSWORD}
+nss-password: ${EPHEMERAL_NSS_PASSWORD}
 nss-min-tls: tls1.2
 
 # Security notes:
 # - Client has CA public certificate only (for validation)
+# - Client has bridge certificate (for SSL verification)
 # - Client does NOT have CA private key
 # - Client cannot sign new certificates
-EOF
-'
+EOFCONFIG
+"
+        
+        # Set proper ownership
+        docker exec --user root "$client_container_name" chown sigul:sigul /etc/sigul/client.conf
         
         if docker exec "$client_container_name" test -f /etc/sigul/client.conf; then
             verbose "Client configuration file generated successfully"
