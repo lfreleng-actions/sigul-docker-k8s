@@ -23,6 +23,42 @@
 # yamllint disable rule:line-length
 
 services:
+  # Certificate Initialization Container (Init Container Pattern)
+  # Runs before services start to ensure certificates exist
+  cert-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.bridge
+    container_name: sigul-cert-init
+    hostname: cert-init
+    user: "1000:1000"
+    environment:
+      # Certificate initialization mode: auto, force, skip
+      CERT_INIT_MODE: ${CERT_INIT_MODE:-auto}
+      # NSS Database password for secure operation
+      NSS_PASSWORD: ${NSS_PASSWORD:-auto_generated_ephemeral}
+      # FQDNs for certificate generation
+      BRIDGE_FQDN: ${BRIDGE_FQDN:-sigul-bridge.example.org}
+      SERVER_FQDN: ${SERVER_FQDN:-sigul-server.example.org}
+      # Certificate validity
+      CA_VALIDITY_MONTHS: ${CA_VALIDITY_MONTHS:-120}
+      CERT_VALIDITY_MONTHS: ${CERT_VALIDITY_MONTHS:-120}
+      # Debug mode
+      DEBUG: ${DEBUG:-false}
+    volumes:
+      # FHS-compliant volume mounts for certificate generation
+      - sigul_bridge_config:/etc/sigul:rw
+      - sigul_bridge_nss:/etc/pki/sigul/bridge:rw
+      - sigul_server_config:/etc/sigul:rw
+      - sigul_server_nss:/etc/pki/sigul/server:rw
+    networks:
+      - sigul-network
+    restart: "no"
+    entrypoint: ["/usr/local/bin/cert-init.sh"]
+    labels:
+      org.sigul.component: "init"
+      org.sigul.purpose: "certificate-initialization"
+
   # Sigul Server Container
   sigul-server:
     build:
@@ -59,6 +95,8 @@ services:
           - sigul-server.example.org
           - sigul-server
     depends_on:
+      cert-init:
+        condition: service_completed_successfully
       sigul-bridge:
         condition: service_healthy
 
@@ -83,6 +121,9 @@ services:
       SIGUL_ROLE: bridge
       # FQDN for certificate generation
       BRIDGE_FQDN: ${BRIDGE_FQDN:-sigul-bridge.example.org}
+    depends_on:
+      cert-init:
+        condition: service_completed_successfully
     volumes:
       # FHS-compliant volume mounts
       - sigul_bridge_config:/etc/sigul:rw
@@ -106,6 +147,9 @@ services:
           - sigul-bridge
     security_opt:
       - no-new-privileges:true
+    labels:
+      org.sigul.component: "bridge"
+      org.sigul.managed-certs: "true"
 
   # Sigul Client Test Environment
   sigul-client-test:
@@ -140,6 +184,8 @@ services:
     networks:
       - sigul-network
     depends_on:
+      cert-init:
+        condition: service_completed_successfully
       sigul-bridge:
         condition: service_healthy
     profiles:

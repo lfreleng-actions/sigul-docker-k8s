@@ -53,6 +53,10 @@ RUN chmod +x /tmp/install-sigul.sh && \
 COPY scripts/entrypoint-server.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+# Copy certificate initialization script
+COPY scripts/cert-init.sh /usr/local/bin/cert-init.sh
+RUN chmod +x /usr/local/bin/cert-init.sh
+
 # Copy validation tools (used during one-time setup, not startup)
 COPY scripts/validate-nss.sh /usr/local/bin/validate-nss.sh
 COPY scripts/lib/health.sh /usr/local/bin/health.sh

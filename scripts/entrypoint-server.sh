@@ -135,8 +135,16 @@ validate_nss_database() {
     # Check for cert9.db (modern NSS format)
     if [ ! -f "$NSS_DIR/cert9.db" ]; then
         error "NSS database not found at $NSS_DIR/cert9.db"
-        error "Certificates must be generated before starting the server"
-        fatal "Run certificate generation first"
+        error ""
+        error "This typically means the cert-init container did not run successfully."
+        error "Please check:"
+        error "  1. The cert-init container completed successfully"
+        error "  2. Environment variable NSS_PASSWORD is set"
+        error "  3. Volumes are properly mounted"
+        error ""
+        error "To force certificate regeneration, use:"
+        error "  CERT_INIT_MODE=force docker compose up"
+        fatal "Cannot start server without certificates"
     fi
 
     success "NSS database validated"
@@ -158,8 +166,13 @@ validate_certificate() {
     # Verify certificate exists in NSS database
     if ! certutil -L -d "sql:$NSS_DIR" -n "$cert_nickname" &>/dev/null; then
         error "Certificate '$cert_nickname' not found in NSS database"
+        error ""
         error "Available certificates in database:"
-        certutil -L -d "sql:$NSS_DIR" | tail -n +4 | awk '{print "  - " $1}'
+        certutil -L -d "sql:$NSS_DIR" | tail -n +4 | awk '{print "  - " $1}' 2>/dev/null || echo "  (none)"
+        error ""
+        error "This suggests the cert-init container ran but certificate generation failed."
+        error "Try regenerating certificates with:"
+        error "  CERT_INIT_MODE=force docker compose up"
         fatal "Required certificate missing"
     fi
 
@@ -183,6 +196,11 @@ validate_ca_certificate() {
     # Verify CA certificate exists in NSS database
     if ! certutil -L -d "sql:$NSS_DIR" -n "$ca_nickname" &>/dev/null; then
         error "CA certificate '$ca_nickname' not found in NSS database"
+        error ""
+        error "The CA certificate is essential for TLS trust between components."
+        error "This suggests incomplete certificate initialization."
+        error "Try regenerating certificates with:"
+        error "  CERT_INIT_MODE=force docker compose up"
         fatal "CA certificate is required for TLS trust"
     fi
 

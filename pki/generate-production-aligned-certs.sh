@@ -136,6 +136,21 @@ create_password_file() {
     log "Password file created: ${NSS_PASSWORD_FILE}"
 }
 
+# Create noise file for non-interactive certutil
+create_noise_file() {
+    log "Creating noise file for entropy..."
+
+    NOISE_FILE="${NSS_DB_DIR}/.noise"
+    
+    # Generate noise from /dev/urandom
+    if ! head -c 1024 /dev/urandom > "${NOISE_FILE}" 2>/dev/null; then
+        fatal "Failed to create noise file"
+    fi
+    
+    chmod 600 "${NOISE_FILE}"
+    log "Noise file created: ${NOISE_FILE}"
+}
+
 # Initialize NSS database
 initialize_nss_database() {
     log "Initializing NSS database (cert9.db format)..."
@@ -167,7 +182,11 @@ generate_ca_certificate() {
 
     log "Generating CA certificate..."
 
-    # Generate self-signed CA certificate
+    # Generate random serial number to avoid collisions (hex format with 0x prefix for certutil -m)
+    local ca_serial
+    ca_serial="0x$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+
+    # Generate self-signed CA certificate with noise file for non-interactive mode
     if ! certutil -S \
         -n "${CA_NICKNAME}" \
         -s "${CA_SUBJECT}" \
@@ -175,8 +194,10 @@ generate_ca_certificate() {
         -t "CT,C,C" \
         -k rsa \
         -g "${KEY_SIZE}" \
+        -z "${NOISE_FILE}" \
         -Z SHA256 \
         -v "${VALIDITY_MONTHS}" \
+        -m "${ca_serial}" \
         -d "sql:${NSS_DB_DIR}" \
         -f "${NSS_PASSWORD_FILE}" \
         --keyUsage certSigning,crlSigning \
@@ -277,6 +298,10 @@ generate_component_certificate() {
 
     log "Generating ${COMPONENT} certificate with FQDN and SAN..."
 
+    # Generate random serial number to avoid collisions (hex format with 0x prefix for certutil -m)
+    local cert_serial
+    cert_serial="0x$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+
     # Generate certificate with:
     # - FQDN as CN
     # - SAN extension with DNS name
@@ -289,21 +314,20 @@ generate_component_certificate() {
         -t "u,u,u" \
         -k rsa \
         -g "${KEY_SIZE}" \
+        -z "${NOISE_FILE}" \
         -Z SHA256 \
         -v "${VALIDITY_MONTHS}" \
+        -m "${cert_serial}" \
         -d "sql:${NSS_DB_DIR}" \
         -f "${NSS_PASSWORD_FILE}" \
         --extKeyUsage serverAuth,clientAuth \
         --keyUsage digitalSignature,keyEncipherment \
         -8 "${FQDN}" \
-        2 2>&1; then
+        2>&1; then
         fatal "Failed to generate ${COMPONENT} certificate"
     fi
 
     success "${COMPONENT} certificate generated: ${CERT_NICKNAME}"
-    log "  Common Name: CN=${FQDN}"
-    log "  SAN: DNS:${FQDN}"
-    log "  Extended Key Usage: serverAuth, clientAuth"
 }
 
 # List certificates in database
@@ -345,6 +369,11 @@ cleanup() {
         rm -f "${NSS_PASSWORD_FILE}"
         log "Cleaned up password file"
     fi
+    
+    if [ -f "${NOISE_FILE}" ]; then
+        rm -f "${NOISE_FILE}"
+        log "Cleaned up noise file"
+    fi
 }
 
 # Main execution
@@ -360,6 +389,7 @@ main() {
     # Create NSS infrastructure
     create_nss_directory
     create_password_file
+    create_noise_file
 
     # Initialize NSS database if needed
     initialize_nss_database
