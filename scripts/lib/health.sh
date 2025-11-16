@@ -329,11 +329,106 @@ nss_health_lib_info() {
     nss_log "  - nss_docker_health_*"
 }
 
+#######################################
+# Docker component health check
+#######################################
+
+# Check component health and return JSON with container and NSS status
+check_component_health() {
+    local component="$1"
+    local container_name="sigul-${component}"
+    
+    # Get docker compose command
+    local compose_cmd
+    if docker compose version >/dev/null 2>&1; then
+        compose_cmd="docker compose"
+    else
+        compose_cmd="docker-compose"
+    fi
+    
+    # Get container status using docker inspect
+    local container_json
+    container_json=$(docker inspect "$container_name" 2>/dev/null || echo '[]')
+    
+    # Extract container status fields
+    local status running restart_count exit_code
+    status=$(echo "$container_json" | jq -r '.[0].State.Status // "unknown"')
+    running=$(echo "$container_json" | jq -r '.[0].State.Running // false')
+    restart_count=$(echo "$container_json" | jq -r '.[0].RestartCount // 0')
+    exit_code=$(echo "$container_json" | jq -r '.[0].State.ExitCode // 0')
+    
+    # Check port reachability for bridge
+    local port_reachable="false"
+    if [[ "$component" == "bridge" ]] && [[ "$running" == "true" ]]; then
+        if timeout 2 bash -c "</dev/tcp/localhost/44334" 2>/dev/null; then
+            port_reachable="true"
+        fi
+    fi
+    
+    # Get NSS certificate information if container is running
+    local nss_certs='[]'
+    local nss_missing='[]'
+    
+    if [[ "$running" == "true" ]]; then
+        # Get list of certificates from NSS database
+        local cert_list
+        cert_list=$(docker exec "$container_name" certutil -d "sql:/var/lib/sigul/${component}/nss" -L 2>/dev/null | tail -n +4 | awk '{print $1}' | grep -v "^$" || echo "")
+        
+        if [[ -n "$cert_list" ]]; then
+            nss_certs=$(echo "$cert_list" | jq -R -s 'split("\n") | map(select(length > 0))')
+        fi
+        
+        # Check for expected certificates based on component
+        case "$component" in
+            "bridge")
+                if ! echo "$cert_list" | grep -q "sigul-bridge-cert"; then
+                    nss_missing='["sigul-bridge-cert"]'
+                fi
+                ;;
+            "server")
+                if ! echo "$cert_list" | grep -q "sigul-server-cert"; then
+                    nss_missing='["sigul-server-cert"]'
+                fi
+                ;;
+        esac
+    else
+        # Container not running, all certs are missing
+        case "$component" in
+            "bridge")
+                nss_missing='["sigul-bridge-cert"]'
+                ;;
+            "server")
+                nss_missing='["sigul-server-cert"]'
+                ;;
+        esac
+    fi
+    
+    # Build JSON response
+    cat <<EOF
+{
+  "containerStatus": {
+    "status": "$status",
+    "running": $running,
+    "restartCount": $restart_count,
+    "exitCode": $exit_code
+  },
+  "portStatus": {
+    "reachable": $port_reachable
+  },
+  "nssMetadata": {
+    "certificates": $nss_certs,
+    "missingCertificates": $nss_missing
+  }
+}
+EOF
+}
+
 # Export functions for use in other scripts
 export -f nss_log nss_success nss_error nss_warn
 export -f nss_database_exists nss_certificate_exists
 export -f nss_health_check_bridge nss_health_check_server nss_health_check_client nss_health_check_all
 export -f nss_docker_health_bridge nss_docker_health_server nss_docker_health_client
 export -f nss_get_cert_count nss_quick_status nss_health_lib_info
+export -f check_component_health
 
 nss_log "NSS Health Check Library loaded (version $SIGUL_NSS_HEALTH_LIB_VERSION)"

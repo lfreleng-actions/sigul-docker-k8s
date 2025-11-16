@@ -83,7 +83,7 @@ RUN if getent passwd sigul >/dev/null; then \
     # Create group first with GID 1000
     groupadd -g 1000 sigul && \
     # Create user with UID 1000 and GID 1000
-    useradd -r -u 1000 -g 1000 -d /var/lib/sigul -s /bin/bash sigul && \
+    useradd -u 1000 -g 1000 -d /var/lib/sigul -s /bin/bash sigul && \
     # Create FHS-compliant directory structure
     mkdir -p /etc/sigul && \
     mkdir -p /etc/pki/sigul/server && \

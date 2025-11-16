@@ -71,7 +71,7 @@ RUN if getent passwd sigul >/dev/null; then \
     # Create group first with GID 1000
     groupadd -g 1000 sigul && \
     # Create user with UID 1000 and GID 1000
-    useradd -r -u 1000 -g 1000 -d /var/sigul -s /bin/bash sigul && \
+    useradd -u 1000 -g 1000 -d /var/sigul -s /bin/bash sigul && \
     # Create unified sigul directory structure under /var/sigul
     mkdir -p /var/sigul && \
     chown sigul:sigul /var/sigul && \
