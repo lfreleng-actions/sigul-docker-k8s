@@ -994,7 +994,9 @@ run_integration_tests() {
             if timeout 15 docker exec sigul-client-integration \
                 tstclnt -h sigul-bridge -p 44334 \
                 -d sql:/etc/pki/sigul/client \
-                -w  \
+                -n sigul-client-cert \
+                -W /etc/pki/sigul/client/.nss-password \
+                -V tls1.2:tls1.3 \
                 -v >/dev/null 2>&1; then
 
                 verbose "✓ SSL handshake successful - certificates and NSS are working"
