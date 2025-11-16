@@ -58,10 +58,10 @@ readonly SERVER_NSS_DIR="/etc/pki/sigul/server"
 readonly CLIENT_NSS_DIR="/etc/pki/sigul/client"
 readonly SHARED_CONFIG_DIR="/etc/sigul"
 
-# Export directories for certificate distribution
-readonly CA_EXPORT_DIR="${BRIDGE_NSS_DIR}/../ca-export"
-readonly SERVER_EXPORT_DIR="${BRIDGE_NSS_DIR}/../server-export"
-readonly CLIENT_EXPORT_DIR="${BRIDGE_NSS_DIR}/../client-export"
+# Export directories for certificate distribution (inside bridge NSS volume)
+readonly CA_EXPORT_DIR="${BRIDGE_NSS_DIR}/ca-export"
+readonly SERVER_EXPORT_DIR="${BRIDGE_NSS_DIR}/server-export"
+readonly CLIENT_EXPORT_DIR="${BRIDGE_NSS_DIR}/client-export"
 
 # Certificate nicknames (standardized)
 readonly CA_NICKNAME="sigul-ca"
@@ -339,6 +339,7 @@ generate_component_certificate() {
     local validity_days=$((CERT_VALIDITY_MONTHS * 30))
 
     # Generate certificate request and sign it with CA
+    # Note: No -2 flag for non-CA certificates (basic constraints not needed)
     if ! certutil -S \
         -d "sql:${BRIDGE_NSS_DIR}" \
         -n "${cert_nickname}" \
@@ -352,12 +353,7 @@ generate_component_certificate() {
         -f "${password_file}" \
         --keyUsage digitalSignature,keyEncipherment \
         --extKeyUsage serverAuth,clientAuth \
-        -8 "${fqdn}" \
-        -2 <<EOF
-n
-n
-EOF
-    then
+        -8 "${fqdn}"; then
         fatal "Failed to generate ${component} certificate"
     fi
 

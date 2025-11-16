@@ -34,8 +34,8 @@ DEBUG="${DEBUG:-false}"
 
 # FHS-compliant paths
 readonly SERVER_NSS_DIR="/etc/pki/sigul/server"
-readonly CA_IMPORT_DIR="/etc/pki/sigul/bridge/../ca-export"
-readonly SERVER_IMPORT_DIR="/etc/pki/sigul/bridge/../server-export"
+readonly CA_IMPORT_DIR="/etc/pki/sigul/bridge/ca-export"
+readonly SERVER_IMPORT_DIR="/etc/pki/sigul/bridge/server-export"
 
 # Certificate nicknames
 readonly CA_NICKNAME="sigul-ca"
@@ -167,8 +167,10 @@ initialize_nss_database() {
 import_ca_certificate() {
     log "Importing CA certificate (public only)..."
 
+    local password_file="${SERVER_NSS_DIR}/.nss-password"
+
     # Check if CA already imported
-    if certutil -L -d "sql:${SERVER_NSS_DIR}" -n "${CA_NICKNAME}" &>/dev/null; then
+    if certutil -L -d "sql:${SERVER_NSS_DIR}" -f "${password_file}" -n "${CA_NICKNAME}" &>/dev/null; then
         log "CA certificate already imported"
         return 0
     fi
@@ -179,6 +181,7 @@ import_ca_certificate() {
         -n "${CA_NICKNAME}" \
         -t "CT,C,C" \
         -a \
+        -f "${password_file}" \
         -i "${CA_IMPORT_DIR}/ca.crt"; then
         fatal "Failed to import CA certificate"
     fi
@@ -241,6 +244,8 @@ verify_certificates() {
 
     local verification_failed=0
 
+    local password_file="${SERVER_NSS_DIR}/.nss-password"
+
     # Verify NSS database exists
     if [[ ! -f "${SERVER_NSS_DIR}/cert9.db" ]]; then
         error "NSS database not found"
@@ -248,7 +253,7 @@ verify_certificates() {
     fi
 
     # Verify CA certificate
-    if ! certutil -L -d "sql:${SERVER_NSS_DIR}" -n "${CA_NICKNAME}" &>/dev/null; then
+    if ! certutil -L -d "sql:${SERVER_NSS_DIR}" -f "${password_file}" -n "${CA_NICKNAME}" &>/dev/null; then
         error "CA certificate verification failed"
         verification_failed=1
     else
@@ -256,11 +261,11 @@ verify_certificates() {
     fi
 
     # Verify server certificate
-    if ! certutil -L -d "sql:${SERVER_NSS_DIR}" -n "${SERVER_CERT_NICKNAME}" &>/dev/null; then
+    if ! certutil -L -d "sql:${SERVER_NSS_DIR}" -f "${password_file}" -n "${SERVER_CERT_NICKNAME}" &>/dev/null; then
         warn "Server certificate not found with expected nickname"
         # Check if any certificate was imported
         local cert_count
-        cert_count=$(certutil -L -d "sql:${SERVER_NSS_DIR}" | grep -v "Certificate Nickname" | grep -v "^$" | wc -l)
+        cert_count=$(certutil -L -d "sql:${SERVER_NSS_DIR}" -f "${password_file}" | grep -v "Certificate Nickname" | grep -v "^$" | wc -l)
         if [[ $cert_count -lt 2 ]]; then
             error "Server certificate verification failed"
             verification_failed=1
@@ -273,7 +278,7 @@ verify_certificates() {
 
     # Verify CA private key is NOT present
     log "Verifying CA private key is NOT present (security check)..."
-    if certutil -K -d "sql:${SERVER_NSS_DIR}" 2>/dev/null | grep -q "${CA_NICKNAME}"; then
+    if certutil -K -d "sql:${SERVER_NSS_DIR}" -f "${password_file}" 2>/dev/null | grep -q "${CA_NICKNAME}"; then
         error "⚠️  SECURITY ISSUE: CA private key found on server!"
         error "⚠️  Server should NOT have CA signing authority"
         verification_failed=1
@@ -293,11 +298,14 @@ display_certificate_info() {
     echo ""
     echo "  Server NSS Database: ${SERVER_NSS_DIR}"
     echo ""
+    
+    local password_file="${SERVER_NSS_DIR}/.nss-password"
+    
     echo "  Imported certificates:"
-    certutil -L -d "sql:${SERVER_NSS_DIR}" 2>/dev/null | tail -n +5 | sed 's/^/    /'
+    certutil -L -d "sql:${SERVER_NSS_DIR}" -f "${password_file}" 2>/dev/null | tail -n +5 | sed 's/^/    /'
     echo ""
     echo "  Private keys available:"
-    certutil -K -d "sql:${SERVER_NSS_DIR}" 2>/dev/null | tail -n +2 | sed 's/^/    /'
+    certutil -K -d "sql:${SERVER_NSS_DIR}" -f "${password_file}" 2>/dev/null | tail -n +2 | sed 's/^/    /'
     echo ""
     echo "  Security status:"
     echo "    ✓ CA certificate imported (public only)"

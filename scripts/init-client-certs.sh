@@ -34,8 +34,8 @@ DEBUG="${DEBUG:-false}"
 
 # FHS-compliant paths
 readonly CLIENT_NSS_DIR="/etc/pki/sigul/client"
-readonly CA_IMPORT_DIR="/etc/pki/sigul/bridge/../ca-export"
-readonly CLIENT_IMPORT_DIR="/etc/pki/sigul/bridge/../client-export"
+readonly CA_IMPORT_DIR="/etc/pki/sigul/bridge/ca-export"
+readonly CLIENT_IMPORT_DIR="/etc/pki/sigul/bridge/client-export"
 
 # Certificate nicknames
 readonly CA_NICKNAME="sigul-ca"
@@ -167,8 +167,10 @@ initialize_nss_database() {
 import_ca_certificate() {
     log "Importing CA certificate (public only)..."
 
+    local password_file="${CLIENT_NSS_DIR}/.nss-password"
+
     # Check if CA already imported
-    if certutil -L -d "sql:${CLIENT_NSS_DIR}" -n "${CA_NICKNAME}" &>/dev/null; then
+    if certutil -L -d "sql:${CLIENT_NSS_DIR}" -f "${password_file}" -n "${CA_NICKNAME}" &>/dev/null; then
         log "CA certificate already imported"
         return 0
     fi
@@ -179,6 +181,7 @@ import_ca_certificate() {
         -n "${CA_NICKNAME}" \
         -t "CT,C,C" \
         -a \
+        -f "${password_file}" \
         -i "${CA_IMPORT_DIR}/ca.crt"; then
         fatal "Failed to import CA certificate"
     fi
@@ -189,8 +192,10 @@ import_ca_certificate() {
 import_client_certificate() {
     log "Importing client certificate and private key..."
 
+    local password_file="${CLIENT_NSS_DIR}/.nss-password"
+
     # Check if client certificate already imported
-    if certutil -L -d "sql:${CLIENT_NSS_DIR}" -n "${CLIENT_CERT_NICKNAME}" &>/dev/null; then
+    if certutil -L -d "sql:${CLIENT_NSS_DIR}" -f "${password_file}" -n "${CLIENT_CERT_NICKNAME}" &>/dev/null; then
         log "Client certificate already imported"
         return 0
     fi
@@ -200,7 +205,6 @@ import_client_certificate() {
     p12_password=$(cat "${CLIENT_IMPORT_DIR}/client-cert.p12.password")
 
     # Import client certificate and key from PKCS#12
-    local password_file="${CLIENT_NSS_DIR}/.nss-password"
     if ! pk12util -i "${CLIENT_IMPORT_DIR}/client-cert.p12" \
         -d "sql:${CLIENT_NSS_DIR}" \
         -k "${password_file}" \
@@ -211,13 +215,13 @@ import_client_certificate() {
     # Verify the certificate was imported with correct nickname
     # pk12util may import with a different nickname, so we need to check
     debug "Verifying client certificate import..."
-    if ! certutil -L -d "sql:${CLIENT_NSS_DIR}" -n "${CLIENT_CERT_NICKNAME}" &>/dev/null; then
+    if ! certutil -L -d "sql:${CLIENT_NSS_DIR}" -f "${password_file}" -n "${CLIENT_CERT_NICKNAME}" &>/dev/null; then
         # Try to find the imported certificate and rename it
         warn "Client certificate imported with unexpected nickname, searching..."
         
         # List all certificates and try to identify the client cert
         local imported_nickname
-        imported_nickname=$(certutil -L -d "sql:${CLIENT_NSS_DIR}" | \
+        imported_nickname=$(certutil -L -d "sql:${CLIENT_NSS_DIR}" -f "${password_file}" | \
             grep -v "Certificate Nickname" | \
             grep -v "^$" | \
             grep -v "${CA_NICKNAME}" | \
@@ -241,6 +245,8 @@ verify_certificates() {
 
     local verification_failed=0
 
+    local password_file="${CLIENT_NSS_DIR}/.nss-password"
+
     # Verify NSS database exists
     if [[ ! -f "${CLIENT_NSS_DIR}/cert9.db" ]]; then
         error "NSS database not found"
@@ -248,7 +254,7 @@ verify_certificates() {
     fi
 
     # Verify CA certificate
-    if ! certutil -L -d "sql:${CLIENT_NSS_DIR}" -n "${CA_NICKNAME}" &>/dev/null; then
+    if ! certutil -L -d "sql:${CLIENT_NSS_DIR}" -f "${password_file}" -n "${CA_NICKNAME}" &>/dev/null; then
         error "CA certificate verification failed"
         verification_failed=1
     else
@@ -256,11 +262,11 @@ verify_certificates() {
     fi
 
     # Verify client certificate
-    if ! certutil -L -d "sql:${CLIENT_NSS_DIR}" -n "${CLIENT_CERT_NICKNAME}" &>/dev/null; then
+    if ! certutil -L -d "sql:${CLIENT_NSS_DIR}" -f "${password_file}" -n "${CLIENT_CERT_NICKNAME}" &>/dev/null; then
         warn "Client certificate not found with expected nickname"
         # Check if any certificate was imported
         local cert_count
-        cert_count=$(certutil -L -d "sql:${CLIENT_NSS_DIR}" | grep -v "Certificate Nickname" | grep -v "^$" | wc -l)
+        cert_count=$(certutil -L -d "sql:${CLIENT_NSS_DIR}" -f "${password_file}" | grep -v "Certificate Nickname" | grep -v "^$" | wc -l)
         if [[ $cert_count -lt 2 ]]; then
             error "Client certificate verification failed"
             verification_failed=1
@@ -273,7 +279,7 @@ verify_certificates() {
 
     # Verify CA private key is NOT present
     log "Verifying CA private key is NOT present (security check)..."
-    if certutil -K -d "sql:${CLIENT_NSS_DIR}" 2>/dev/null | grep -q "${CA_NICKNAME}"; then
+    if certutil -K -d "sql:${CLIENT_NSS_DIR}" -f "${password_file}" 2>/dev/null | grep -q "${CA_NICKNAME}"; then
         error "⚠️  SECURITY ISSUE: CA private key found on client!"
         error "⚠️  Client should NOT have CA signing authority"
         verification_failed=1
@@ -293,11 +299,14 @@ display_certificate_info() {
     echo ""
     echo "  Client NSS Database: ${CLIENT_NSS_DIR}"
     echo ""
+    
+    local password_file="${CLIENT_NSS_DIR}/.nss-password"
+    
     echo "  Imported certificates:"
-    certutil -L -d "sql:${CLIENT_NSS_DIR}" 2>/dev/null | tail -n +5 | sed 's/^/    /'
+    certutil -L -d "sql:${CLIENT_NSS_DIR}" -f "${password_file}" 2>/dev/null | tail -n +5 | sed 's/^/    /'
     echo ""
     echo "  Private keys available:"
-    certutil -K -d "sql:${CLIENT_NSS_DIR}" 2>/dev/null | tail -n +2 | sed 's/^/    /'
+    certutil -K -d "sql:${CLIENT_NSS_DIR}" -f "${password_file}" 2>/dev/null | tail -n +2 | sed 's/^/    /'
     echo ""
     echo "  Security status:"
     echo "    ✓ CA certificate imported (public only)"
