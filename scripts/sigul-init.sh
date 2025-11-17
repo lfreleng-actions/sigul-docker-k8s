@@ -298,6 +298,7 @@ setup_client_certificates() {
 
     local client_nss_dir="$NSS_BASE_DIR/client"
     local client_fqdn="${CLIENT_FQDN:-sigul-client.example.org}"
+    local bridge_nss_dir="$NSS_BASE_DIR/bridge-shared"
     local bridge_ca_export_dir="$NSS_BASE_DIR/bridge-shared/ca-export"
     local client_ca_import_dir="$NSS_BASE_DIR/ca-import"
 
