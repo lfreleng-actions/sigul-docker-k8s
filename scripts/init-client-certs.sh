@@ -188,7 +188,7 @@ import_ca_certificate() {
     if ! certutil -A \
         -d "sql:${CLIENT_NSS_DIR}" \
         -n "${CA_NICKNAME}" \
-        -t "CT,C,C" \
+        -t "TC,," \
         -a \
         -f "${password_file}" \
         -i "${CA_IMPORT_DIR}/ca.crt"; then
