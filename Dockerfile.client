@@ -34,11 +34,15 @@ RUN dnf install -y --setopt=install_weak_deps=False --allowerasing \
         sqlite nss-tools jq && \
     dnf clean all
 
+# Copy patches for debugging (if they exist)
+COPY patches/ /tmp/patches/
+
 # Copy and run installation script
 COPY build-scripts/install-sigul.sh /tmp/install-sigul.sh
 RUN chmod +x /tmp/install-sigul.sh && \
     /tmp/install-sigul.sh --verify client && \
-    rm /tmp/install-sigul.sh
+    rm /tmp/install-sigul.sh && \
+    rm -rf /tmp/patches
 
 # Create symlinks for NSS unsupported tools to make them accessible for testing
 RUN ln -sf /usr/lib64/nss/unsupported-tools/tstclnt /usr/local/bin/tstclnt && \

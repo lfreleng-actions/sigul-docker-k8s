@@ -63,6 +63,31 @@ install_from_source() {
     tar -xzf "sigul-v${SIGUL_VERSION}.tar.gz"
     cd "sigul-v${SIGUL_VERSION}"
 
+    # Apply debugging patches if they exist
+    if [[ -d "/workspace/patches" ]] || [[ -d "/tmp/patches" ]]; then
+        local patch_dir="/workspace/patches"
+        if [[ ! -d "$patch_dir" ]]; then
+            patch_dir="/tmp/patches"
+        fi
+        
+        if [[ -d "$patch_dir" ]]; then
+            log_info "Applying debugging patches from $patch_dir"
+            for patch_file in "$patch_dir"/*.patch; do
+                if [[ -f "$patch_file" ]]; then
+                    log_info "Applying patch: $(basename "$patch_file")"
+                    if patch -p1 < "$patch_file"; then
+                        log_info "✓ Patch applied successfully: $(basename "$patch_file")"
+                    else
+                        log_error "✗ Failed to apply patch: $(basename "$patch_file")"
+                        log_error "Continuing anyway - build may fail or lack debugging"
+                    fi
+                fi
+            done
+        fi
+    else
+        log_debug "No patches directory found - building without patches"
+    fi
+
     # Configure and build
     log_info "Configuring sigul build"
     autoreconf -i

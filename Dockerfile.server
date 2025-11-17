@@ -41,11 +41,15 @@ RUN dnf install -y --setopt=install_weak_deps=False \
     pip3 install SQLAlchemy==1.3.24 && \
     dnf clean all
 
+# Copy patches for debugging (if they exist)
+COPY patches/ /tmp/patches/
+
 # Copy and run installation script
 COPY build-scripts/install-sigul.sh /tmp/install-sigul.sh
 RUN chmod +x /tmp/install-sigul.sh && \
     /tmp/install-sigul.sh --verify server && \
-    rm /tmp/install-sigul.sh
+    rm /tmp/install-sigul.sh && \
+    rm -rf /tmp/patches
 
 # Production-aligned initialization
 
