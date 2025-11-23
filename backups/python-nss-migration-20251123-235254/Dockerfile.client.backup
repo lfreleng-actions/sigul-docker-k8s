@@ -37,9 +37,7 @@ RUN dnf install -y --setopt=install_weak_deps=False --allowerasing \
 # Copy patches for debugging (if they exist)
 COPY patches/ /tmp/patches/
 
-# Install python-nss-ng from PyPI
-ENV INSTALL_SOURCE=pypi
-ENV PYTHON_NSS_NG_VERSION=0.1.0
+# Copy and run python-nss installation script
 COPY build-scripts/install-python-nss.sh /tmp/install-python-nss.sh
 RUN chmod +x /tmp/install-python-nss.sh && \
     /tmp/install-python-nss.sh --verify && \

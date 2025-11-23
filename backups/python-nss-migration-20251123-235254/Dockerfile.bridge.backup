@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
-# Simplified Dockerfile for sigul server using dedicated build scripts
+# Simplified Dockerfile for sigul bridge using dedicated build scripts
 FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
 
 LABEL maintainer="releng@linuxfoundation.org"
-LABEL org.opencontainers.image.title="Sigul Server"
-LABEL org.opencontainers.image.description="Simplified Linux Foundation signing infrastructure server"
+LABEL org.opencontainers.image.title="Sigul Bridge"
+LABEL org.opencontainers.image.description="Simplified Linux Foundation signing infrastructure bridge"
 LABEL org.opencontainers.image.source="https://github.com/lfreleng-actions/sigul-sign-docker"
 
 # Install package managers and required dependencies
@@ -44,9 +44,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
 # Copy patches for debugging (if they exist)
 COPY patches/ /tmp/patches/
 
-# Install python-nss-ng from PyPI
-ENV INSTALL_SOURCE=pypi
-ENV PYTHON_NSS_NG_VERSION=0.1.0
+# Copy and run python-nss installation script
 COPY build-scripts/install-python-nss.sh /tmp/install-python-nss.sh
 RUN chmod +x /tmp/install-python-nss.sh && \
     /tmp/install-python-nss.sh --verify && \
@@ -55,20 +53,19 @@ RUN chmod +x /tmp/install-python-nss.sh && \
 # Copy and run sigul installation script
 COPY build-scripts/install-sigul.sh /tmp/install-sigul.sh
 RUN chmod +x /tmp/install-sigul.sh && \
-    /tmp/install-sigul.sh --verify server && \
+    /tmp/install-sigul.sh --verify bridge && \
     rm /tmp/install-sigul.sh && \
     rm -rf /tmp/patches
 
 # Production-aligned initialization
 
 # Copy production-aligned entrypoint script
-COPY scripts/entrypoint-server.sh /usr/local/bin/entrypoint.sh
+COPY scripts/entrypoint-bridge.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# Copy certificate initialization scripts
+# Copy certificate initialization script
 COPY scripts/cert-init.sh /usr/local/bin/cert-init.sh
-COPY scripts/init-server-certs.sh /usr/local/bin/init-server-certs.sh
-RUN chmod +x /usr/local/bin/cert-init.sh /usr/local/bin/init-server-certs.sh
+RUN chmod +x /usr/local/bin/cert-init.sh
 
 # Copy validation tools (used during one-time setup, not startup)
 COPY scripts/validate-nss.sh /usr/local/bin/validate-nss.sh
@@ -99,23 +96,21 @@ RUN if getent passwd sigul >/dev/null; then \
     useradd -u 1000 -g 1000 -d /var/lib/sigul -s /bin/bash sigul && \
     # Create FHS-compliant directory structure
     mkdir -p /etc/sigul && \
-    mkdir -p /etc/pki/sigul/server && \
-    mkdir -p /var/lib/sigul/server && \
-    mkdir -p /var/lib/sigul/server/gnupg && \
-    mkdir -p /var/log/sigul/server && \
-    mkdir -p /run/sigul/server && \
+    mkdir -p /etc/pki/sigul/bridge && \
+    mkdir -p /var/lib/sigul/bridge && \
+    mkdir -p /var/log/sigul/bridge && \
+    mkdir -p /run/sigul/bridge && \
     # Pre-create log file with correct ownership for sigul user
-    touch /var/log/sigul_server.log && \
-    chown sigul:sigul /var/log/sigul_server.log && \
-    chmod 644 /var/log/sigul_server.log && \
+    touch /var/log/sigul_bridge.log && \
+    chown sigul:sigul /var/log/sigul_bridge.log && \
+    chmod 644 /var/log/sigul_bridge.log && \
     # Pre-create PID file with correct ownership for sigul user
-    touch /var/run/sigul_server.pid && \
-    chown sigul:sigul /var/run/sigul_server.pid && \
-    chmod 644 /var/run/sigul_server.pid && \
+    touch /var/run/sigul_bridge.pid && \
+    chown sigul:sigul /var/run/sigul_bridge.pid && \
+    chmod 644 /var/run/sigul_bridge.pid && \
     chown -R sigul:sigul /etc/sigul /etc/pki/sigul /var/lib/sigul /var/log/sigul /run/sigul && \
     chmod 755 /etc/sigul /etc/pki/sigul /var/lib/sigul /var/log/sigul /run/sigul && \
-    chmod 755 /etc/pki/sigul/server /var/lib/sigul/server /var/log/sigul/server /run/sigul/server && \
-    chmod 700 /var/lib/sigul/server/gnupg && \
+    chmod 755 /etc/pki/sigul/bridge /var/lib/sigul/bridge /var/log/sigul/bridge /run/sigul/bridge && \
     # Set proper permissions on PKI files after user creation
     # Only chmod files that exist (some are generated at runtime)
     if ls /workspace/pki/*.crt >/dev/null 2>&1; then chmod 644 /workspace/pki/*.crt; fi && \
@@ -126,7 +121,7 @@ RUN if getent passwd sigul >/dev/null; then \
     chown -R sigul:sigul /workspace/pki/
 
 # Set working directory
-WORKDIR /var/lib/sigul/server
+WORKDIR /var/lib/sigul/bridge
 
 # Switch to sigul user (directories already created with proper ownership above)
 USER sigul
@@ -134,6 +129,6 @@ USER sigul
 # Set entrypoint - production-aligned direct invocation
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 
-# Health check - verify server process is running
+# Health check - verify bridge is listening on port 44333
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 \
-    CMD pgrep -f "sigul_server" >/dev/null 2>&1 || exit 1
+    CMD nc -z localhost 44333 || exit 1

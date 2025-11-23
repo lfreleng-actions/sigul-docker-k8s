@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
-# Python-NSS installation script
-# This script builds and installs python-nss from the GitHub fork
+# Python-NSS-NG installation script
+# This script installs python-nss-ng from PyPI or GitHub
 
 set -euo pipefail
 
@@ -14,8 +14,10 @@ case "$ARCH" in
     amd64) ARCH="x86_64" ;;
 esac
 
-PYTHON_NSS_VERSION="${PYTHON_NSS_VERSION:-master}"
-PYTHON_NSS_REPO="${PYTHON_NSS_REPO:-https://github.com/ModeSevenIndustrialSolutions/python-nss.git}"
+# Installation source: pypi or github
+INSTALL_SOURCE="${INSTALL_SOURCE:-pypi}"
+PYTHON_NSS_NG_VERSION="${PYTHON_NSS_NG_VERSION:-}"
+PYTHON_NSS_NG_REPO="${PYTHON_NSS_NG_REPO:-https://github.com/ModeSevenIndustrialSolutions/python-nss-ng.git}"
 
 # Logging functions
 log_info() {
@@ -32,7 +34,7 @@ log_debug() {
     fi
 }
 
-# Check if python-nss is already installed
+# Check if python-nss-ng is already installed
 check_existing_installation() {
     if python3 -c "import nss" >/dev/null 2>&1; then
         local version
@@ -43,9 +45,9 @@ check_existing_installation() {
     return 1
 }
 
-# Install required build dependencies
-install_dependencies() {
-    log_info "Installing python-nss build dependencies"
+# Install required build dependencies (only needed for GitHub source builds)
+install_build_dependencies() {
+    log_info "Installing python-nss-ng build dependencies"
     
     # Check if dependencies are already installed
     local missing_deps=()
@@ -60,60 +62,64 @@ install_dependencies() {
         log_info "Installing missing dependencies: ${missing_deps[*]}"
         dnf install -y --setopt=install_weak_deps=False "${missing_deps[@]}"
     else
-        log_info "All required dependencies are already installed"
+        log_info "All required build dependencies are already installed"
     fi
 }
 
-# Build and install python-nss from source
-install_from_source() {
-    log_info "Building python-nss from source for $ARCH"
-
-    local build_dir="/tmp/python-nss-build"
-
-    # Clean up any previous build
-    rm -rf "$build_dir"
-    mkdir -p "$build_dir"
-    cd "$build_dir"
-
-    # Clone source from GitHub fork
-    log_info "Cloning python-nss from GitHub fork: $PYTHON_NSS_REPO"
-    if [[ "$PYTHON_NSS_VERSION" == "master" ]] || [[ "$PYTHON_NSS_VERSION" == "main" ]]; then
-        git clone --depth 1 "$PYTHON_NSS_REPO" python-nss
-    else
-        git clone --depth 1 --branch "$PYTHON_NSS_VERSION" "$PYTHON_NSS_REPO" python-nss
+# Install from PyPI (recommended)
+install_from_pypi() {
+    log_info "Installing python-nss-ng from PyPI for $ARCH"
+    
+    # Ensure pip is available
+    if ! command -v pip3 >/dev/null 2>&1; then
+        log_error "pip3 not found, installing python3-pip"
+        dnf install -y --setopt=install_weak_deps=False python3-pip
     fi
     
-    cd python-nss
-
-    # Build and install
-    log_info "Building python-nss (using $(nproc) cores)"
-    python3 setup.py build
-
-    log_info "Installing python-nss"
-    python3 setup.py install
-
-    # Verify installation
-    if ! python3 -c "import nss" >/dev/null 2>&1; then
-        log_error "Python-NSS installation verification failed"
-        return 1
+    # Install python-nss-ng
+    if [[ -z "$PYTHON_NSS_NG_VERSION" ]]; then
+        log_info "Installing latest version of python-nss-ng"
+        pip3 install python-nss-ng
+    else
+        log_info "Installing python-nss-ng version $PYTHON_NSS_NG_VERSION"
+        pip3 install "python-nss-ng==${PYTHON_NSS_NG_VERSION}"
     fi
-
+    
     local installed_version
     installed_version=$(python3 -c "import nss; print(nss.__version__)" 2>/dev/null || echo "unknown")
-    log_info "Python-NSS installed successfully: version $installed_version"
+    log_info "Python-NSS-NG installed successfully from PyPI: version $installed_version"
+}
 
-    # Clean up
-    cd /tmp
-    rm -rf "$build_dir"
-
-    log_info "Python-NSS build and installation completed"
+# Install from GitHub source (for development/testing)
+install_from_github() {
+    log_info "Installing python-nss-ng from GitHub source for $ARCH"
+    
+    # Install build dependencies
+    install_build_dependencies
+    
+    # Ensure pip is available
+    if ! command -v pip3 >/dev/null 2>&1; then
+        log_error "pip3 not found, installing python3-pip"
+        dnf install -y --setopt=install_weak_deps=False python3-pip
+    fi
+    
+    # Install from git repository
+    local git_ref="${PYTHON_NSS_NG_VERSION:-main}"
+    log_info "Installing from ${PYTHON_NSS_NG_REPO}@${git_ref}"
+    
+    pip3 install "git+${PYTHON_NSS_NG_REPO}@${git_ref}"
+    
+    local installed_version
+    installed_version=$(python3 -c "import nss; print(nss.__version__)" 2>/dev/null || echo "unknown")
+    log_info "Python-NSS-NG installed successfully from GitHub: version $installed_version"
 }
 
 # Main installation function
-install_python_nss() {
-    log_info "Installing python-nss for architecture: $ARCH"
-    log_debug "Repository: $PYTHON_NSS_REPO"
-    log_debug "Version/Branch: $PYTHON_NSS_VERSION"
+install_python_nss_ng() {
+    log_info "Installing python-nss-ng for architecture: $ARCH"
+    log_info "Installation source: $INSTALL_SOURCE"
+    log_debug "Repository: $PYTHON_NSS_NG_REPO"
+    log_debug "Version: ${PYTHON_NSS_NG_VERSION:-latest}"
 
     # Check if already installed
     if check_existing_installation; then
@@ -121,31 +127,54 @@ install_python_nss() {
         return 0
     fi
 
-    # Install dependencies
-    install_dependencies
-
-    # Build from source
-    install_from_source
+    # Install based on source
+    case "$INSTALL_SOURCE" in
+        pypi)
+            install_from_pypi
+            ;;
+        github)
+            install_from_github
+            ;;
+        *)
+            log_error "Unknown installation source: $INSTALL_SOURCE"
+            log_error "Valid sources: pypi, github"
+            return 1
+            ;;
+    esac
 }
 
 # Verify installation
 verify_installation() {
-    log_info "Verifying python-nss installation"
+    log_info "Verifying python-nss-ng installation"
 
+    # Test import
     if ! python3 -c "import nss" >/dev/null 2>&1; then
-        log_error "Python-NSS verification failed: module cannot be imported"
+        log_error "Python-NSS-NG verification failed: module cannot be imported"
+        return 1
+    fi
+
+    # Test submodules
+    if ! python3 -c "import nss.nss, nss.error, nss.io, nss.ssl" >/dev/null 2>&1; then
+        log_error "Python-NSS-NG verification failed: submodules cannot be imported"
         return 1
     fi
 
     # Test basic functionality
-    if ! python3 -c "import nss; nss.nss_init_nodb()" >/dev/null 2>&1; then
-        log_error "Python-NSS verification failed: NSS initialization test failed"
+    if ! python3 -c "import nss.nss; nss.nss.nss_init_nodb()" >/dev/null 2>&1; then
+        log_error "Python-NSS-NG verification failed: NSS initialization test failed"
         return 1
     fi
 
+    # Display version and details
     local version
     version=$(python3 -c "import nss; print(nss.__version__)" 2>/dev/null || echo "unknown")
-    log_info "Python-NSS verification passed: version $version"
+    log_info "Python-NSS-NG verification passed: version $version"
+
+    # Display package information if available
+    if command -v pip3 >/dev/null 2>&1; then
+        log_info "Package details:"
+        pip3 show python-nss-ng 2>/dev/null || log_debug "Could not retrieve package details"
+    fi
 
     return 0
 }
@@ -155,20 +184,34 @@ usage() {
     cat << EOF
 Usage: $0 [OPTIONS]
 
-Build and install python-nss from GitHub fork.
+Install python-nss-ng from PyPI or GitHub.
 
 OPTIONS:
-    -h, --help     Show this help message
-    -d, --debug    Enable debug logging
-    -v, --verify   Verify installation after install
-    -r, --repo     Git repository URL (default: $PYTHON_NSS_REPO)
-    -b, --branch   Git branch or tag (default: $PYTHON_NSS_VERSION)
+    -h, --help              Show this help message
+    -d, --debug             Enable debug logging
+    -v, --verify            Verify installation after install
+    -s, --source SOURCE     Installation source (pypi|github) [default: pypi]
+    -V, --version VERSION   Specific version to install [default: latest]
+    -r, --repo URL          Git repository URL (for github source)
 
-Examples:
-    $0                           # Install python-nss from default repo/branch
-    $0 -v                        # Install and verify
-    $0 -b v1.0.1                 # Install specific version
-    $0 -r https://github.com/user/python-nss.git -b feature-branch
+EXAMPLES:
+    # Install latest from PyPI (recommended)
+    $0 --verify
+
+    # Install specific version from PyPI
+    $0 --source pypi --version 0.1.0 --verify
+
+    # Install from GitHub main branch
+    $0 --source github --verify
+
+    # Install specific GitHub tag/branch
+    $0 --source github --version v0.1.0 --verify
+
+ENVIRONMENT VARIABLES:
+    INSTALL_SOURCE              Installation source (pypi|github)
+    PYTHON_NSS_NG_VERSION       Version to install
+    PYTHON_NSS_NG_REPO          GitHub repository URL
+    DEBUG                       Enable debug output (0|1)
 EOF
 }
 
@@ -190,12 +233,16 @@ main() {
                 verify=true
                 shift
                 ;;
-            -r|--repo)
-                PYTHON_NSS_REPO="$2"
+            -s|--source)
+                INSTALL_SOURCE="$2"
                 shift 2
                 ;;
-            -b|--branch)
-                PYTHON_NSS_VERSION="$2"
+            -V|--version)
+                PYTHON_NSS_NG_VERSION="$2"
+                shift 2
+                ;;
+            -r|--repo)
+                PYTHON_NSS_NG_REPO="$2"
                 shift 2
                 ;;
             *)
@@ -206,23 +253,26 @@ main() {
         esac
     done
 
-    log_info "Starting python-nss installation"
+    log_info "Starting python-nss-ng installation"
+    log_debug "INSTALL_SOURCE=$INSTALL_SOURCE"
+    log_debug "PYTHON_NSS_NG_VERSION=${PYTHON_NSS_NG_VERSION:-latest}"
+    log_debug "PYTHON_NSS_NG_REPO=$PYTHON_NSS_NG_REPO"
 
-    # Install python-nss
-    if ! install_python_nss; then
-        log_error "Python-NSS installation failed"
+    # Install python-nss-ng
+    if ! install_python_nss_ng; then
+        log_error "Python-NSS-NG installation failed"
         exit 1
     fi
 
     # Verify if requested
     if [[ "$verify" == "true" ]]; then
         if ! verify_installation; then
-            log_error "Python-NSS verification failed"
+            log_error "Python-NSS-NG verification failed"
             exit 1
         fi
     fi
 
-    log_info "Python-NSS installation completed successfully"
+    log_info "Python-NSS-NG installation completed successfully"
 }
 
 # Run main function if script is executed directly

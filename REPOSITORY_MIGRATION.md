@@ -5,19 +5,19 @@
 
 ## Overview
 
-This document describes the migration from the original Fedora-hosted Sigul and python-nss repositories to Mode Seven Industrial Solutions forks.
+This document describes the migration from the original Fedora-hosted Sigul repository and the transition from python-nss to python-nss-ng.
 
 ## Migration Summary
 
 ### Previous Source Repositories
 
 - **Sigul**: `https://pagure.io/sigul` (Fedora Pagure)
-- **Python-NSS**: Installed via `python3-nss` RPM package from EPEL
+- **Python-NSS**: Installed via `python3-nss` RPM package from EPEL (legacy, unmaintained)
 
 ### New Source Repositories
 
 - **Sigul**: `https://github.com/ModeSevenIndustrialSolutions/sigul.git`
-- **Python-NSS**: `https://github.com/ModeSevenIndustrialSolutions/python-nss.git`
+- **Python-NSS-NG**: `https://github.com/ModeSevenIndustrialSolutions/python-nss-ng.git` (modernized replacement for python-nss)
 
 ## Changes Made
 
@@ -28,10 +28,10 @@ This document describes the migration from the original Fedora-hosted Sigul and 
 - **After**: Clones from GitHub fork using `git clone --depth 1 --branch v1.4`
 - **Benefit**: Direct access to repository, easier to track changes and apply custom patches
 
-#### `build-scripts/install-python-nss.sh` (NEW)
-- **Purpose**: Build python-nss from source instead of using RPM package
-- **Source**: Clones from `https://github.com/ModeSevenIndustrialSolutions/python-nss.git`
-- **Benefit**: Full control over python-nss version and patches
+#### `build-scripts/install-python-nss.sh` (UPDATED)
+- **Purpose**: Install python-nss-ng from PyPI (or GitHub for development)
+- **Source**: PyPI package `python-nss-ng` (default: v0.1.0)
+- **Benefit**: Modern Python 3.10+ support, better error reporting, active maintenance
 
 ### 2. Dockerfiles
 
@@ -39,8 +39,8 @@ All three Dockerfiles (`Dockerfile.client`, `Dockerfile.bridge`, `Dockerfile.ser
 
 - **Removed**: `python3-nss` from DNF package installation
 - **Added**: `nss-devel` and `nspr-devel` build dependencies
-- **Added**: Build step to compile and install python-nss from source
-- **Order**: python-nss is built before sigul (dependency requirement)
+- **Added**: Installation step for python-nss-ng from PyPI
+- **Order**: python-nss-ng is installed before sigul (dependency requirement)
 
 ### 3. Documentation Updates
 
@@ -79,7 +79,7 @@ Updated all references from `pagure.io` to GitHub fork in:
 ### Current Versions
 
 - **Sigul**: v1.4 (git tag)
-- **Python-NSS**: master branch (latest)
+- **Python-NSS-NG**: v0.1.0 from PyPI (pinned for stability)
 
 ### Updating Versions
 
@@ -91,10 +91,11 @@ To update to a new version:
    SIGUL_VERSION="1.5"  # Update version
    ```
 
-2. **For Python-NSS**:
+2. **For Python-NSS-NG**:
    ```bash
-   # Edit build-scripts/install-python-nss.sh or set environment variable
-   export PYTHON_NSS_VERSION="v1.0.2"  # Specific tag/branch
+   # Set environment variables in Dockerfiles or at build time
+   export INSTALL_SOURCE="pypi"  # or "github" for development
+   export PYTHON_NSS_NG_VERSION="0.1.0"  # Specific version
    ```
 
 3. **Rebuild containers**:
@@ -104,17 +105,16 @@ To update to a new version:
 
 ## Build Process
 
-### Python-NSS Build Order
+### Python-NSS-NG Installation Order
 
 1. Install system dependencies (`nss-devel`, `nspr-devel`, `python3-devel`, `gcc`)
-2. Clone python-nss from GitHub fork
-3. Build using `python3 setup.py build`
-4. Install using `python3 setup.py install`
+2. Install python-nss-ng from PyPI using `pip3 install python-nss-ng==0.1.0`
+3. Verify installation with import tests
 5. Verify installation with `python3 -c "import nss"`
 
 ### Sigul Build Order
 
-1. Install python-nss (prerequisite)
+1. Install python-nss-ng (prerequisite)
 2. Clone sigul from GitHub fork
 3. Apply patches (if present in `/tmp/patches/`)
 4. Configure with `autoreconf -i` and `./configure`
@@ -128,9 +128,10 @@ To update to a new version:
 
 After building containers:
 
-1. **Verify Python-NSS**:
+1. **Verify Python-NSS-NG**:
    ```bash
    docker run --rm <image> python3 -c "import nss; print(nss.__version__)"
+   # Should show version 0.1.0 or later
    ```
 
 2. **Verify Sigul Client**:
@@ -161,23 +162,23 @@ After building containers:
    - Check GitHub repository access
    - Consider using SSH instead of HTTPS for authenticated access
 
-3. **Python-NSS import errors**:
-   - Verify NSS libraries are installed
+3. **Python-NSS-NG import errors**:
+   - Verify NSS libraries are installed (nss-devel, nspr-devel)
    - Check that python3 is using the correct site-packages
-   - Run `ldconfig` to update library cache
+   - Verify PyPI package was installed: `pip3 show python-nss-ng`
 
 ### Version Mismatches
 
 If you encounter compatibility issues:
 
-1. Check the python-nss version requirements in sigul source
-2. Pin both repositories to compatible versions
+1. Check the python-nss-ng version requirements in sigul source
+2. Pin python-nss-ng version in Dockerfiles (currently v0.1.0)
 3. Test locally before deploying
 
 ## Migration Checklist
 
 - [x] Update `install-sigul.sh` to use GitHub fork
-- [x] Create `install-python-nss.sh` build script
+- [x] Update `install-python-nss.sh` to install python-nss-ng from PyPI
 - [x] Update all three Dockerfiles
 - [x] Update documentation references
 - [x] Update test scripts
@@ -190,9 +191,10 @@ If you encounter compatibility issues:
 ## References
 
 - **Sigul Fork**: https://github.com/ModeSevenIndustrialSolutions/sigul
-- **Python-NSS Fork**: https://github.com/ModeSevenIndustrialSolutions/python-nss
+- **Python-NSS-NG**: https://github.com/ModeSevenIndustrialSolutions/python-nss-ng
+- **Python-NSS-NG on PyPI**: https://pypi.org/project/python-nss-ng/
 - **Original Sigul**: https://pagure.io/sigul (archived reference)
-- **Original Python-NSS**: https://github.com/tiran/python-nss (upstream)
+- **Original Python-NSS**: https://github.com/tiran/python-nss (upstream, unmaintained)
 
 ## Support
 
