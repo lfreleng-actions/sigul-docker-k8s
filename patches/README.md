@@ -88,11 +88,10 @@ When adding new patches:
 To test patch application without full Docker build:
 
 ```bash
-# Download Sigul source
+# Clone Sigul source from GitHub fork
 cd /tmp
-curl -L -o sigul-v1.4.tar.gz https://pagure.io/sigul/archive/v1.4/sigul-v1.4.tar.gz
-tar xzf sigul-v1.4.tar.gz
-cd sigul-v1.4
+git clone --depth 1 --branch v1.4 https://github.com/ModeSevenIndustrialSolutions/sigul.git
+cd sigul
 
 # Apply patch
 patch -p1 < /path/to/sigul-docker/patches/01-add-comprehensive-debugging.patch

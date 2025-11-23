@@ -22,7 +22,7 @@ RUN chmod +x /tmp/setup-repositories.sh && \
 # Install base dependencies for all architectures
 RUN dnf install -y --setopt=install_weak_deps=False --allowerasing \
         git which curl tar gzip xz \
-        python3-devel python3-pip python3-koji python3-nss python3-requests \
+        python3-devel python3-pip python3-koji python3-requests \
         python3-rpm python3-setuptools python3-cryptography python3-pexpect python3-gpg \
         gnupg2 koji-utils expect \
         make gcc autoconf automake libtool \
@@ -31,13 +31,19 @@ RUN dnf install -y --setopt=install_weak_deps=False --allowerasing \
         vim-minimal less findutils grep \
         curl wget rsync nmap-ncat \
         hostname iproute net-tools \
-        sqlite nss-tools jq && \
+        sqlite nss-tools nss-devel nspr-devel jq && \
     dnf clean all
 
 # Copy patches for debugging (if they exist)
 COPY patches/ /tmp/patches/
 
-# Copy and run installation script
+# Copy and run python-nss installation script
+COPY build-scripts/install-python-nss.sh /tmp/install-python-nss.sh
+RUN chmod +x /tmp/install-python-nss.sh && \
+    /tmp/install-python-nss.sh --verify && \
+    rm /tmp/install-python-nss.sh
+
+# Copy and run sigul installation script
 COPY build-scripts/install-sigul.sh /tmp/install-sigul.sh
 RUN chmod +x /tmp/install-sigul.sh && \
     /tmp/install-sigul.sh --verify client && \

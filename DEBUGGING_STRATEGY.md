@@ -348,4 +348,4 @@ The patches only add logging and don't change functional behavior, so rollback r
 For questions or issues with this debugging strategy:
 - Review CI logs for detailed debug output
 - Check previous debugging sessions in conversation history
-- Consult Sigul documentation at https://pagure.io/sigul
+- Consult Sigul documentation at https://github.com/ModeSevenIndustrialSolutions/sigul

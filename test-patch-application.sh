@@ -33,9 +33,9 @@ echo "3. Testing patch application (dry-run)..."
 tmpdir=$(mktemp -d)
 cd "$tmpdir"
 
-echo "   Downloading Sigul v1.4 source..."
-curl -sL "https://pagure.io/sigul/archive/v1.4/sigul-v1.4.tar.gz" | tar xz
-cd sigul-v1.4
+echo "   Cloning Sigul v1.4 source from GitHub fork..."
+git clone --depth 1 --branch v1.4 https://github.com/ModeSevenIndustrialSolutions/sigul.git
+cd sigul
 
 echo "   Applying patch (dry-run)..."
 if patch -p1 --dry-run < "${SCRIPT_DIR}/patches/01-add-comprehensive-debugging.patch" > /dev/null 2>&1; then

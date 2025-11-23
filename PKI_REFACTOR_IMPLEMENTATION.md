@@ -513,7 +513,7 @@ The refactor is successful if:
 
 ## References
 
-- Official Sigul Documentation: https://pagure.io/sigul
+- Official Sigul Documentation: https://github.com/ModeSevenIndustrialSolutions/sigul
 - NSS Tools: https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/tools
 - PKCS#12: https://en.wikipedia.org/wiki/PKCS_12
 - X.509 Certificates: https://en.wikipedia.org/wiki/X.509

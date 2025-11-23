@@ -463,7 +463,7 @@ docker exec sigul-server certutil -L -d sql:/etc/pki/sigul/server
 
 ## References
 
-- Official Sigul Documentation: https://pagure.io/sigul
+- Official Sigul Documentation: https://github.com/ModeSevenIndustrialSolutions/sigul
 - NSS Tools Documentation: https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/tools
 - FHS (Filesystem Hierarchy Standard): https://refspecs.linuxfoundation.org/FHS_3.0/
 

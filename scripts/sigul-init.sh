@@ -329,7 +329,7 @@ setup_client_certificates() {
     rm -f "$temp_password_file"
 
     # Import CA certificate from bridge NSS database (per official Sigul documentation)
-    # Reference: https://pagure.io/sigul - "Setting up the client" section
+    # Reference: https://github.com/ModeSevenIndustrialSolutions/sigul - "Setting up the client" section
     log "Importing CA certificate from bridge NSS database..."
     
     if ! certutil -L -d "sql:$bridge_nss_dir" -n "$CA_NICKNAME" -a > /tmp/ca-import.pem 2>/dev/null; then

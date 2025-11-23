@@ -53,15 +53,12 @@ install_from_source() {
     mkdir -p "$build_dir"
     cd "$build_dir"
 
-    # Download source
-    log_info "Downloading sigul v${SIGUL_VERSION} source"
-    curl -L --connect-timeout 30 --max-time 300 --retry 3 \
-        -o "sigul-v${SIGUL_VERSION}.tar.gz" \
-        "https://pagure.io/sigul/archive/v${SIGUL_VERSION}/sigul-v${SIGUL_VERSION}.tar.gz"
-
-    # Extract
-    tar -xzf "sigul-v${SIGUL_VERSION}.tar.gz"
-    cd "sigul-v${SIGUL_VERSION}"
+    # Clone source from GitHub fork
+    log_info "Cloning sigul v${SIGUL_VERSION} from GitHub fork"
+    git clone --depth 1 --branch "v${SIGUL_VERSION}" \
+        https://github.com/ModeSevenIndustrialSolutions/sigul.git sigul
+    
+    cd sigul
 
     # Apply debugging patches if they exist
     if [[ -d "/workspace/patches" ]] || [[ -d "/tmp/patches" ]]; then

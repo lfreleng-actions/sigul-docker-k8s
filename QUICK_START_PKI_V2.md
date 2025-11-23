@@ -371,7 +371,8 @@ If you encounter issues:
 1. Check logs: `docker logs <container-name>`
 2. Run verification: `./scripts/verify-pki-architecture.sh`
 3. Review documentation: `PKI_ARCHITECTURE.md`
-4. Check GitHub issues: https://github.com/lfreleng-actions/sigul-sign-docker/issues
+4. Check Sigul documentation: https://github.com/ModeSevenIndustrialSolutions/sigul
+5. Check GitHub issues: https://github.com/lfreleng-actions/sigul-sign-docker/issues
 
 ---
 
