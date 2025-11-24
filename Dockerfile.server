@@ -36,17 +36,24 @@ RUN dnf update -y && \
     dnf clean all
 
 # Install EPEL-dependent packages and Python packages via pip
+# Note: nss-devel and nspr-devel removed - python-nss-ng installed from PyPI (pre-built)
 RUN dnf install -y --setopt=install_weak_deps=False \
-        nss-devel nspr-devel rpm-head-signing gnupg2 jq python3-fedora && \
+        rpm-head-signing gnupg2 jq python3-fedora && \
     pip3 install SQLAlchemy==1.3.24 && \
     dnf clean all
 
 # Copy patches for debugging (if they exist)
 COPY patches/ /tmp/patches/
 
-# Install python-nss-ng from PyPI
+# Install Python 3.12 (Python 3.9 is EOL, python-nss-ng wheels require 3.10+)
+COPY build-scripts/install-python312.sh /tmp/install-python312.sh
+RUN chmod +x /tmp/install-python312.sh && \
+    /tmp/install-python312.sh --verify && \
+    rm /tmp/install-python312.sh
+
+# Install python-nss-ng from PyPI (now compatible with Python 3.12)
 ENV INSTALL_SOURCE=pypi
-ENV PYTHON_NSS_NG_VERSION=0.1.0
+ENV PYTHON_NSS_NG_VERSION=v0.1.0
 COPY build-scripts/install-python-nss.sh /tmp/install-python-nss.sh
 RUN chmod +x /tmp/install-python-nss.sh && \
     /tmp/install-python-nss.sh --verify && \

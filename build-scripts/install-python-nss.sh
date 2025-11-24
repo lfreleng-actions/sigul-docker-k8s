@@ -28,6 +28,10 @@ log_error() {
     echo "[ERROR] $*" >&2
 }
 
+log_warning() {
+    echo "[WARNING] $*" >&2
+}
+
 log_debug() {
     if [[ "${DEBUG:-0}" == "1" ]]; then
         echo "[DEBUG] $*" >&2
@@ -49,7 +53,23 @@ check_existing_installation() {
 install_build_dependencies() {
     log_info "Installing python-nss-ng build dependencies"
     
-    # Check if dependencies are already installed
+    # First ensure runtime libraries are installed (required for pkgconfig detection)
+    local runtime_deps=()
+    for pkg in nss nspr nss-tools; do
+        if ! rpm -q "$pkg" >/dev/null 2>&1; then
+            runtime_deps+=("$pkg")
+        fi
+    done
+    
+    if [[ ${#runtime_deps[@]} -gt 0 ]]; then
+        log_info "Installing NSS/NSPR runtime libraries: ${runtime_deps[*]}"
+        dnf install -y --setopt=install_weak_deps=False "${runtime_deps[@]}" || {
+            log_error "Failed to install NSS/NSPR runtime libraries"
+            return 1
+        }
+    fi
+    
+    # Check if build dependencies are already installed
     local missing_deps=()
     
     for pkg in nss-devel nspr-devel python3-devel gcc; do
@@ -59,8 +79,24 @@ install_build_dependencies() {
     done
     
     if [[ ${#missing_deps[@]} -gt 0 ]]; then
-        log_info "Installing missing dependencies: ${missing_deps[*]}"
-        dnf install -y --setopt=install_weak_deps=False "${missing_deps[@]}"
+        log_info "Installing build dependencies: ${missing_deps[*]}"
+        # Try to install, but don't fail if nss-devel/nspr-devel unavailable
+        if ! dnf install -y --setopt=install_weak_deps=False "${missing_deps[@]}" 2>&1; then
+            log_warning "Some build dependencies failed to install, trying without nss-devel/nspr-devel"
+            # Install at least the basic packages
+            local fallback_deps=()
+            for pkg in python3-devel gcc; do
+                if ! rpm -q "$pkg" >/dev/null 2>&1; then
+                    fallback_deps+=("$pkg")
+                fi
+            done
+            if [[ ${#fallback_deps[@]} -gt 0 ]]; then
+                dnf install -y --setopt=install_weak_deps=False "${fallback_deps[@]}" || {
+                    log_error "Failed to install basic build dependencies"
+                    return 1
+                }
+            fi
+        fi
     else
         log_info "All required build dependencies are already installed"
     fi
@@ -77,12 +113,26 @@ install_from_pypi() {
     fi
     
     # Install python-nss-ng
-    if [[ -z "$PYTHON_NSS_NG_VERSION" ]]; then
+    # Note: Strip 'v' prefix if present for PyPI version
+    local pypi_version="${PYTHON_NSS_NG_VERSION#v}"
+    local pip_success=false
+    if [[ -z "$pypi_version" ]]; then
         log_info "Installing latest version of python-nss-ng"
-        pip3 install python-nss-ng
+        if pip3 install python-nss-ng 2>&1; then
+            pip_success=true
+        fi
     else
-        log_info "Installing python-nss-ng version $PYTHON_NSS_NG_VERSION"
-        pip3 install "python-nss-ng==${PYTHON_NSS_NG_VERSION}"
+        log_info "Installing python-nss-ng version $pypi_version"
+        if pip3 install "python-nss-ng==${pypi_version}" 2>&1; then
+            pip_success=true
+        fi
+    fi
+    
+    # Check if installation succeeded
+    if [[ "$pip_success" == "false" ]] || ! python3 -c "import nss" >/dev/null 2>&1; then
+        log_warning "PyPI installation failed or no wheel available for $ARCH"
+        log_info "Falling back to GitHub source installation"
+        return 1
     fi
     
     local installed_version
@@ -127,10 +177,13 @@ install_python_nss_ng() {
         return 0
     fi
 
-    # Install based on source
+    # Install based on source with fallback
     case "$INSTALL_SOURCE" in
         pypi)
-            install_from_pypi
+            if ! install_from_pypi; then
+                log_warning "PyPI installation failed, falling back to GitHub"
+                install_from_github
+            fi
             ;;
         github)
             install_from_github
