@@ -22,9 +22,23 @@ log_debug() {
     fi
 }
 
+# Detect if running on Fedora
+is_fedora() {
+    if [[ -f /etc/fedora-release ]]; then
+        return 0
+    fi
+    return 1
+}
+
 # Setup EPEL repository with multiple mirror fallback
 setup_epel() {
     log_info "Setting up EPEL repository"
+
+    # Skip EPEL setup on Fedora - EPEL is only for RHEL/CentOS
+    if is_fedora; then
+        log_info "Fedora detected - skipping EPEL setup (not needed on Fedora)"
+        return 0
+    fi
 
     # Check if EPEL is already available
     if dnf repolist enabled 2>/dev/null | grep -q epel; then
@@ -92,6 +106,12 @@ setup_epel() {
 setup_sigul_repo() {
     log_info "Setting up sigul repository"
 
+    # Skip sigul repository setup on Fedora - packages available in main repos
+    if is_fedora; then
+        log_info "Fedora detected - skipping sigul repository setup (packages in main repos)"
+        return 0
+    fi
+
     local repo_file="/etc/yum.repos.d/fedora-infra-sigul.repo"
 
     # Check if repository already exists
@@ -134,6 +154,12 @@ clean_cache() {
 # Test repository connectivity
 test_repositories() {
     log_info "Testing repository connectivity"
+
+    # Skip repository tests on Fedora
+    if is_fedora; then
+        log_info "Fedora detected - skipping repository tests (using main repos)"
+        return 0
+    fi
 
     # Test EPEL
     if ! timeout 30 dnf makecache --repo=epel 2>/dev/null; then

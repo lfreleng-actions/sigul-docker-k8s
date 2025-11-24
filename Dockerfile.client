@@ -2,22 +2,16 @@
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
 # Unified Dockerfile for sigul client using the new sigul-init.sh approach
-FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
+FROM fedora:41
 
 LABEL maintainer="releng@linuxfoundation.org"
 LABEL org.opencontainers.image.title="Sigul Client"
 LABEL org.opencontainers.image.description="Unified Linux Foundation signing infrastructure client"
 LABEL org.opencontainers.image.source="https://github.com/lfreleng-actions/sigul-sign-docker"
 
-# Install package managers and required dependencies
-RUN microdnf install -y dnf && \
-    microdnf clean all
-
-# Setup repositories using dedicated script for better reliability
-COPY build-scripts/setup-repositories.sh /tmp/setup-repositories.sh
-RUN chmod +x /tmp/setup-repositories.sh && \
-    /tmp/setup-repositories.sh --test && \
-    rm /tmp/setup-repositories.sh
+# Update package manager
+RUN dnf update -y && \
+    dnf clean all
 
 # Install base dependencies for all architectures
 # Note: nss-devel and nspr-devel removed - python-nss-ng installed from PyPI (pre-built)
@@ -38,15 +32,9 @@ RUN dnf install -y --setopt=install_weak_deps=False --allowerasing \
 # Copy patches for debugging (if they exist)
 COPY patches/ /tmp/patches/
 
-# Install Python 3.12 (Python 3.9 is EOL, python-nss-ng wheels require 3.10+)
-COPY build-scripts/install-python312.sh /tmp/install-python312.sh
-RUN chmod +x /tmp/install-python312.sh && \
-    /tmp/install-python312.sh --verify && \
-    rm /tmp/install-python312.sh
-
-# Install python-nss-ng from PyPI (now compatible with Python 3.12)
+# Install python-nss-ng from PyPI (Fedora 41 has Python 3.13 which is compatible)
 ENV INSTALL_SOURCE=pypi
-ENV PYTHON_NSS_NG_VERSION=v0.1.0
+ENV PYTHON_NSS_NG_VERSION=v0.1.1
 COPY build-scripts/install-python-nss.sh /tmp/install-python-nss.sh
 RUN chmod +x /tmp/install-python-nss.sh && \
     /tmp/install-python-nss.sh --verify && \
