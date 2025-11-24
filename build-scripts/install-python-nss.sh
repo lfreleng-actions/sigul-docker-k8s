@@ -52,7 +52,7 @@ check_existing_installation() {
 # Install required build dependencies (only needed for GitHub source builds)
 install_build_dependencies() {
     log_info "Installing python-nss-ng build dependencies"
-    
+
     # First ensure runtime libraries are installed (required for pkgconfig detection)
     local runtime_deps=()
     for pkg in nss nspr nss-tools; do
@@ -60,7 +60,7 @@ install_build_dependencies() {
             runtime_deps+=("$pkg")
         fi
     done
-    
+
     if [[ ${#runtime_deps[@]} -gt 0 ]]; then
         log_info "Installing NSS/NSPR runtime libraries: ${runtime_deps[*]}"
         dnf install -y --setopt=install_weak_deps=False "${runtime_deps[@]}" || {
@@ -68,16 +68,16 @@ install_build_dependencies() {
             return 1
         }
     fi
-    
+
     # Check if build dependencies are already installed
     local missing_deps=()
-    
+
     for pkg in nss-devel nspr-devel python3-devel gcc; do
         if ! rpm -q "$pkg" >/dev/null 2>&1; then
             missing_deps+=("$pkg")
         fi
     done
-    
+
     if [[ ${#missing_deps[@]} -gt 0 ]]; then
         log_info "Installing build dependencies: ${missing_deps[*]}"
         # Try to install, but don't fail if nss-devel/nspr-devel unavailable
@@ -105,13 +105,13 @@ install_build_dependencies() {
 # Install from PyPI (recommended)
 install_from_pypi() {
     log_info "Installing python-nss-ng from PyPI for $ARCH"
-    
+
     # Ensure pip is available
     if ! command -v pip3 >/dev/null 2>&1; then
         log_error "pip3 not found, installing python3-pip"
         dnf install -y --setopt=install_weak_deps=False python3-pip
     fi
-    
+
     # Install python-nss-ng
     # Note: Strip 'v' prefix if present for PyPI version
     local pypi_version="${PYTHON_NSS_NG_VERSION#v}"
@@ -127,14 +127,14 @@ install_from_pypi() {
             pip_success=true
         fi
     fi
-    
+
     # Check if installation succeeded
     if [[ "$pip_success" == "false" ]] || ! python3 -c "import nss" >/dev/null 2>&1; then
         log_warning "PyPI installation failed or no wheel available for $ARCH"
         log_info "Falling back to GitHub source installation"
         return 1
     fi
-    
+
     local installed_version
     installed_version=$(python3 -c "import nss; print(nss.__version__)" 2>/dev/null || echo "unknown")
     log_info "Python-NSS-NG installed successfully from PyPI: version $installed_version"
@@ -143,22 +143,22 @@ install_from_pypi() {
 # Install from GitHub source (for development/testing)
 install_from_github() {
     log_info "Installing python-nss-ng from GitHub source for $ARCH"
-    
+
     # Install build dependencies
     install_build_dependencies
-    
+
     # Ensure pip is available
     if ! command -v pip3 >/dev/null 2>&1; then
         log_error "pip3 not found, installing python3-pip"
         dnf install -y --setopt=install_weak_deps=False python3-pip
     fi
-    
+
     # Install from git repository
     local git_ref="${PYTHON_NSS_NG_VERSION:-main}"
     log_info "Installing from ${PYTHON_NSS_NG_REPO}@${git_ref}"
-    
+
     pip3 install "git+${PYTHON_NSS_NG_REPO}@${git_ref}"
-    
+
     local installed_version
     installed_version=$(python3 -c "import nss; print(nss.__version__)" 2>/dev/null || echo "unknown")
     log_info "Python-NSS-NG installed successfully from GitHub: version $installed_version"

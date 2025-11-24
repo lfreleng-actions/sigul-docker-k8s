@@ -5,8 +5,8 @@ SPDX-FileCopyrightText: 2025 The Linux Foundation
 
 # Certificate Initialization System
 
-**Version:** 1.0.0  
-**Date:** 2025-01-16  
+**Version:** 1.0.0
+**Date:** 2025-01-16
 **Status:** Production Ready
 
 ---
@@ -504,7 +504,7 @@ docker exec sigul-bridge certutil -L -d sql:/etc/pki/sigul/bridge \
 **Symptoms:**
 
 ```
-Error response from daemon: failed to create task for container: 
+Error response from daemon: failed to create task for container:
 failed to create shim task: OCI runtime create failed
 ```
 

@@ -299,7 +299,7 @@ setup_client_certificates() {
     local client_nss_dir="$NSS_BASE_DIR/client"
     local client_fqdn="${CLIENT_FQDN:-sigul-client.example.org}"
     local bridge_nss_dir="$NSS_BASE_DIR/bridge-shared"
-    local bridge_ca_export_dir="$NSS_BASE_DIR/bridge-shared/ca-export"
+
     local client_ca_import_dir="$NSS_BASE_DIR/ca-import"
 
     # Check if certificates already exist
@@ -321,7 +321,7 @@ setup_client_certificates() {
     # Create client NSS database
     log "Creating client NSS database..."
     mkdir -p "$client_nss_dir"
-    
+
     # For container environment, use empty password file
     local temp_password_file="/tmp/nss-empty-password-$$"
     echo -n "" > "$temp_password_file"
@@ -331,7 +331,7 @@ setup_client_certificates() {
     # Import CA certificate from bridge NSS database (per official Sigul documentation)
     # Reference: https://github.com/ModeSevenIndustrialSolutions/sigul - "Setting up the client" section
     log "Importing CA certificate from bridge NSS database..."
-    
+
     if ! certutil -L -d "sql:$bridge_nss_dir" -n "$CA_NICKNAME" -a > /tmp/ca-import.pem 2>/dev/null; then
         fatal "Could not export CA certificate from bridge NSS database"
     fi
@@ -350,10 +350,10 @@ setup_client_certificates() {
 
     # Generate client certificate signed by CA (per official Sigul documentation)
     log "Generating client certificate for $client_fqdn..."
-    
+
     # Generate a random serial number
     local serial_number=$((RANDOM * RANDOM))
-    
+
     # Generate with empty password file
     local temp_password_file="/tmp/nss-empty-password-$$"
     echo -n "" > "$temp_password_file"
@@ -369,10 +369,10 @@ setup_client_certificates() {
         rm -f "$temp_password_file"
         fatal "Failed to generate client certificate"
     fi
-    
+
     chmod 600 "$client_ca_import_dir/ca.p12"
     chmod 600 "$client_ca_import_dir/ca-p12-password"
-    
+
     success "CA files copied to client import location"
 
     log "Generating production-aligned certificates for client..."

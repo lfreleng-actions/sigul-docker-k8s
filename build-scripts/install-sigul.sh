@@ -57,7 +57,7 @@ install_from_source() {
     log_info "Cloning sigul v${SIGUL_VERSION} from GitHub fork"
     git clone --depth 1 --branch "v${SIGUL_VERSION}" \
         https://github.com/ModeSevenIndustrialSolutions/sigul.git sigul
-    
+
     cd sigul
 
     # Apply debugging patches if they exist
@@ -66,7 +66,7 @@ install_from_source() {
         if [[ ! -d "$patch_dir" ]]; then
             patch_dir="/tmp/patches"
         fi
-        
+
         if [[ -d "$patch_dir" ]]; then
             log_info "Applying debugging patches from $patch_dir"
             for patch_file in "$patch_dir"/*.patch; do

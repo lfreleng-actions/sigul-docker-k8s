@@ -1,9 +1,0 @@
-Python-NSS to Python-NSS-NG Migration Backup
-Created: Sun Nov 23 23:52:54 GMT 2025
-Location: /Users/matt/Repositories/modeseven-lfreleng-actions/sigul-docker/backups/python-nss-migration-20251123-235254
-
-Files backed up:
-Dockerfile.bridge.backup
-Dockerfile.client.backup
-Dockerfile.server.backup
-install-python-nss.sh.backup

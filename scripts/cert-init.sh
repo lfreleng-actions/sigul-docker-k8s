@@ -78,7 +78,6 @@ readonly CERT_SERIAL_CLIENT=4
 
 # State tracking
 INITIALIZATION_NEEDED=false
-BRIDGE_CERTS_EXIST=false
 
 #######################################
 # Logging Functions
@@ -211,11 +210,9 @@ detect_certificate_state() {
        check_certificate_exists "$BRIDGE_NSS_DIR" "$BRIDGE_CERT_NICKNAME" "bridge" && \
        check_certificate_exists "$BRIDGE_NSS_DIR" "$SERVER_CERT_NICKNAME" "bridge" && \
        check_certificate_exists "$BRIDGE_NSS_DIR" "$CLIENT_CERT_NICKNAME" "bridge"; then
-        BRIDGE_CERTS_EXIST=true
         success "All certificates exist on bridge (CA, bridge, server, client)"
         INITIALIZATION_NEEDED=false
     else
-        BRIDGE_CERTS_EXIST=false
         warn "Certificates missing on bridge - initialization needed"
         INITIALIZATION_NEEDED=true
     fi
@@ -232,12 +229,12 @@ create_directories() {
     mkdir -p "$BRIDGE_NSS_DIR"
     mkdir -p "$SERVER_NSS_DIR"
     mkdir -p "$CLIENT_NSS_DIR"
-    
+
     # Create export directories
     mkdir -p "$CA_EXPORT_DIR"
     mkdir -p "$SERVER_EXPORT_DIR"
     mkdir -p "$CLIENT_EXPORT_DIR"
-    
+
     # Create shared config directory
     mkdir -p "$SHARED_CONFIG_DIR"
 
@@ -466,7 +463,7 @@ generate_bridge_config() {
     log "Generating bridge configuration..."
 
     local config_file="${SHARED_CONFIG_DIR}/bridge.conf"
-    
+
     # Create config directory if needed
     mkdir -p "${SHARED_CONFIG_DIR}"
     chmod 755 "${SHARED_CONFIG_DIR}"
@@ -517,7 +514,7 @@ generate_server_config() {
     log "Generating server configuration..."
 
     local config_file="${SHARED_CONFIG_DIR}/server.conf"
-    
+
     # Create config directory if needed
     mkdir -p "${SHARED_CONFIG_DIR}"
     chmod 755 "${SHARED_CONFIG_DIR}"
