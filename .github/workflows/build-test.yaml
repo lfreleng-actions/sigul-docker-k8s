@@ -249,7 +249,7 @@ jobs:
 
       - name: 'Download Docker image artifact'
         # yamllint disable-line rule:line-length
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
         continue-on-error: true
         id: download
         with:
@@ -519,7 +519,7 @@ jobs:
 
       - name: 'Download AMD64 Docker image artifact'
         # yamllint disable-line rule:line-length
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
         continue-on-error: true
         id: download-amd64
         with:
@@ -528,7 +528,7 @@ jobs:
 
       - name: 'Download ARM64 Docker image artifact'
         # yamllint disable-line rule:line-length
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
         continue-on-error: true
         id: download-arm64
         with:
@@ -734,14 +734,14 @@ jobs:
 
       - name: 'Download Sigul Client image artifact'
         # yamllint disable-line rule:line-length
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
         with:
           name: 'client-${{ steps.runner-arch.outputs.platform-id }}-image'
           path: /tmp
 
       - name: 'Download Sigul Server image artifact'
         # yamllint disable-line rule:line-length
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
         with:
           name: >-
             server-${{ steps.runner-arch.outputs.platform-id }}-image
@@ -749,7 +749,7 @@ jobs:
 
       - name: 'Download Sigul Bridge image artifact'
         # yamllint disable-line rule:line-length
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
         with:
           name: >-
             bridge-${{ steps.runner-arch.outputs.platform-id }}-image
@@ -1031,14 +1031,14 @@ jobs:
 
       - name: 'Download Sigul Client image artifact'
         # yamllint disable-line rule:line-length
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
         with:
           name: 'client-${{ steps.runner-arch.outputs.platform-id }}-image'
           path: /tmp
 
       - name: 'Download Sigul Server image artifact'
         # yamllint disable-line rule:line-length
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
         with:
           name: >-
             server-${{ steps.runner-arch.outputs.platform-id }}-image
@@ -1046,7 +1046,7 @@ jobs:
 
       - name: 'Download Sigul Bridge image artifact'
         # yamllint disable-line rule:line-length
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
         with:
           name: >-
             bridge-${{ steps.runner-arch.outputs.platform-id }}-image
