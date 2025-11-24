@@ -208,34 +208,34 @@ start_client_container() {
 
     # Create client NSS volume for integration tests
     local client_nss_volume="sigul-integration-client-nss"
-    
+
     # Remove old volume if exists
     docker volume rm "$client_nss_volume" 2>/dev/null || true
-    
+
     verbose "Creating client NSS volume for integration tests"
     docker volume create "$client_nss_volume" >/dev/null
-    
+
     # Initialize volume with correct ownership (UID 1000 = sigul user)
     verbose "Setting ownership on client NSS volume"
     docker run --rm -v "$client_nss_volume:/target" alpine:3.19 \
         sh -c "mkdir -p /target && chown -R 1000:1000 /target" >/dev/null 2>&1
-    
+
     verbose "Using client NSS volume: $client_nss_volume"
-    
+
     # Create client config volume for integration tests
     local client_config_volume="sigul-integration-client-config"
-    
+
     # Remove old volume if exists
     docker volume rm "$client_config_volume" 2>/dev/null || true
-    
+
     verbose "Creating client config volume for integration tests"
     docker volume create "$client_config_volume" >/dev/null
-    
+
     # Initialize volume with correct ownership (UID 1000 = sigul user)
     verbose "Setting ownership on client config volume"
     docker run --rm -v "$client_config_volume:/target" alpine:3.19 \
         sh -c "mkdir -p /target && chown -R 1000:1000 /target" >/dev/null 2>&1
-    
+
     verbose "Using client config volume: $client_config_volume"
 
     # Start the client container with new PKI architecture
@@ -272,7 +272,7 @@ start_client_container() {
 
     # Initialize the client with new PKI architecture
     verbose "Initializing client certificates (new PKI architecture)..."
-    
+
     # Debug: Check what's available in the bridge NSS volume
     verbose "Checking bridge NSS volume for certificate exports:"
     docker exec "$client_container_name" sh -c 'ls -la /etc/pki/sigul/bridge/ca-export/ 2>/dev/null || echo "CA export not found"'
@@ -284,7 +284,7 @@ start_client_container() {
 
         # Verify certificate import
         verbose "Verifying client certificate setup..."
-        
+
         # Check NSS database exists
         if docker exec "$client_container_name" test -f /etc/pki/sigul/client/cert9.db; then
             verbose "Client NSS database found"
@@ -316,7 +316,7 @@ start_client_container() {
 
         # Generate client configuration file
         verbose "Generating client configuration file..."
-        
+
         # Run as root to overcome permission issues with /etc/sigul
         docker exec --user root "$client_container_name" bash -c "cat > /etc/sigul/client.conf << EOFCONFIG
 # Sigul Client Configuration
@@ -351,10 +351,10 @@ nss-min-tls: tls1.2
 # - Client cannot sign new certificates
 EOFCONFIG
 "
-        
+
         # Set proper ownership
         docker exec --user root "$client_container_name" chown sigul:sigul /etc/sigul/client.conf
-        
+
         if docker exec "$client_container_name" test -f /etc/sigul/client.conf; then
             verbose "Client configuration file generated successfully"
         else

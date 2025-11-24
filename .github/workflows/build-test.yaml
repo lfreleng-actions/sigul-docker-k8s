@@ -928,20 +928,22 @@ jobs:
           # Collect volume diagnostics using FHS-compliant paths
           if docker ps -a --format "{{.Names}}" | grep -q "^sigul-bridge$"; then
             echo "Collecting bridge volume diagnostics..."
-            bridge_nss_volume=$(docker inspect sigul-bridge \
-              --format \
-              '{{range .Mounts}}{{if eq .Destination "/etc/pki/sigul/bridge"}}' \
-              '{{.Name}}{{end}}{{end}}' \
-              2>/dev/null || echo "")
+            bridge_nss_volume=$(
+              docker inspect sigul-bridge --format \
+                '{{range .Mounts}}' \
+                '{{if eq .Destination "/etc/pki/sigul/bridge"}}' \
+                '{{.Name}}{{end}}{{end}}' 2>/dev/null || echo ""
+            )
             if [[ -n "$bridge_nss_volume" ]]; then
               echo "Bridge NSS volume name: $bridge_nss_volume"
               docker run --rm -v "${bridge_nss_volume}":/nss-data \
                 alpine:3.19 sh -c '
-                echo "=== Bridge NSS Volume Directory Structure ===" > \
-                  /tmp/bridge-volume.txt
+                echo "=== Bridge NSS Volume Directory Structure ===" \
+                  > /tmp/bridge-volume.txt
                 find /nss-data -type f -exec ls -la {} \; >> \
                   /tmp/bridge-volume.txt 2>&1 || true
-                echo "=== Bridge NSS Database Files ===" >> /tmp/bridge-volume.txt
+                echo "=== Bridge NSS Database Files ===" \
+                  >> /tmp/bridge-volume.txt
                 ls -la /nss-data/*.db /nss-data/pkcs11.txt >> \
                   /tmp/bridge-volume.txt 2>&1 || true
                 cat /tmp/bridge-volume.txt

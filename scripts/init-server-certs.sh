@@ -243,7 +243,7 @@ import_server_certificate() {
     if ! certutil -L -d "sql:${SERVER_NSS_DIR}" -n "${SERVER_CERT_NICKNAME}" &>/dev/null; then
         # Try to find the imported certificate and rename it
         warn "Server certificate imported with unexpected nickname, searching..."
-        
+
         # List all certificates and try to identify the server cert
         local imported_nickname
         imported_nickname=$(certutil -L -d "sql:${SERVER_NSS_DIR}" | \
@@ -252,7 +252,7 @@ import_server_certificate() {
             grep -v "${CA_NICKNAME}" | \
             head -1 | \
             awk '{print $1}')
-        
+
         if [[ -n "$imported_nickname" ]]; then
             warn "Found certificate with nickname: $imported_nickname"
             warn "This is expected behavior - PKCS#12 import preserves original nickname"
@@ -299,7 +299,7 @@ verify_certificates() {
         warn "Server certificate not found with expected nickname"
         # Check if any certificate was imported
         local cert_count
-        cert_count=$(certutil -L -d "sql:${SERVER_NSS_DIR}" -f "${password_file}" | grep -v "Certificate Nickname" | grep -v "^$" | wc -l)
+        cert_count=$(certutil -L -d "sql:${SERVER_NSS_DIR}" -f "${password_file}" | grep -v "Certificate Nickname" | grep -vc "^$")
         if [[ $cert_count -lt 2 ]]; then
             error "Server certificate verification failed"
             verification_failed=1
@@ -332,9 +332,9 @@ display_certificate_info() {
     echo ""
     echo "  Server NSS Database: ${SERVER_NSS_DIR}"
     echo ""
-    
+
     local password_file="${SERVER_NSS_DIR}/.nss-password"
-    
+
     echo "  Imported certificates:"
     certutil -L -d "sql:${SERVER_NSS_DIR}" -f "${password_file}" 2>/dev/null | tail -n +5 | sed 's/^/    /'
     echo ""

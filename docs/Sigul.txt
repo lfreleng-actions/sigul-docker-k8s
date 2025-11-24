@@ -150,7 +150,7 @@ Setting up the client
 Note on setting up the client
 -----------------------------
 After the system is deployed using the Fedora CA and certificates issued by the
-Fedora CA, a client can be confiured simply by running
+Fedora CA, a client can be configured simply by running
 	sigul_setup_client
 This scripts imports ~/.fedora-server-ca.cert and ~/.fedora.cert into ~/.sigul;
 ~/.sigul will be the default $client_dir.

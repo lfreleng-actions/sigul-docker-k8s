@@ -264,14 +264,14 @@ initialize_database() {
     # Check if database needs initialization
     if [ ! -f "$db_path" ] || [ ! -s "$db_path" ]; then
         log "Database does not exist or is empty - initializing schema..."
-        
+
         # Run database creation script
         if ! sigul_server_create_db -c "$CONFIG_FILE"; then
             fatal "Failed to create database schema"
         fi
-        
+
         success "Database schema created successfully"
-        
+
         # Verify schema was actually created
         if command -v sqlite3 &>/dev/null; then
             local table_count
@@ -284,11 +284,11 @@ initialize_database() {
         else
             warn "sqlite3 not available - cannot verify database schema"
         fi
-        
+
         # Create admin user if credentials are provided
         if [ -n "${SIGUL_ADMIN_USER:-}" ] && [ -n "${SIGUL_ADMIN_PASSWORD:-}" ]; then
             log "Creating admin user: ${SIGUL_ADMIN_USER}"
-            
+
             # Use printf to handle password with newline for sigul_server_add_admin
             if ! printf "%s\n%s\n" "$SIGUL_ADMIN_PASSWORD" "$SIGUL_ADMIN_PASSWORD" | \
                 sigul_server_add_admin -c "$CONFIG_FILE" -n "$SIGUL_ADMIN_USER"; then
@@ -303,7 +303,7 @@ initialize_database() {
         fi
     else
         log "Database already initialized"
-        
+
         # Verify database has tables (basic sanity check)
         if command -v sqlite3 &>/dev/null; then
             local table_count

@@ -156,12 +156,12 @@ create_noise_file() {
     log "Creating noise file for entropy..."
 
     NOISE_FILE="${NSS_DB_DIR}/.noise"
-    
+
     # Generate noise from /dev/urandom
     if ! head -c 1024 /dev/urandom > "${NOISE_FILE}" 2>/dev/null; then
         fatal "Failed to create noise file"
     fi
-    
+
     chmod 600 "${NOISE_FILE}"
     log "Noise file created: ${NOISE_FILE}"
 }
@@ -199,13 +199,13 @@ initialize_nss_database() {
     # Check if database already exists
     if [ -f "${NSS_DB_DIR}/cert9.db" ]; then
         debug "NSS database already exists"
-        
+
         # List existing certificates for debugging
         if [[ "$DEBUG" == "true" ]]; then
             debug "Existing certificates in database:"
             certutil -L -d "sql:${NSS_DB_DIR}" 2>/dev/null || debug "Could not list certificates"
         fi
-        
+
         warn "NSS database already exists, skipping initialization"
         return 0
     fi
@@ -512,7 +512,7 @@ cleanup() {
         rm -f "${NSS_PASSWORD_FILE}"
         log "Cleaned up password file"
     fi
-    
+
     if [ -f "${NOISE_FILE}" ]; then
         rm -f "${NOISE_FILE}"
         log "Cleaned up noise file"
