@@ -103,7 +103,7 @@ jobs:
 
       - name: 'Checkout repository'
         # yamllint disable-line rule:line-length
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3  # v6.0.0
 
       - name: 'Set up Docker Buildx'
         # yamllint disable-line rule:line-length
@@ -237,7 +237,7 @@ jobs:
       - name: 'Checkout repository'
         if: matrix.run-mock-tests == true
         # yamllint disable-line rule:line-length
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
 
       - name: 'Extract platform identifier'
         id: platform
@@ -503,7 +503,7 @@ jobs:
 
       - name: 'Checkout repository'
         # yamllint disable-line rule:line-length
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3  # v6.0.0
 
       - name: 'Set up Docker Buildx'
         # yamllint disable-line rule:line-length
@@ -702,7 +702,7 @@ jobs:
 
       - name: 'Checkout repository'
         # yamllint disable-line rule:line-length
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
 
       - name: 'Set up Docker Buildx'
         # yamllint disable-line rule:line-length
@@ -999,7 +999,7 @@ jobs:
 
       - name: 'Checkout repository'
         # yamllint disable-line rule:line-length
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
 
       - name: 'Set up Docker Buildx'
         # yamllint disable-line rule:line-length
