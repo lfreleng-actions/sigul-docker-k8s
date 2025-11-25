@@ -2,7 +2,8 @@
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
 # Temporary and binary files
-.build-context/sigul
+.build-context/sigul/*
+!.build-context/sigul/.gitkeep
 public-key.asc
 artifacts/
 test-integration-workspace/

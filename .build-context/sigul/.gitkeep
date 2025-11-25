@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+
+# This directory is used for local development builds
+# Place the sigul source code here for debugging builds
+# The directory must exist for Docker builds to work in CI
