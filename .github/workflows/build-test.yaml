@@ -42,7 +42,7 @@ jobs:
     permissions:
       contents: read
       actions: write  # Required for cache deletion when clear_cache is true
-    timeout-minutes: 3
+    timeout-minutes: 6
     env:
       GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
     strategy:
