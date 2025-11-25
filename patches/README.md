@@ -3,125 +3,86 @@ SPDX-License-Identifier: Apache-2.0
 SPDX-FileCopyrightText: 2025 The Linux Foundation
 -->
 
-# Sigul Debugging Patches
+# Sigul Patches
 
-This directory contains patches that add comprehensive debugging output to the
-Sigul v1.4 source code to help diagnose double-TLS connection and
-authentication issues.
+This directory contains patches that fix critical issues in upstream Sigul v1.4 to enable proper operation in containerized environments.
 
 ## Purpose
 
-The Docker image build process applies these patches to instrument
-the Sigul client, bridge, and server components with debugging logging. This
-helps diagnose:
-
-1. **NSS Database Issues**: Certificate availability, trust flags, password validation
-2. **SSL/TLS Connection Problems**: Handshake failures, certificate validation errors
-3. **Double-TLS Communication**: Inner and outer TLS session establishment
-4. **Authentication Failures**: User creation and password handling
+These patches are automatically applied during the Docker image build process to fix issues that prevent Sigul from working correctly in containers. The patches are minimal and focused on critical functionality only.
 
 ## Patches
 
-### 01-add-comprehensive-debugging.patch
+### 01-fix-double-tls-handshake-timing.patch
 
-Adds extensive logging to:
+**Status:** CRITICAL - Required for functionality
+**Upstream Status:** Not yet submitted
+**Affects:** Bridge component
 
-- **`src/utils.py`**: NSS initialization and database operations
-  - NSS database path and password validation
-  - Certificate enumeration
-  - Detailed error messages for common failures
+**Problem:**
+The upstream Sigul bridge accepts the server's TCP connection but delays the TLS handshake until a client connects. In containerized environments with variable connection timing, this causes the server-side TLS handshake to timeout, resulting in `PR_END_OF_FILE_ERROR` / "Unexpected EOF in NSPR" errors.
 
-- **`src/double_tls.py`**: Double-TLS client connection process
-  - Bridge hostname and port configuration
-  - Certificate lookup and validation
-  - TCP connection attempts
-  - SSL handshake progress
-  - Peer certificate verification
-  - Child process error handling with context
+**Fix:**
+Completes the server TLS handshake immediately after accepting the TCP connection, before waiting for client connections. This ensures stable double-TLS communication.
 
-- **`src/client.py`**: Client connection lifecycle
-  - Operation identification
-  - Connection parameters
-  - NSS initialization status
-  - EOF and connection reset error context
+**Impact:**
 
-## How the Build Process Applies Patches
+- Without this patch: All Sigul operations fail with I/O errors
+- With this patch: Stable, reliable double-TLS communication
 
-The patches are automatically applied during Docker image build:
+**Code Changes:**
+
+- Adds `server_sock.force_handshake()` immediately after server accept
+- Adds server certificate validation
+- Adds error handling for handshake failures
+
+## How Patches Are Applied
+
+The Docker build process automatically applies these patches:
 
 1. `Dockerfile.{client,bridge,server}` copies this directory to `/tmp/patches/`
-2. `build-scripts/install-sigul.sh` downloads Sigul v1.4 source
-3. The install script applies all `*.patch` files in order
-4. Sigul is then built and installed with the debugging code included
-5. The build process cleans up the patches directory after installation
+2. `build-scripts/install-sigul.sh` clones Sigul v1.4 from upstream (Pagure)
+3. The script applies all `*.patch` files in alphanumeric order
+4. Sigul is then built and installed with the fixes included
 
-## Debug Output Format
+## Upstream Strategy
 
-The patches add structured debug output with clear markers:
+These patches should be submitted to upstream Sigul (<https://pagure.io/sigul>) to benefit the community and reduce our maintenance burden. Once accepted upstream, we can remove the patches and use official releases.
 
-```text
-==================== NSS INITIALIZATION DEBUG ====================
-NSS_DIR: /etc/pki/sigul/client
-NSS_PASSWORD length: 16
-Calling nss.nss.nss_init(/etc/pki/sigul/client)
-NSS database initialization complete
-✓ NSS password authentication successful
-Available certificates in NSS database:
-  - CN=sigul-ca,O=Sigul Test CA
-  - CN=sigul-bridge-cert,O=Sigul Test CA
-  - CN=sigul-client-cert,O=Sigul Test CA
-==================== NSS INITIALIZATION COMPLETE ====================
+**Submission Priority:**
+
+1. **HIGH:** Double-TLS handshake timing fix (this is critical for containers)
+
+## Testing
+
+To verify patches apply correctly:
+
+```bash
+# Test patch application locally
+cd /tmp
+git clone --depth 1 --branch v1.4 https://pagure.io/sigul.git
+cd sigul
+patch -p1 < /path/to/sigul-docker/patches/01-fix-double-tls-handshake-timing.patch
+
+# Verify no errors
+echo $?  # Should be 0
 ```
-
-## Removing Patches
-
-To build without debugging patches:
-
-1. Remove or rename this directory
-2. Rebuild the Docker images
-
-The install script will detect the absence of patches and proceed with the build.
 
 ## Contributing
 
 When adding new patches:
 
-1. Use sequential numbering: `01-`, `02-`, etc.
-2. Target specific issues or components
-3. Include descriptive error messages with values
-4. Use consistent markers (`====`, `✓`, `✗`) for visibility
-5. Test that patches apply cleanly to Sigul v1.4 source
+1. Keep patches minimal - only fix critical issues
+2. Use descriptive filenames with numeric prefixes: `01-`, `02-`, etc.
+3. Include clear comments explaining WHY the fix is needed
+4. Test that patches apply cleanly to upstream Sigul v1.4
+5. Plan for upstream submission
 
-## Testing Patches Locally
+## Maintenance
 
-To test patch application without full Docker build:
+When upstream Sigul releases new versions:
 
-```bash
-# Clone Sigul source from GitHub fork
-cd /tmp
-git clone --depth 1 --branch v1.4 https://github.com/ModeSevenIndustrialSolutions/sigul.git
-cd sigul
-
-# Apply the debugging changes
-patch -p1 < /path/to/sigul-docker/patches/01-add-comprehensive-debugging.patch
-
-# Verify
-echo "Patch applied"
-```
-
-## Expected CI/CD Impact
-
-With these patches applied, CI integration test logs will show:
-
-- Detailed NSS database initialization steps
-- SSL handshake progress and failures
-- Certificate validation results
-- Specific error locations in the double-TLS process
-
-This makes it much easier to identify whether failures are due to:
-
-- Missing or incorrectly trusted certificates
-- NSS password mismatches
-- Network connectivity issues
-- Bridge/server unavailability
-- Authentication/authorization problems
+1. Test if patches still apply cleanly
+2. Update patches if necessary
+3. Remove patches that have been accepted upstream
+4. Update `build-scripts/install-sigul.sh` if using newer version
