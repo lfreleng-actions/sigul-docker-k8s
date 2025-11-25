@@ -99,8 +99,10 @@ install_from_source() {
                     if patch -p1 < "$patch_file"; then
                         log_info "✓ Patch applied successfully: $(basename "$patch_file")"
                     else
-                        log_error "✗ Failed to apply patch: $(basename "$patch_file")"
-                        log_error "Continuing anyway - build may fail or lack debugging"
+                        log_error "✗ FATAL: Failed to apply patch: $(basename "$patch_file")"
+                        log_error "Patches are REQUIRED for correct operation"
+                        log_error "Cannot continue without patches - container would be non-functional"
+                        return 1
                     fi
                 fi
             done

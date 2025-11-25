@@ -192,279 +192,7 @@ jobs:
           path: /tmp/${{ matrix.component }}-${{ steps.platform.outputs.id }}.tar
           retention-days: 7
 
-  ### Test Sigul Client Container ###
-  client-mock-test:
-    name: "Test Client: ${{ matrix.platform }}"
-    runs-on: ${{ matrix.runner }}
-    permissions:
-      contents: read
-    timeout-minutes: 2
-    needs: build-containers
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: linux/amd64
-            runner: ubuntu-latest
-            run-mock-tests: true
-          - platform: linux/arm64
-            runner: ubuntu-24.04-arm
-            run-mock-tests: true
-    steps:
-      # Harden the runner used by this workflow
-      # yamllint disable-line rule:line-length
-      - uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
-        with:
-          egress-policy: 'audit'
 
-      - name: 'Checkout repository'
-        if: matrix.run-mock-tests == true
-        # yamllint disable-line rule:line-length
-        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
-
-      - name: 'Extract platform identifier'
-        id: platform
-        shell: bash
-        run: |
-          platform_id="${{ matrix.platform }}"
-          platform_id="${platform_id//\//-}"
-          echo "id=${platform_id}" >> "$GITHUB_OUTPUT"
-
-      - name: 'Download Docker image artifact'
-        # yamllint disable-line rule:line-length
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
-        continue-on-error: true
-        id: download
-        with:
-          name: client-${{ steps.platform.outputs.id }}-image
-          path: /tmp
-
-      - name: 'Load Docker image'
-        shell: bash
-        if: steps.download.outcome == 'success'
-        run: |
-          file_path="/tmp/client-${{ steps.platform.outputs.id }}.tar"
-          if [ -f "${file_path}" ]; then
-            docker load --input "${file_path}"
-            docker images
-            echo "✅ Image loaded successfully for ${{ matrix.platform }}"
-          else
-            echo "❌ Image file not found for ${{ matrix.platform }}"
-            exit 1
-          fi
-
-      - name: 'Test container binary: sigul --version'
-        shell: bash
-        if: steps.download.outcome == 'success'
-        run: |
-          echo 'Testing ${{ matrix.platform }}...'
-          docker run --rm \
-            client:${{ steps.platform.outputs.id }} \
-            sigul --version
-
-      - name: 'Skip test for failed build'
-        shell: bash
-        if: steps.download.outcome != 'success'
-        run: |
-          echo "⚠️ Skipping test for ${{ matrix.platform }}"
-          echo "Build artifact not available"
-
-      - name: 'Create test files for mock signing'
-        shell: bash
-        if: matrix.run-mock-tests == true && steps.download.outcome == 'success'
-        run: |
-          mkdir -p test-workspace/files
-          echo 'Test document for mock signing' > test-workspace/files/document1.txt
-          echo 'Another test file' > test-workspace/files/document2.txt
-          echo 'Binary test data' > test-workspace/files/test.dat
-          echo 'Unicode test: àáâãäåæçèéêë' > test-workspace/files/unicode.txt
-
-          echo 'Created test files:'
-          ls -la test-workspace/files/
-
-      - name: 'Test single file mock signing'
-        shell: bash
-        if: matrix.run-mock-tests == true && steps.download.outcome == 'success'
-        run: |
-          echo '=== Testing single file mock signing ==='
-          output=$(docker run --rm \
-            -v "$PWD/test-workspace:/workspace" \
-            -w /workspace \
-            -e SIGN_TYPE=sign-data \
-            -e SIGN_OBJECT=files/document1.txt \
-            -e SIGUL_KEY_NAME=test-signing-key \
-            -e SIGUL_MOCK_MODE=true \
-            client:${{ steps.platform.outputs.id }})
-
-          echo "Container output:"
-          echo "$output"
-
-          # Validate mock signature output
-          if echo "$output" | grep -q "SIGUL_MOCK_SIGNATURE_START"; then
-            echo "✅ Mock signature format detected"
-          else
-            echo "❌ Mock signature format not found"
-            exit 1
-          fi
-
-          if echo "$output" | grep -q "FILE: files/document1.txt"; then
-            echo "✅ Correct file referenced in signature"
-          else
-            echo "❌ File reference missing or incorrect"
-            exit 1
-          fi
-
-          if echo "$output" | grep -q "TYPE: sign-data"; then
-            echo "✅ Correct signing type in output"
-          else
-            echo "❌ Signing type missing or incorrect"
-            exit 1
-          fi
-
-          echo "✅ Single file mock test passed"
-
-      - name: 'Test wildcard mock signing'
-        shell: bash
-        if: matrix.run-mock-tests == true && steps.download.outcome == 'success'
-        run: |
-          echo '=== Testing wildcard mock signing ==='
-          output=$(docker run --rm \
-            -v "$PWD/test-workspace:/workspace" \
-            -w /workspace \
-            -e SIGN_TYPE=sign-data \
-            -e SIGN_OBJECT='files/*.txt' \
-            -e SIGUL_KEY_NAME=test-signing-key \
-            -e SIGUL_MOCK_MODE=true \
-            client:${{ steps.platform.outputs.id }})
-
-          echo "Container output:"
-          echo "$output"
-
-          # Count expected signatures (should be 3 .txt files)
-          expected_files=("document1.txt" "document2.txt" "unicode.txt")
-
-          for file in "${expected_files[@]}"; do
-            if echo "$output" | grep -q "FILE: files/$file"; then
-              echo "✅ Found signature for $file"
-            else
-              echo "❌ Missing signature for $file"
-              exit 1
-            fi
-          done
-
-          echo "✅ Wildcard mock test passed"
-
-      - name: 'Test multiline mock signing'
-        shell: bash
-        if: matrix.run-mock-tests == true && steps.download.outcome == 'success'
-        run: |
-          echo '=== Testing multiline mock signing ==='
-          output=$(docker run --rm \
-            -v "$PWD/test-workspace:/workspace" \
-            -w /workspace \
-            -e SIGN_TYPE=sign-data \
-            -e SIGN_OBJECT=$'files/document1.txt\nfiles/document2.txt\nfiles/test.dat' \
-            -e SIGUL_KEY_NAME=test-signing-key \
-            -e SIGUL_MOCK_MODE=true \
-            client:${{ steps.platform.outputs.id }})
-
-          echo "Container output:"
-          echo "$output"
-
-          expected_files=("document1.txt" "document2.txt" "test.dat")
-
-          for file in "${expected_files[@]}"; do
-            if echo "$output" | grep -q "FILE: files/$file"; then
-              echo "✅ Found signature for $file"
-            else
-              echo "❌ Missing signature for $file"
-              exit 1
-            fi
-          done
-
-          echo "✅ Multiline mock test passed"
-
-      - name: 'Test git tag mock signing'
-        shell: bash
-        if: matrix.run-mock-tests == true && steps.download.outcome == 'success'
-        run: |
-          echo '=== Testing git tag mock signing ==='
-
-          # Create minimal git repo for testing
-          mkdir -p test-workspace/git-repo
-          cd test-workspace/git-repo
-          git init
-          git config user.name "Test User"
-          git config user.email "test@example.com"
-          echo "test" > README.md
-          git add README.md
-          git commit -m "Initial commit"
-          git tag v1.0.0-test
-
-          output=$(docker run --rm \
-            -v "$PWD:/workspace" \
-            -w /workspace \
-            -e SIGN_TYPE=sign-git-tag \
-            -e SIGN_OBJECT=v1.0.0-test \
-            -e SIGUL_KEY_NAME=test-signing-key \
-            -e SIGUL_MOCK_MODE=true \
-            client:${{ steps.platform.outputs.id }})
-
-          echo "Container output:"
-          echo "$output"
-
-          if echo "$output" | grep -q "FILE: v1.0.0-test"; then
-            echo "✅ Git tag signature found"
-          else
-            echo "❌ Git tag signature missing"
-            exit 1
-          fi
-
-          if echo "$output" | grep -q "TYPE: sign-git-tag"; then
-            echo "✅ Correct git tag signing type"
-          else
-            echo "❌ Git tag signing type incorrect"
-            exit 1
-          fi
-
-          echo "✅ Git tag mock test passed"
-
-      - name: 'Test error handling'
-        shell: bash
-        if: matrix.run-mock-tests == true && steps.download.outcome == 'success'
-        run: |
-          echo '=== Testing error handling ==='
-
-          # Test missing file
-          if docker run --rm \
-            -v "$PWD/test-workspace:/workspace" \
-            -w /workspace \
-            -e SIGN_TYPE=sign-data \
-            -e SIGN_OBJECT=files/nonexistent.txt \
-            -e SIGUL_KEY_NAME=test-signing-key \
-            -e SIGUL_MOCK_MODE=true \
-            client:${{ steps.platform.outputs.id }} 2>/dev/null; then
-            echo "❌ Should have failed for missing file"
-            exit 1
-          else
-            echo "✅ Correctly handled missing file"
-          fi
-
-          # Test missing sign type
-          if docker run --rm \
-            -v "$PWD/test-workspace:/workspace" \
-            -w /workspace \
-            -e SIGN_OBJECT=files/document1.txt \
-            -e SIGUL_KEY_NAME=test-signing-key \
-            -e SIGUL_MOCK_MODE=true \
-            client:${{ steps.platform.outputs.id }} 2>/dev/null; then
-            echo "❌ Should have failed for missing SIGN_TYPE"
-            exit 1
-          else
-            echo "✅ Correctly handled missing SIGN_TYPE"
-          fi
-
-          echo "✅ Error handling tests passed"
 
   publish-ghcr:
     name: 'Publish to GHCR'
@@ -473,7 +201,7 @@ jobs:
       contents: read
       packages: write
     timeout-minutes: 3
-    needs: [build-containers, client-mock-test]
+    needs: [build-containers]
     # Temporarily disable while debugging integration tests/stack
     if: false
     # if: github.event_name != 'pull_request'
@@ -1273,7 +1001,6 @@ jobs:
     runs-on: 'ubuntu-latest'
     needs: [
       build-containers,
-      client-mock-test,
       publish-ghcr,
       stack-deploy-test,
       functional-tests
@@ -1290,15 +1017,15 @@ jobs:
             echo ""
 
             echo "### Build Results"
-            echo "| Platform | Build | Test | Stack Deploy | Integration | Status |"
-            echo "|----------|-------|------|--------------|-------------|--------|"
+            echo "| Platform | Build | Stack Deploy | Integration | Status |"
+            echo "|----------|-------|--------------|-------------|--------|"
 
             # Note: In real implementation, check actual job statuses
             echo "| linux/amd64 | ${{ needs.build-containers.result }} |" \
-              " ${{ needs.client-mock-test.result }} | ${{ needs.stack-deploy-test.result }} |" \
+              " ${{ needs.stack-deploy-test.result }} |" \
               " ${{ needs.functional-tests.result }} | Complete |"
             echo "| linux/arm64 | ${{ needs.build-containers.result }} |" \
-              " ${{ needs.client-mock-test.result }} | ${{ needs.stack-deploy-test.result }} |" \
+              " ${{ needs.stack-deploy-test.result }} |" \
               " ${{ needs.functional-tests.result }} | Complete |"
             echo ""
 

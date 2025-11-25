@@ -1,0 +1,31 @@
+diff --git a/src/bridge.py b/src/bridge.py
+index 278aa20..f5075af 100644
+--- a/src/bridge.py
++++ b/src/bridge.py
+@@ -1414,7 +1414,25 @@ def bridge_one_request(config, server_listen_sock, client_listen_sock):
+         client_sock = None
+         logging.debug('Waiting for the server to connect')
+         (server_sock, _) = server_listen_sock.accept()
+-        # FIXME? authenticate the server
++
++        # CRITICAL FIX: Complete server TLS handshake immediately after accept.
++        # Without this, the handshake is delayed until a client connects, which
++        # can cause the server-side handshake to timeout with PR_END_OF_FILE_ERROR.
++        # This is particularly problematic in containerized environments where
++        # connection timing is less predictable.
++        try:
++            server_sock.force_handshake()
++            logging.debug('Server TLS handshake completed')
++        except Exception as e:
++            logging.error('Server TLS handshake failed: %s', e)
++            raise
++
++        # Authenticate server certificate
++        server_cert = server_sock.get_peer_certificate()
++        if server_cert is None:
++            raise ForwardingError('No server certificate')
++        logging.debug('Server authenticated: %s', server_cert.subject_common_name)
++
+         try:
+             logging.debug('Waiting for the client to connect')
+             (client_sock, _) = client_listen_sock.accept()

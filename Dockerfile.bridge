@@ -16,7 +16,7 @@ RUN dnf update -y && \
 # Install base dependencies available in Fedora repositories
 RUN dnf update -y && \
     dnf install -y --setopt=install_weak_deps=False \
-        git which tar xz \
+        git which tar xz patch \
         python3-devel python3-pip python3-setuptools python3-cryptography \
         python3-requests python3-six python3-pexpect \
         sqlite \
