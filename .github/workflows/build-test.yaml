@@ -8,26 +8,11 @@ name: 'Sigul Build/Test 🐳'
 on:
   workflow_dispatch:
     inputs:
-      docker_buildkit:
-        description: 'Use Docker BuildKit for advanced caching and optimization'
-        required: false
-        default: 1
-        type: number
-      force_rebuild:
-        description: 'Force rebuild containers (bypasses cache)'
-        required: false
-        default: false
+      clear_cache:
+        description: 'Clear all build caches'
         type: boolean
-      cache_version:
-        description: 'Cache version (increment to bust cache)'
-        required: false
-        default: v2
-        type: string
-      purge_cache:
-        description: 'Clear Docker buildkit cache'
-        required: false
         default: false
-        type: boolean
+        required: false
 
   push:
     branches: ['main']
@@ -41,17 +26,13 @@ concurrency:
 permissions:
   contents: read
   packages: write
+  actions: write  # Required for cache deletion when clear_cache is true
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}/sigul-sign-docker
-  # Enable BuildKit for advanced caching and optimization
-  DOCKER_BUILDKIT: ${{ github.event.inputs.docker_buildkit || '0' }}
+  DOCKER_BUILDKIT: '1'
   BUILDKIT_PROGRESS: plain
-  # Cache version for manual cache busting - increment to force rebuild
-  CACHE_VERSION: ${{ github.event.inputs.cache_version || 'v2' }}
-  FORCE_REBUILD: ${{ github.event.inputs.force_rebuild || false }}
-  PURGE_CACHE: true
 
 jobs:
   ### Build Sigul Client Container ###
@@ -60,7 +41,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
+      actions: write  # Required for cache deletion when clear_cache is true
     timeout-minutes: 3
+    env:
+      GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
     strategy:
       fail-fast: false
       matrix:
@@ -109,17 +93,18 @@ jobs:
         # yamllint disable-line rule:line-length
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435  # v3.11.1
 
-      - name: 'Optionally purge the cache when requested'
-        if: ${{ github.event.inputs.purge_cache == 'true' }}
+      - name: 'Clear build caches if requested'
+        if: ${{ github.event.inputs.clear_cache == true }}
         run: |
-          # Purge the cache
-          docker buildx prune -f || true
-          gh cache delete --all || true
-          if [ "${{ github.event.inputs.purge_cache }}" == 'true' ]; then
-            echo "BUILDKIT_INLINE_CACHE=0" >> "$GITHUB_ENV"
-          else
-            echo "BUILDKIT_INLINE_CACHE=1" >> "$GITHUB_ENV"
-          fi
+          echo "🧹 Clearing all build caches..."
+
+          # Clear Docker BuildKit cache
+          docker buildx prune --all --force || true
+
+          # Clear GitHub Actions cache
+          gh cache list | cut -f1 | xargs -I {} gh cache delete {} || true
+
+          echo "✅ All caches cleared"
 
       - name: 'Extract platform identifier'
         id: platform
@@ -159,10 +144,8 @@ jobs:
           outputs: |
             type=docker,dest=/tmp/${{ matrix.component }}-${{ steps.platform.outputs.id }}.tar
           push: false
-          cache-from: ${{ github.event.inputs.force_rebuild == true && 'type=registry,ref=localhost/null' || format('type=gha,scope={0}-{1}-{2}-{3}', env.CACHE_VERSION, matrix.component, matrix.platform, matrix.runner) }}
-          cache-to: type=gha,mode=max,scope=${{ env.CACHE_VERSION }}-${{ matrix.component }}-${{ matrix.platform }}-${{ matrix.runner }}
-          build-args: |
-            BUILDKIT_INLINE_CACHE=${{ env.BUILDKIT_INLINE_CACHE }}
+          cache-from: ${{ github.event.inputs.clear_cache == true && 'type=registry,ref=localhost/null' || format('type=gha,scope={0}-{1}-{2}', matrix.component, matrix.platform, matrix.runner) }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}-${{ matrix.platform }}-${{ matrix.runner }}
 
       - name: 'Set build outputs for client amd64'
         id: build-client-amd64

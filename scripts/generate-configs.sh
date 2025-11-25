@@ -4,7 +4,7 @@
 
 # Configuration Generation Script
 #
-# This script generates production-aligned Sigul configuration files
+# This script generates sigul Sigul configuration files
 # from templates, substituting environment-specific values.
 #
 # Usage:

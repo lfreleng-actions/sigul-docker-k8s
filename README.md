@@ -791,6 +791,8 @@ The local debug mode works on **all platforms** where Docker is available:
 - **`debug/test_client_connection.sh`** - Test client↔bridge SSL connectivity
 - **`DEBUGGING_PROCESS_AND_FINDINGS.md`** - Comprehensive debugging documentation
 - **`debug/correct_testing_process.sh`** - Demonstrates proper fresh container testing
+- **`docs/CONTAINER_LOGGING.md`** - Container logging configuration and troubleshooting
+- **`DEBUG_MODE.md`** - Advanced debugging mode for monitoring container processes
 
 ### Integration with CI/CD
 

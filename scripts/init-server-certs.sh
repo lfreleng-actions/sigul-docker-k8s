@@ -141,7 +141,7 @@ create_password_file() {
     log "Creating NSS password file..."
 
     local password_file="${SERVER_NSS_DIR}/.nss-password"
-    echo "${NSS_PASSWORD}" > "${password_file}"
+    printf '%s' "${NSS_PASSWORD}" > "${password_file}"
     chmod 600 "${password_file}"
 
     debug "Password file created: ${password_file}"
@@ -354,7 +354,7 @@ display_certificate_info() {
 #######################################
 
 main() {
-    log "Server Certificate Import (Production-Aligned PKI)"
+    log "Server Certificate Import (Sigul PKI)"
     log "=================================================="
     echo ""
 

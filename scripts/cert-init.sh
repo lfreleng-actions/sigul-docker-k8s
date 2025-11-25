@@ -250,7 +250,7 @@ create_password_file() {
     log "Creating NSS password file..."
 
     local password_file="${BRIDGE_NSS_DIR}/.nss-password"
-    echo "${NSS_PASSWORD}" > "${password_file}"
+    printf '%s' "${NSS_PASSWORD}" > "${password_file}"
     chmod 600 "${password_file}"
 
     debug "Password file created: ${password_file}"
@@ -272,12 +272,12 @@ initialize_nss_database() {
     # Check if database already exists
     if [[ -f "${BRIDGE_NSS_DIR}/cert9.db" ]]; then
         if [[ "$CERT_INIT_MODE" == "force" ]]; then
-            warn "Force mode: removing existing NSS database"
-            rm -f "${BRIDGE_NSS_DIR}/cert9.db" "${BRIDGE_NSS_DIR}/key4.db" "${BRIDGE_NSS_DIR}/pkcs11.txt"
-        else
-            log "NSS database already exists"
-            return 0
-        fi
+                warn "Force mode: removing existing NSS database and password file"
+                rm -f "${BRIDGE_NSS_DIR}/cert9.db" "${BRIDGE_NSS_DIR}/key4.db" "${BRIDGE_NSS_DIR}/pkcs11.txt" "${BRIDGE_NSS_DIR}/.nss-password"
+            else
+                log "NSS database already exists"
+                return 0
+            fi
     fi
 
     # Create new NSS database
@@ -401,7 +401,7 @@ export_server_certificate() {
     chmod 644 "${cert_file}"
 
     # Save the PKCS#12 password
-    echo "${NSS_PASSWORD}" > "${SERVER_EXPORT_DIR}/server-cert.p12.password"
+    printf '%s' "${NSS_PASSWORD}" > "${SERVER_EXPORT_DIR}/server-cert.p12.password"
     chmod 600 "${SERVER_EXPORT_DIR}/server-cert.p12.password"
 
     success "Server certificate exported to ${SERVER_EXPORT_DIR}/"
@@ -436,7 +436,7 @@ export_client_certificate() {
     chmod 644 "${cert_file}"
 
     # Save the PKCS#12 password
-    echo "${NSS_PASSWORD}" > "${CLIENT_EXPORT_DIR}/client-cert.p12.password"
+    printf '%s' "${NSS_PASSWORD}" > "${CLIENT_EXPORT_DIR}/client-cert.p12.password"
     chmod 600 "${CLIENT_EXPORT_DIR}/client-cert.p12.password"
 
     success "Client certificate exported to ${CLIENT_EXPORT_DIR}/"
@@ -467,6 +467,9 @@ generate_bridge_config() {
     # Create config directory if needed
     mkdir -p "${SHARED_CONFIG_DIR}"
     chmod 755 "${SHARED_CONFIG_DIR}"
+
+    # Remove old config if it exists (may have wrong ownership from previous runs)
+    rm -f "${config_file}"
 
     # Generate configuration
     cat > "${config_file}" << EOF
@@ -519,6 +522,9 @@ generate_server_config() {
     mkdir -p "${SHARED_CONFIG_DIR}"
     chmod 755 "${SHARED_CONFIG_DIR}"
 
+    # Remove old config if it exists (may have wrong ownership from previous runs)
+    rm -f "${config_file}"
+
     # Generate configuration
     cat > "${config_file}" << EOF
 # Sigul Server Configuration
@@ -530,6 +536,7 @@ generate_server_config() {
 [server]
 bridge-hostname: ${BRIDGE_FQDN}
 bridge-port: 44333
+lenient-username-check: yes
 
 [database]
 database-path: /var/lib/sigul/server.sqlite
