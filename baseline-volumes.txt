@@ -1,6 +1,0 @@
-# SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: 2025 The Linux Foundation
-
-local     sigul-sign-docker_sigul_bridge_data
-local     sigul-sign-docker_sigul_client_data
-local     sigul-sign-docker_sigul_server_data

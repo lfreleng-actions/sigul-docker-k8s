@@ -148,7 +148,7 @@ test_dockerfile_server_uses_entrypoint() {
 }
 
 test_dockerfile_bridge_healthcheck() {
-    test_start "Dockerfile.bridge has production-aligned healthcheck"
+    test_start "Dockerfile.bridge has sigul healthcheck"
 
     # Should check port 44333 with nc
     if ! grep -q 'nc -z localhost 44333' Dockerfile.bridge; then
@@ -161,11 +161,11 @@ test_dockerfile_bridge_healthcheck() {
         warn "Dockerfile.bridge healthcheck interval may not be optimal"
     fi
 
-    success "Dockerfile.bridge has production-aligned healthcheck"
+    success "Dockerfile.bridge has sigul healthcheck"
 }
 
 test_dockerfile_server_healthcheck() {
-    test_start "Dockerfile.server has production-aligned healthcheck"
+    test_start "Dockerfile.server has sigul healthcheck"
 
     # Should check process with pgrep
     if ! grep -q 'pgrep -f "sigul_server"' Dockerfile.server; then
@@ -178,7 +178,7 @@ test_dockerfile_server_healthcheck() {
         warn "Dockerfile.server healthcheck interval may not be optimal"
     fi
 
-    success "Dockerfile.server has production-aligned healthcheck"
+    success "Dockerfile.server has sigul healthcheck"
 }
 
 #######################################
@@ -203,7 +203,7 @@ test_docker_compose_no_command_overrides() {
 }
 
 test_docker_compose_bridge_healthcheck() {
-    test_start "docker-compose.sigul.yml bridge healthcheck is production-aligned"
+    test_start "docker-compose.sigul.yml bridge healthcheck is sigul"
 
     # Extract bridge healthcheck section
     if ! grep -A 30 "sigul-bridge:" docker-compose.sigul.yml | grep -q "healthcheck:"; then
@@ -217,7 +217,7 @@ test_docker_compose_bridge_healthcheck() {
         return
     fi
 
-    success "docker-compose.sigul.yml bridge healthcheck is production-aligned"
+    success "docker-compose.sigul.yml bridge healthcheck is sigul"
 }
 
 test_docker_compose_server_depends_on_bridge() {
@@ -237,7 +237,7 @@ test_docker_compose_server_depends_on_bridge() {
 #######################################
 
 test_bridge_entrypoint_content() {
-    test_start "Bridge entrypoint has production-aligned command"
+    test_start "Bridge entrypoint has sigul command"
 
     # Should execute /usr/sbin/sigul_bridge -v
     if ! grep -q '/usr/sbin/sigul_bridge -v' scripts/entrypoint-bridge.sh; then
@@ -250,11 +250,11 @@ test_bridge_entrypoint_content() {
         warn "Bridge entrypoint should use 'exec' for direct process replacement"
     fi
 
-    success "Bridge entrypoint has production-aligned command"
+    success "Bridge entrypoint has sigul command"
 }
 
 test_server_entrypoint_content() {
-    test_start "Server entrypoint has production-aligned command"
+    test_start "Server entrypoint has sigul command"
 
     # Should execute /usr/sbin/sigul_server with production flags
     if ! grep -q '/usr/sbin/sigul_server' scripts/entrypoint-server.sh; then
@@ -290,7 +290,7 @@ test_server_entrypoint_content() {
         warn "Server entrypoint should use 'exec' for direct process replacement"
     fi
 
-    success "Server entrypoint has production-aligned command"
+    success "Server entrypoint has sigul command"
 }
 
 test_server_entrypoint_waits_for_bridge() {
@@ -408,7 +408,7 @@ test_server_process_command_line() {
         return
     fi
 
-    # Should have production-aligned command line
+    # Should have sigul command line
     if ! echo "$cmd" | grep -q '/usr/sbin/sigul_server.*-c.*--internal-log-dir.*--internal-pid-dir.*-v'; then
         fail "Server command line does not match production pattern"
         fail "Expected: /usr/sbin/sigul_server -c /etc/sigul/server.conf --internal-log-dir=... --internal-pid-dir=... -v"
@@ -476,7 +476,7 @@ generate_report() {
         echo -e "${GREEN}✓ All tests passed!${NC}"
         echo ""
         echo "Phase 4 (Service Initialization) validation successful."
-        echo "Services are using simplified, production-aligned entrypoints."
+        echo "Services are using simplified, sigul entrypoints."
         return 0
     else
         echo -e "${RED}✗ Some tests failed${NC}"

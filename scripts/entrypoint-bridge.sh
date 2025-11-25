@@ -2,18 +2,24 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
-# Sigul Bridge Entrypoint - Production-Aligned
+# Sigul Bridge Entrypoint
 #
-# This script provides a simplified, production-aligned entrypoint for the Sigul bridge.
-# It matches the direct invocation pattern used in production deployments.
+# This script provides the entrypoint for the Sigul bridge container.
+# It validates prerequisites and starts the bridge process with proper logging.
 #
-# Production Pattern:
-#   /usr/sbin/sigul_bridge
+# Logging Configuration:
+#   All bridge processes are started with -vv (DEBUG level) for maximum visibility.
+#   This ensures logs are available in both console (docker logs) and file (/var/log/sigul_bridge.log).
+#   For production, consider changing to -v (INFO level) to reduce log volume.
+#
+# Process Management:
+#   - Normal mode: Uses 'exec' to replace entrypoint with bridge process (PID 1)
+#   - Debug mode: Forks bridge and monitors it (set DEBUG_MODE=1)
 #
 # Key Design Principles:
 # - Minimal wrapper logic
-# - Direct service invocation matching production
-# - Fast startup with only essential validation
+# - Direct service invocation with full logging
+# - Fast startup with essential validation
 # - Clear, actionable error messages
 
 set -euo pipefail
@@ -160,14 +166,91 @@ validate_ca_certificate() {
 
 start_bridge_service() {
     log "Starting Sigul Bridge service..."
-    log "Command: /usr/sbin/sigul_bridge"
+    log "Command: /usr/sbin/sigul_bridge -c $CONFIG_FILE -vv"
     log "Configuration: $CONFIG_FILE"
+    log "Logging: DEBUG level (verbose mode enabled)"
 
     success "Bridge initialized successfully"
 
-    # Execute bridge service with production-aligned command
-    # Using exec to replace shell process with bridge process
-    exec /usr/sbin/sigul_bridge
+    # Check if DEBUG_MODE is enabled
+    if [[ "${DEBUG_MODE:-0}" == "1" ]]; then
+        warn "DEBUG_MODE enabled - entrypoint will monitor sigul process"
+        start_bridge_service_debug
+    else
+        # Execute bridge service with sigul command
+        # Using exec to replace shell process with bridge process (becomes PID 1)
+        #
+        # Logging: -vv enables DEBUG level logging
+        #   - Without flags: WARNING level only (errors/warnings)
+        #   - With -v: INFO level (informational messages)
+        #   - With -vv: DEBUG level (all messages including debug)
+        #
+        # Output goes to both:
+        #   - Console (stdout/stderr) - captured by 'docker logs'
+        #   - Log file (/var/log/sigul_bridge.log)
+        exec /usr/sbin/sigul_bridge \
+            -c "$CONFIG_FILE" \
+            -vv
+    fi
+}
+
+start_bridge_service_debug() {
+    log "Starting bridge in DEBUG mode (monitoring enabled)"
+    log "Entrypoint will remain active to monitor the process"
+
+    # Start sigul_bridge in background and capture its PID
+    # -vv enables DEBUG level logging (same as normal mode)
+    /usr/sbin/sigul_bridge \
+        -c "$CONFIG_FILE" \
+        -vv &
+
+    local sigul_pid=$!
+    log "Bridge process started with PID: $sigul_pid"
+
+    # Set up signal forwarding
+    # shellcheck disable=SC2064  # Variable expansion intentional - captures PID at trap setup
+    trap "log 'Received SIGTERM, forwarding to bridge (PID $sigul_pid)'; kill -TERM $sigul_pid 2>/dev/null" TERM
+    # shellcheck disable=SC2064  # Variable expansion intentional - captures PID at trap setup
+    trap "log 'Received SIGINT, forwarding to bridge (PID $sigul_pid)'; kill -INT $sigul_pid 2>/dev/null" INT
+
+    # Monitor the process
+    log "Monitoring bridge process..."
+    log "Log file: /var/log/sigul_bridge.log"
+    log "=========================================="
+
+    # Tail the log file in background
+    if [[ -f "/var/log/sigul_bridge.log" ]]; then
+        tail -f /var/log/sigul_bridge.log &
+        local tail_pid=$!
+    fi
+
+    # Wait for the sigul process and capture exit code
+    local exit_code=0
+    if wait $sigul_pid; then
+        exit_code=$?
+        log "Bridge process exited normally with code: $exit_code"
+    else
+        exit_code=$?
+        error "Bridge process exited with error code: $exit_code"
+    fi
+
+    # Clean up tail process
+    if [[ -n "${tail_pid:-}" ]]; then
+        kill "$tail_pid" 2>/dev/null || true
+    fi
+
+    # Show final log entries
+    log "=========================================="
+    log "Final log entries:"
+    if [[ -f "/var/log/sigul_bridge.log" ]]; then
+        tail -20 /var/log/sigul_bridge.log | while IFS= read -r line; do
+            echo "  $line"
+        done
+    else
+        error "Log file not found at /var/log/sigul_bridge.log"
+    fi
+
+    exit $exit_code
 }
 
 #######################################
@@ -175,8 +258,14 @@ start_bridge_service() {
 #######################################
 
 main() {
-    log "Sigul Bridge Entrypoint (Production-Aligned)"
+    log "Sigul Bridge Entrypoint"
     log "=============================================="
+
+    if [[ "${DEBUG_MODE:-0}" == "1" ]]; then
+        warn "DEBUG_MODE=1 detected"
+        warn "Entrypoint will fork sigul process and monitor it"
+        warn "This is useful for debugging but NOT recommended for production"
+    fi
 
     # Run pre-flight validation
     validate_configuration

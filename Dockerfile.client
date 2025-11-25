@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
-# Unified Dockerfile for sigul client using the new sigul-init.sh approach
+# Unified Dockerfile for sigul client using the new cert-init approach
 FROM fedora:41
 
 LABEL maintainer="releng@linuxfoundation.org"
@@ -32,6 +32,9 @@ RUN dnf install -y --setopt=install_weak_deps=False --allowerasing \
 # Copy patches for debugging (if they exist)
 COPY patches/ /tmp/patches/
 
+# Copy local sigul source for debugging builds
+COPY .build-context/sigul /build-context/sigul/
+
 # Install python-nss-ng from PyPI (Fedora 41 has Python 3.13 which is compatible)
 ENV INSTALL_SOURCE=pypi
 ENV PYTHON_NSS_NG_VERSION=v0.1.1
@@ -55,12 +58,12 @@ RUN ln -sf /usr/lib64/nss/unsupported-tools/tstclnt /usr/local/bin/tstclnt && \
 # NSS-only initialization
 
 # Copy NSS-only initialization script and validation tools
-COPY scripts/sigul-init.sh /usr/local/bin/sigul-init.sh
+
 COPY scripts/validate-nss.sh /usr/local/bin/validate-nss.sh
 COPY scripts/lib/health.sh /usr/local/bin/health.sh
 COPY scripts/sigul-config-nss-only.template /usr/local/bin/sigul-config-nss-only.template
 COPY scripts/init-client-certs.sh /usr/local/bin/init-client-certs.sh
-RUN chmod +x /usr/local/bin/sigul-init.sh /usr/local/bin/validate-nss.sh /usr/local/bin/health.sh /usr/local/bin/init-client-certs.sh
+RUN chmod +x /usr/local/bin/validate-nss.sh /usr/local/bin/health.sh /usr/local/bin/init-client-certs.sh
 
 # NSS-only certificate management
 
@@ -132,7 +135,8 @@ fi
 # Check if this is sigul client initialization
 if [[ "${1:-}" == "--role" && "${2:-}" == "client" ]] || [[ "${SIGUL_ROLE:-}" == "client" ]]; then
     log "Detected client initialization"
-    exec /usr/local/bin/sigul-init.sh "$@"
+    log "Client initialization should be done via init-client-certs.sh"
+    exit 1
 fi
 
 # If specific command provided, run it directly
@@ -141,10 +145,10 @@ if [[ $# -gt 0 && "${1:-}" != "--role" ]]; then
     exec "$@"
 fi
 
-# Default: run init for client setup
-log "Default mode - initializing sigul client"
-export SIGUL_ROLE=client
-exec /usr/local/bin/sigul-init.sh --role client "$@"
+# Default: run bash for interactive use
+log "Default mode - starting interactive shell"
+log "Note: Client initialization should be done via init-client-certs.sh"
+exec /bin/bash
 EOF
 
 # Make the wrapper script executable

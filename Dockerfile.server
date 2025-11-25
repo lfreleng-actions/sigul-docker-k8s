@@ -44,6 +44,9 @@ COPY build-scripts/crypt_compat.py /usr/lib/python3.13/site-packages/crypt.py
 # Copy patches for debugging (if they exist)
 COPY patches/ /tmp/patches/
 
+# Copy local sigul source for debugging builds
+COPY .build-context/sigul /build-context/sigul/
+
 # Install python-nss-ng from PyPI (Fedora 41 has Python 3.13 which is compatible)
 ENV INSTALL_SOURCE=pypi
 ENV PYTHON_NSS_NG_VERSION=v0.1.1
@@ -61,7 +64,7 @@ RUN chmod +x /tmp/install-sigul.sh && \
 
 # Production-aligned initialization
 
-# Copy production-aligned entrypoint script
+# Copy sigul entrypoint script
 COPY scripts/entrypoint-server.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
@@ -79,7 +82,7 @@ RUN chmod +x /usr/local/bin/validate-nss.sh /usr/local/bin/health.sh
 
 # Copy shared PKI files for certificate generation (permissions set later after user creation)
 COPY pki/ /workspace/pki/
-# Copy production-aligned certificate generation script
+# Copy sigul certificate generation script
 COPY pki/generate-production-aligned-certs.sh /usr/local/bin/generate-production-aligned-certs.sh
 RUN chmod +x /usr/local/bin/generate-production-aligned-certs.sh
 
@@ -131,7 +134,7 @@ WORKDIR /var/lib/sigul/server
 # Switch to sigul user (directories already created with proper ownership above)
 USER sigul
 
-# Set entrypoint - production-aligned direct invocation
+# Set entrypoint - sigul direct invocation
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 
 # Health check - verify server process is running

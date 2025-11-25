@@ -2,18 +2,24 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
-# Sigul Server Entrypoint - Production-Aligned
+# Sigul Server Entrypoint
 #
-# This script provides a simplified, production-aligned entrypoint for the Sigul server.
-# It matches the direct invocation pattern used in production deployments.
+# This script provides the entrypoint for the Sigul server container.
+# It validates prerequisites and starts the server process with proper logging.
 #
-# Production Pattern:
-#   /usr/sbin/sigul_server -c /etc/sigul/server.conf
+# Logging Configuration:
+#   All server processes are started with -vv (DEBUG level) for maximum visibility.
+#   This ensures logs are available in both console (docker logs) and file (/var/log/sigul_server.log).
+#   For production, consider changing to -v (INFO level) to reduce log volume.
+#
+# Process Management:
+#   - Normal mode: Uses 'exec' to replace entrypoint with server process (PID 1)
+#   - Debug mode: Forks server and monitors it (set DEBUG_MODE=1)
 #
 # Key Design Principles:
 # - Minimal wrapper logic
-# - Direct service invocation matching production
-# - Fast startup with only essential validation
+# - Direct service invocation with full logging
+# - Fast startup with essential validation
 # - Clear, actionable error messages
 # - Wait for bridge availability before starting
 
@@ -289,9 +295,10 @@ initialize_database() {
         if [ -n "${SIGUL_ADMIN_USER:-}" ] && [ -n "${SIGUL_ADMIN_PASSWORD:-}" ]; then
             log "Creating admin user: ${SIGUL_ADMIN_USER}"
 
-            # Use printf to handle password with newline for sigul_server_add_admin
-            if ! printf "%s\n%s\n" "$SIGUL_ADMIN_PASSWORD" "$SIGUL_ADMIN_PASSWORD" | \
-                sigul_server_add_admin -c "$CONFIG_FILE" -n "$SIGUL_ADMIN_USER"; then
+            # Use printf with NUL terminator for batch mode
+            # In batch mode, sigul_server_add_admin expects NUL-terminated password (only once)
+            if ! printf "%s\0" "$SIGUL_ADMIN_PASSWORD" | \
+                sigul_server_add_admin --batch -c "$CONFIG_FILE" -n "$SIGUL_ADMIN_USER"; then
                 warn "Failed to create admin user - you may need to create it manually"
             else
                 success "Admin user '$SIGUL_ADMIN_USER' created successfully"
@@ -323,15 +330,91 @@ initialize_database() {
 
 start_server_service() {
     log "Starting Sigul Server service..."
-    log "Command: /usr/sbin/sigul_server -c $CONFIG_FILE"
+    log "Command: /usr/sbin/sigul_server -c $CONFIG_FILE -vv"
     log "Configuration: $CONFIG_FILE"
+    log "Logging: DEBUG level (verbose mode enabled)"
 
     success "Server initialized successfully"
 
-    # Execute server service with production-aligned command
-    # Using exec to replace shell process with server process
-    exec /usr/sbin/sigul_server \
-        -c "$CONFIG_FILE"
+    # Check if DEBUG_MODE is enabled
+    if [[ "${DEBUG_MODE:-0}" == "1" ]]; then
+        warn "DEBUG_MODE enabled - entrypoint will monitor sigul process"
+        start_server_service_debug
+    else
+        # Execute server service with sigul command
+        # Using exec to replace shell process with server process (becomes PID 1)
+        #
+        # Logging: -vv enables DEBUG level logging
+        #   - Without flags: WARNING level only (errors/warnings)
+        #   - With -v: INFO level (informational messages)
+        #   - With -vv: DEBUG level (all messages including debug)
+        #
+        # Output goes to both:
+        #   - Console (stdout/stderr) - captured by 'docker logs'
+        #   - Log file (/var/log/sigul_server.log)
+        exec /usr/sbin/sigul_server \
+            -c "$CONFIG_FILE" \
+            -vv
+    fi
+}
+
+start_server_service_debug() {
+    log "Starting server in DEBUG mode (monitoring enabled)"
+    log "Entrypoint will remain active to monitor the process"
+
+    # Start sigul_server in background and capture its PID
+    # -vv enables DEBUG level logging (same as normal mode)
+    /usr/sbin/sigul_server \
+        -c "$CONFIG_FILE" \
+        -vv &
+
+    local sigul_pid=$!
+    log "Server process started with PID: $sigul_pid"
+
+    # Set up signal forwarding
+    # shellcheck disable=SC2064  # Variable expansion intentional - captures PID at trap setup
+    trap "log 'Received SIGTERM, forwarding to server (PID $sigul_pid)'; kill -TERM $sigul_pid 2>/dev/null" TERM
+    # shellcheck disable=SC2064  # Variable expansion intentional - captures PID at trap setup
+    trap "log 'Received SIGINT, forwarding to server (PID $sigul_pid)'; kill -INT $sigul_pid 2>/dev/null" INT
+
+    # Monitor the process
+    log "Monitoring server process..."
+    log "Log file: /var/log/sigul_server.log"
+    log "=========================================="
+
+    # Tail the log file in background
+    if [[ -f "/var/log/sigul_server.log" ]]; then
+        tail -f /var/log/sigul_server.log &
+        local tail_pid=$!
+    fi
+
+    # Wait for the sigul process and capture exit code
+    local exit_code=0
+    if wait $sigul_pid; then
+        exit_code=$?
+        log "Server process exited normally with code: $exit_code"
+    else
+        exit_code=$?
+        error "Server process exited with error code: $exit_code"
+    fi
+
+    # Clean up tail process
+    if [[ -n "${tail_pid:-}" ]]; then
+        kill "$tail_pid" 2>/dev/null || true
+    fi
+
+    # Show final log entries
+    log "=========================================="
+    log "Final log entries:"
+    if [[ -f "/var/log/sigul_server.log" ]]; then
+        tail -20 /var/log/sigul_server.log | while IFS= read -r line; do
+            echo "  $line"
+        done
+    else
+        error "Log file not found at /var/log/sigul_server.log"
+    fi
+
+    exit $exit_code
 }
 
 #######################################
@@ -339,8 +422,14 @@ start_server_service() {
 #######################################
 
 main() {
-    log "Sigul Server Entrypoint (Production-Aligned)"
-    log "============================================="
+    log "Sigul Server Entrypoint"
+    log "=============================================="
+
+    if [[ "${DEBUG_MODE:-0}" == "1" ]]; then
+        warn "DEBUG_MODE=1 detected"
+        warn "Entrypoint will fork sigul process and monitor it"
+        warn "This is useful for debugging but NOT recommended for production"
+    fi
 
     # Run pre-flight validation
     validate_configuration

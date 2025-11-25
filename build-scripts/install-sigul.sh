@@ -53,10 +53,35 @@ install_from_source() {
     mkdir -p "$build_dir"
     cd "$build_dir"
 
-    # Clone source from pagure.io
-    log_info "Cloning sigul v${SIGUL_VERSION} from pagure.io"
-    git clone --depth 1 --branch "v${SIGUL_VERSION}" \
-        https://pagure.io/sigul.git sigul
+    # Clone source from GitHub fork with debugging enhancements
+    # If local source is available in /build-context/sigul, use that instead
+    if [[ -d "/build-context/sigul" ]]; then
+        log_info "Using local sigul source from /build-context/sigul"
+        cp -r /build-context/sigul ./sigul
+        log_info "Successfully copied local sigul source"
+    else
+        log_info "Cloning sigul from modeseven-lfreleng-actions fork (debugging branch)"
+
+        # Use debugging branch if available, fall back to main/master
+        local sigul_repo="https://github.com/modeseven-lfreleng-actions/sigul.git"
+        local sigul_branch="${SIGUL_DEBUG_BRANCH:-debugging}"
+
+        log_info "Repository: $sigul_repo"
+        log_info "Branch: $sigul_branch"
+
+        if ! git clone --depth 1 --branch "$sigul_branch" "$sigul_repo" sigul 2>/dev/null; then
+            log_info "Failed to clone branch '$sigul_branch', trying 'main'"
+            if ! git clone --depth 1 --branch "main" "$sigul_repo" sigul 2>/dev/null; then
+                log_info "Failed to clone branch 'main', trying 'master'"
+                if ! git clone --depth 1 --branch "master" "$sigul_repo" sigul; then
+                    log_error "Failed to clone sigul from all attempted branches"
+                    return 1
+                fi
+            fi
+        fi
+
+        log_info "Successfully cloned sigul source"
+    fi
 
     cd sigul
 

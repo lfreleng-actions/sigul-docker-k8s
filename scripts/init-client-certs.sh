@@ -140,7 +140,8 @@ create_directories() {
     log "Creating client directories..."
 
     mkdir -p "$CLIENT_NSS_DIR"
-    chmod 755 "$CLIENT_NSS_DIR"
+    # chmod may fail on volume mounts - not fatal
+    chmod 755 "$CLIENT_NSS_DIR" 2>/dev/null || true
 
     debug "Client NSS directory: $CLIENT_NSS_DIR"
 }
@@ -149,7 +150,7 @@ create_password_file() {
     log "Creating NSS password file..."
 
     local password_file="${CLIENT_NSS_DIR}/.nss-password"
-    echo "${NSS_PASSWORD}" > "${password_file}"
+    printf '%s' "${NSS_PASSWORD}" > "${password_file}"
     chmod 600 "${password_file}"
 
     debug "Password file created: ${password_file}"
@@ -185,10 +186,14 @@ import_ca_certificate() {
     fi
 
     # Import CA certificate for trust verification
+    # Trust flags: CT,C,C means:
+    #   CT = Trusted CA for SSL/TLS
+    #   C = Valid CA
+    #   C = Trusted for email
     if ! certutil -A \
         -d "sql:${CLIENT_NSS_DIR}" \
         -n "${CA_NICKNAME}" \
-        -t "TC,," \
+        -t "CT,C,C" \
         -a \
         -f "${password_file}" \
         -i "${CA_IMPORT_DIR}/ca.crt"; then
@@ -363,7 +368,7 @@ display_certificate_info() {
 #######################################
 
 main() {
-    log "Client Certificate Import (Production-Aligned PKI)"
+    log "Client Certificate Import (Sigul PKI)"
     log "=================================================="
     echo ""
 
