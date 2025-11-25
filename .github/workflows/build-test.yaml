@@ -192,8 +192,6 @@ jobs:
           path: /tmp/${{ matrix.component }}-${{ steps.platform.outputs.id }}.tar
           retention-days: 7
 
-
-
   publish-ghcr:
     name: 'Publish to GHCR'
     runs-on: 'ubuntu-latest'
@@ -892,15 +890,99 @@ jobs:
 
           echo "✅ All NSS certificate validations passed"
 
+      - name: 'Setup client for integration tests'
+        shell: bash
+        env:
+          SIGUL_CLIENT_IMAGE: >-
+            client-${{
+              steps.runner-arch.outputs.platform-id
+            }}-image:test
+        run: |
+          echo '🔧 Setting up client container for integration tests...'
+
+          # Detect network name
+          NETWORK_NAME=$(docker network ls --filter "name=sigul" \
+            --format "{{.Name}}" | head -1)
+          echo "Using network: ${NETWORK_NAME}"
+
+          # Create client volumes if they don't exist
+          docker volume create sigul-docker_sigul_client_nss || true
+          docker volume create sigul-docker_sigul_client_config || true
+
+          # Get bridge NSS volume for certificate import
+          BRIDGE_NSS_VOLUME=$(docker volume ls --format "{{.Name}}" \
+            | grep -E "bridge.*nss|sigul.*bridge.*nss" | head -1)
+          echo "Bridge NSS volume: ${BRIDGE_NSS_VOLUME}"
+
+          # Get ephemeral NSS password
+          NSS_PASSWORD=$(cat test-artifacts/nss-password)
+
+          # Start temporary client container for initialization
+          docker run -d --name sigul-client-init \
+            --network "${NETWORK_NAME}" \
+            --user sigul \
+            -v "${BRIDGE_NSS_VOLUME}":/etc/pki/sigul/bridge:ro \
+            -v sigul-docker_sigul_client_nss:/etc/pki/sigul/client:rw \
+            -v sigul-docker_sigul_client_config:/etc/sigul:rw \
+            -e NSS_PASSWORD="${NSS_PASSWORD}" \
+            "${SIGUL_CLIENT_IMAGE}" \
+            tail -f /dev/null
+
+          # Wait for container to be ready
+          sleep 3
+
+          # Initialize client certificates
+          echo "Initializing client certificates..."
+          docker exec sigul-client-init /usr/local/bin/init-client-certs.sh
+
+          # Generate client configuration
+          docker exec --user root sigul-client-init bash -c \
+            'cat > /etc/sigul/client.conf << "EOFCONFIG"
+          [client]
+          bridge-hostname: sigul-bridge.example.org
+          bridge-port: 44334
+          server-hostname: sigul-server.example.org
+
+          [gnupg]
+          gnupg-bin: /usr/bin/gpg2
+          gnupg-key-type: RSA
+          gnupg-key-length: 4096
+
+          [nss]
+          client-cert-nickname: sigul-client-cert
+          nss-ca-cert-nickname: sigul-ca
+          nss-bridge-cert-nickname: sigul-bridge-cert
+          nss-dir: /etc/pki/sigul/client
+          nss-password: '"${NSS_PASSWORD}"'
+          nss-min-tls: tls1.2
+          EOFCONFIG
+          '
+
+          # Set proper ownership
+          docker exec --user root sigul-client-init \
+            chown sigul:sigul /etc/sigul/client.conf
+
+          # Stop and remove init container
+          docker stop sigul-client-init
+          docker rm sigul-client-init
+
+          echo "✅ Client setup complete"
+
       - name: 'Run integration tests'
         shell: bash
         env:
           SIGUL_CLIENT_IMAGE: >-
-            client-${{ steps.runner-arch.outputs.platform-id }}-image:test
+            client-${{
+              steps.runner-arch.outputs.platform-id
+            }}-image:test
           SIGUL_SERVER_IMAGE: >-
-            server-${{ steps.runner-arch.outputs.platform-id }}-image:test
+            server-${{
+              steps.runner-arch.outputs.platform-id
+            }}-image:test
           SIGUL_BRIDGE_IMAGE: >-
-            bridge-${{ steps.runner-arch.outputs.platform-id }}-image:test
+            bridge-${{
+              steps.runner-arch.outputs.platform-id
+            }}-image:test
         run: |
           echo 'Running Sigul integration tests against fresh infrastructure...'
           chmod +x scripts/run-integration-tests.sh

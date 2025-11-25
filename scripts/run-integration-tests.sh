@@ -1,455 +1,345 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
-
-# Sigul Integration Tests Script for GitHub Workflows
-#
-# This script runs integration tests against fully functional Sigul infrastructure,
-# performing basic connectivity and authentication tests.
-#
-# Usage:
-#   ./scripts/run-integration-tests.sh [OPTIONS]
-#
-# Options:
-#   --verbose       Enable verbose output
-#   --help          Show this help message
+# Sigul Integration Test Script
+# Tests basic client operations from the client's perspective
 
 set -euo pipefail
 
-# Script configuration
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-
-# Test counters
-TESTS_PASSED=0
-TESTS_FAILED=0
-TOTAL_TESTS=0
-
-# Color codes
+# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Logging functions
-log() {
-    echo -e "${BLUE}[INFO]${NC} $*"
+# Configuration - will be detected dynamically or from environment
+NETWORK=""
+CLIENT_IMAGE="${SIGUL_CLIENT_IMAGE:-}"
+CLIENT_NSS_VOLUME="sigul-docker_sigul_client_nss"
+CLIENT_CONFIG_VOLUME="sigul-docker_sigul_client_config"
+ADMIN_PASSWORD="auto_generated_ephemeral"
+VERBOSE_MODE=false
+
+# Test counters
+PASSED=0
+FAILED=0
+
+# Parse command-line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --verbose)
+            VERBOSE_MODE=true
+            shift
+            ;;
+        --help)
+            cat << EOF
+Usage: $0 [OPTIONS]
+
+Run Sigul integration tests.
+
+Options:
+    --verbose    Enable verbose output
+    --help       Show this help
+
+Environment Variables:
+    SIGUL_CLIENT_IMAGE    Client Docker image (required)
+EOF
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
+
+# Detect network dynamically
+detect_network() {
+    NETWORK=$(docker network ls --filter "name=sigul" --format "{{.Name}}" | head -1)
+    if [[ -z "$NETWORK" ]]; then
+        echo -e "${RED}ERROR: No sigul network found!${NC}"
+        exit 1
+    fi
+    if [[ "$VERBOSE_MODE" == "true" ]]; then
+        echo -e "${BLUE}Using network: $NETWORK${NC}"
+    fi
 }
 
-success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $*"
+# Verify client image is set
+if [[ -z "$CLIENT_IMAGE" ]]; then
+    echo -e "${RED}ERROR: SIGUL_CLIENT_IMAGE environment variable must be set${NC}"
+    exit 1
+fi
+
+# Helper function to run client command
+run_client() {
+    local cmd="$1"
+    local password="${2:-$ADMIN_PASSWORD}"
+
+    docker run --rm \
+        --user 1000:1000 \
+        --network "$NETWORK" \
+        -v "${CLIENT_NSS_VOLUME}:/etc/pki/sigul/client:ro" \
+        -v "${CLIENT_CONFIG_VOLUME}:/etc/sigul:ro" \
+        "$CLIENT_IMAGE" \
+        bash -c "printf '${password}\0' | sigul --batch -c /etc/sigul/client.conf ${cmd} 2>&1"
 }
 
-error() {
-    echo -e "${RED}[ERROR]${NC} $*"
-}
-
-warn() {
-    echo -e "${YELLOW}[WARN]${NC} $*"
-}
-
+# Helper to print verbose messages
 verbose() {
-    if [[ "${VERBOSE_MODE}" == "true" ]]; then
+    if [[ "$VERBOSE_MODE" == "true" ]]; then
         echo -e "${BLUE}[DEBUG]${NC} $*"
     fi
 }
 
-# Test result functions
-test_passed() {
-    echo -e "${GREEN}✅ PASS${NC}: $1"
-    ((TESTS_PASSED++))
-    ((TOTAL_TESTS++))
-}
-
-test_failed() {
-    echo -e "${RED}❌ FAIL${NC}: $1"
-    ((TESTS_FAILED++))
-    ((TOTAL_TESTS++))
-}
-
+# Helper to print test header
 test_header() {
-    echo
+    echo ""
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
     echo -e "${BLUE}TEST: $1${NC}"
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
 }
 
-# Parse command line arguments
-parse_args() {
-    while [[ $# -gt 0 ]]; do
-        case $1 in
-            --verbose)
-                VERBOSE_MODE=true
-                shift
-                ;;
-            --help)
-                SHOW_HELP=true
-                shift
-                ;;
-            *)
-                error "Unknown option: $1"
-                exit 1
-                ;;
-        esac
-    done
+# Helper to report success
+pass() {
+    echo -e "${GREEN}✅ PASS${NC}: $1"
+    PASSED=$((PASSED + 1))
 }
 
-show_help() {
-    cat << EOF
-Usage: $0 [OPTIONS]
-
-Run Sigul integration tests against deployed infrastructure.
-
-Options:
-    --verbose       Enable verbose debug output
-    --help          Show this help message
-
-Environment Variables:
-    SIGUL_CLIENT_IMAGE     Docker image for client (required)
-    SIGUL_SERVER_IMAGE     Docker image for server (optional, auto-detected)
-    SIGUL_BRIDGE_IMAGE     Docker image for bridge (optional, auto-detected)
-
-Examples:
-    $0 --verbose
-    SIGUL_CLIENT_IMAGE=client:test $0
-EOF
-}
-
-# Helper function to run client command
-run_client() {
-    local cmd="$1"
-    local password="${2:-auto_generated_ephemeral}"
-
-    docker run --rm \
-        --user 1000:1000 \
-        --network sigul-docker_sigul-network \
-        -v sigul-docker_sigul_client_nss:/etc/pki/sigul/client:ro \
-        -v sigul-docker_sigul_client_config:/etc/sigul:ro \
-        "${SIGUL_CLIENT_IMAGE}" \
-        bash -c "printf '${password}\0' | sigul --batch -c /etc/sigul/client.conf ${cmd} 2>&1"
-}
-
-# Test 1: Basic Authentication - List Users
-test_basic_authentication() {
-    test_header "Basic Authentication - List Users"
-
-    local output
-    if output=$(run_client "list-users" 2>&1); then
-        if echo "$output" | grep -q "admin"; then
-            test_passed "Can authenticate and list users"
-            verbose "  Users: $output"
-            return 0
-        fi
-    fi
-
-    test_failed "Failed to authenticate and list users"
-    verbose "  Output: $output"
-    return 1
-}
-
-# Test 2: Authentication Failure with Wrong Password
-test_wrong_password() {
-    test_header "Authentication Failure - Wrong Password"
-
-    local output
-    if output=$(run_client "list-users" "wrong_password" 2>&1 || true); then
-        if echo "$output" | grep -qi "authentication.*failed\|error\|EOF"; then
-            test_passed "Correctly rejects wrong password"
-            return 0
-        fi
-    fi
-
-    test_failed "Did not properly reject wrong password"
-    verbose "  Output: $output"
-    return 1
-}
-
-# Test 3: List Available Keys
-test_list_keys() {
-    test_header "List Available Keys"
-
-    local output
-    if output=$(run_client "list-keys" 2>&1); then
-        test_passed "Can list signing keys"
-        verbose "  Keys: ${output:-<none>}"
-        return 0
-    fi
-
-    test_failed "Failed to list keys"
-    verbose "  Output: $output"
-    return 1
-}
-
-# Test 4: Multiple Consecutive Operations (Connection Stability)
-test_connection_stability() {
-    test_header "Connection Stability - Multiple Operations"
-
-    local success_count=0
-    local attempts=5
-
-    for i in $(seq 1 $attempts); do
-        local output
-        if output=$(run_client "list-users" 2>&1); then
-            if echo "$output" | grep -q "admin"; then
-                ((success_count++))
-                verbose "  Attempt $i: ✓"
-            else
-                verbose "  Attempt $i: ✗ (unexpected output)"
-            fi
-        else
-            verbose "  Attempt $i: ✗ (command failed)"
-        fi
-    done
-
-    if [[ $success_count -eq $attempts ]]; then
-        test_passed "All $attempts consecutive operations succeeded"
-        return 0
-    else
-        test_failed "Only $success_count/$attempts operations succeeded"
-        return 1
-    fi
-}
-
-# Test 5: Double-TLS Certificate Authentication
-test_certificate_authentication() {
-    test_header "Double-TLS Certificate Authentication"
-
-    local output
-    if output=$(run_client "list-users" 2>&1); then
-        if echo "$output" | grep -q "admin" && ! echo "$output" | grep -qi "certificate.*error"; then
-            test_passed "Client certificate authentication working"
-            return 0
-        fi
-    fi
-
-    test_failed "Certificate authentication issue detected"
-    verbose "  Output: $output"
-    return 1
-}
-
-# Test 6: User Information Query
-test_user_info() {
-    test_header "User Information Query"
-
-    local output
-    if output=$(run_client "user-info admin" 2>&1); then
-        if echo "$output" | grep -qi "admin\|user"; then
-            test_passed "Can query user information"
-            verbose "  Info: $output"
-            return 0
-        fi
-    fi
-
-    test_failed "Failed to get user info"
-    verbose "  Output: $output"
-    return 1
-}
-
-# Test 7: List Key Users (Even if No Keys)
-test_list_key_users() {
-    test_header "List Key Users"
-
-    # First check if there are any keys
-    local keys
-    if keys=$(run_client "list-keys" 2>&1) && [ -n "$keys" ] && ! echo "$keys" | grep -qi "error"; then
-        local first_key
-        first_key=$(echo "$keys" | head -1 | xargs)
-        if [ -n "$first_key" ]; then
-            if run_client "list-key-users \"$first_key\"" 2>&1 >/dev/null; then
-                test_passed "Can list key users for: $first_key"
-                return 0
-            fi
-        fi
-    fi
-
-    test_passed "No keys available to test (expected for fresh install)"
-    return 0
-}
-
-# Test 8: Check Available Commands
-test_command_availability() {
-    test_header "Client Command Availability"
-
-    local output
-    if output=$(docker run --rm --user 1000:1000 "${SIGUL_CLIENT_IMAGE}" sigul --help-commands 2>&1); then
-        if echo "$output" | grep -q "list-users"; then
-            test_passed "Client commands are accessible"
-            verbose "  Sample commands available:"
-            echo "$output" | head -10 | sed 's/^/    /' >&2
-            return 0
-        fi
-    fi
-
-    test_failed "Client commands not accessible"
-    return 1
-}
-
-# Test 9: Bridge Connection Test
-test_bridge_connection() {
-    test_header "Bridge Connection Verification"
-
-    local start_time end_time duration
-    start_time=$(date +%s)
-
-    local output
-    if output=$(run_client "list-users" 2>&1); then
-        end_time=$(date +%s)
-        duration=$((end_time - start_time))
-
-        if echo "$output" | grep -q "admin"; then
-            test_passed "Bridge connection successful (${duration}s)"
-            if [[ $duration -lt 5 ]]; then
-                verbose "  Connection latency is good"
-            else
-                verbose "  Connection took ${duration}s (acceptable)"
-            fi
-            return 0
-        fi
-    fi
-
-    test_failed "Bridge connection failed"
-    verbose "  Output: $output"
-    return 1
-}
-
-# Test 10: Batch Mode Input Handling
-test_batch_mode() {
-    test_header "Batch Mode Password Input (NUL-terminated)"
-
-    local output
-    if output=$(docker run --rm \
-        --user 1000:1000 \
-        --network sigul-docker_sigul-network \
-        -v sigul-docker_sigul_client_nss:/etc/pki/sigul/client:ro \
-        -v sigul-docker_sigul_client_config:/etc/sigul:ro \
-        "${SIGUL_CLIENT_IMAGE}" \
-        bash -c 'printf "auto_generated_ephemeral\0" | sigul --batch -c /etc/sigul/client.conf list-users 2>&1'); then
-
-        if echo "$output" | grep -q "admin"; then
-            test_passed "Batch mode NUL-terminated password works correctly"
-            return 0
-        fi
-    fi
-
-    test_failed "Batch mode password handling failed"
-    verbose "  Output: $output"
-    return 1
+# Helper to report failure
+fail() {
+    echo -e "${RED}❌ FAIL${NC}: $1"
+    FAILED=$((FAILED + 1))
 }
 
 # Print banner
-print_banner() {
-    echo
-    echo -e "${BLUE}╔═══════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${BLUE}║                                                           ║${NC}"
-    echo -e "${BLUE}║          SIGUL INTEGRATION TEST SUITE                     ║${NC}"
-    echo -e "${BLUE}║          Testing from Client Perspective                  ║${NC}"
-    echo -e "${BLUE}║                                                           ║${NC}"
-    echo -e "${BLUE}╚═══════════════════════════════════════════════════════════╝${NC}"
-    echo
-}
+echo ""
+echo -e "${BLUE}╔═══════════════════════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║                                                           ║${NC}"
+echo -e "${BLUE}║          SIGUL CLIENT TEST SUITE                          ║${NC}"
+echo -e "${BLUE}║          Testing from Client Perspective                  ║${NC}"
+echo -e "${BLUE}║                                                           ║${NC}"
+echo -e "${BLUE}╚═══════════════════════════════════════════════════════════╝${NC}"
+echo ""
 
-# Print summary
-print_summary() {
-    echo
-    echo -e "${BLUE}╔═══════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${BLUE}║                     TEST SUMMARY                          ║${NC}"
-    echo -e "${BLUE}╚═══════════════════════════════════════════════════════════╝${NC}"
-    echo
-    echo -e "Total Tests:  ${BLUE}${TOTAL_TESTS}${NC}"
-    echo -e "Passed:       ${GREEN}${TESTS_PASSED}${NC}"
-    echo -e "Failed:       ${RED}${TESTS_FAILED}${NC}"
-    echo
-}
+# Detect network
+detect_network
 
-# Main test execution
-run_all_tests() {
-    print_banner
+# Check stack is running
+echo -e "${YELLOW}Checking Sigul stack status...${NC}"
+if ! docker ps --format '{{.Names}}' | grep -q "sigul-server"; then
+    echo -e "${RED}ERROR: Sigul stack is not running!${NC}"
+    echo -e "${RED}Required containers: sigul-server, sigul-bridge${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✓ Stack is running${NC}"
+verbose "Network: $NETWORK"
+verbose "Client volumes: $CLIENT_NSS_VOLUME, $CLIENT_CONFIG_VOLUME"
+echo ""
 
-    log "Checking Sigul stack status..."
-    if ! docker ps --format '{{.Names}}' | grep -q "sigul-server"; then
-        error "Sigul stack is not running!"
-        error "Required containers: sigul-server, sigul-bridge"
-        return 1
-    fi
-    success "Stack is running"
-    echo
+# ============================================================================
+# TEST 1: Basic Authentication - List Users
+# ============================================================================
+test_header "Basic Authentication - List Users"
+OUTPUT=$(run_client "list-users" 2>&1)
+if echo "$OUTPUT" | grep -q "admin"; then
+    pass "Can authenticate and list users"
+    verbose "  Users: $OUTPUT"
+else
+    fail "Failed to list users"
+    verbose "  Output: $OUTPUT"
+fi
 
-    # Run all tests
-    test_basic_authentication || true
-    test_wrong_password || true
-    test_list_keys || true
-    test_connection_stability || true
-    test_certificate_authentication || true
-    test_user_info || true
-    test_list_key_users || true
-    test_command_availability || true
-    test_bridge_connection || true
-    test_batch_mode || true
+# ============================================================================
+# TEST 2: Authentication Failure with Wrong Password
+# ============================================================================
+test_header "Authentication Failure - Wrong Password"
+OUTPUT=$(run_client "list-users" "wrong_password" 2>&1 || true)
+if echo "$OUTPUT" | grep -qi "authentication.*failed\|error\|EOF"; then
+    pass "Correctly rejects wrong password"
+else
+    fail "Did not properly reject wrong password"
+    verbose "  Output: $OUTPUT"
+fi
 
-    print_summary
+# ============================================================================
+# TEST 3: List Available Keys
+# ============================================================================
+test_header "List Available Keys"
+if OUTPUT=$(run_client "list-keys" 2>&1); then
+    pass "Can list signing keys"
+    verbose "  Keys: ${OUTPUT:-<none>}"
+else
+    fail "Failed to list keys"
+    verbose "  Output: $OUTPUT"
+fi
 
-    if [[ $TESTS_FAILED -eq 0 ]]; then
-        echo -e "${GREEN}╔═══════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${GREEN}║                                                           ║${NC}"
-        echo -e "${GREEN}║              🎉 ALL TESTS PASSED! 🎉                      ║${NC}"
-        echo -e "${GREEN}║                                                           ║${NC}"
-        echo -e "${GREEN}║  The Sigul client can successfully communicate with      ║${NC}"
-        echo -e "${GREEN}║  the bridge and server via double-TLS!                   ║${NC}"
-        echo -e "${GREEN}║                                                           ║${NC}"
-        echo -e "${GREEN}╚═══════════════════════════════════════════════════════════╝${NC}"
-        echo
-        echo -e "${GREEN}✓ Client authentication working${NC}"
-        echo -e "${GREEN}✓ Double-TLS connection stable${NC}"
-        echo -e "${GREEN}✓ Certificate validation successful${NC}"
-        echo -e "${GREEN}✓ Multiple operations tested${NC}"
-        echo
-        return 0
+# ============================================================================
+# TEST 4: Multiple Consecutive Operations (Connection Stability)
+# ============================================================================
+test_header "Connection Stability - Multiple Operations"
+SUCCESS_COUNT=0
+for i in {1..5}; do
+    OUTPUT=$(run_client "list-users" 2>&1)
+    if echo "$OUTPUT" | grep -q "admin"; then
+        SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+        echo -e "  Attempt $i: ${GREEN}✓${NC}"
     else
-        echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${RED}║                                                           ║${NC}"
-        echo -e "${RED}║                ❌ SOME TESTS FAILED ❌                    ║${NC}"
-        echo -e "${RED}║                                                           ║${NC}"
-        echo -e "${RED}╚═══════════════════════════════════════════════════════════╝${NC}"
-        echo
-        return 1
+        echo -e "  Attempt $i: ${RED}✗${NC}"
     fi
-}
+done
 
-# Main function
-main() {
-    parse_args "$@"
+if [ $SUCCESS_COUNT -eq 5 ]; then
+    pass "All 5 consecutive operations succeeded"
+else
+    fail "Only $SUCCESS_COUNT/5 operations succeeded"
+fi
 
-    if [[ "${SHOW_HELP:-false}" == "true" ]]; then
-        show_help
-        exit 0
-    fi
+# ============================================================================
+# TEST 5: Double-TLS Certificate Authentication
+# ============================================================================
+test_header "Double-TLS Certificate Authentication"
+OUTPUT=$(run_client "list-users" 2>&1)
+if echo "$OUTPUT" | grep -q "admin" && ! echo "$OUTPUT" | grep -qi "certificate.*error"; then
+    pass "Client certificate authentication working"
+else
+    fail "Certificate authentication issue detected"
+    verbose "  Output: $OUTPUT"
+fi
 
-    # Ensure SIGUL_CLIENT_IMAGE is set
-    if [[ -z "${SIGUL_CLIENT_IMAGE:-}" ]]; then
-        error "SIGUL_CLIENT_IMAGE environment variable must be set"
-        error "Example: SIGUL_CLIENT_IMAGE=client:test $0"
-        exit 1
-    fi
+# ============================================================================
+# TEST 6: User Information Query
+# ============================================================================
+test_header "User Information Query"
+OUTPUT=$(run_client "user-info admin" 2>&1)
+if echo "$OUTPUT" | grep -qi "admin\|user"; then
+    pass "Can query user information"
+    verbose "  Info: $OUTPUT"
+else
+    fail "Failed to get user info"
+    verbose "  Output: $OUTPUT"
+fi
 
-    log "=== Sigul Integration Tests ==="
-    log "Verbose mode: ${VERBOSE_MODE}"
-    log "Client image: ${SIGUL_CLIENT_IMAGE}"
-    log "Project root: ${PROJECT_ROOT}"
-    echo
-
-    if run_all_tests; then
-        success "=== Integration Tests Complete ==="
-        exit 0
+# ============================================================================
+# TEST 7: List Key Users (Even if No Keys)
+# ============================================================================
+test_header "List Key Users"
+# First check if there are any keys
+KEYS=$(run_client "list-keys" 2>&1)
+if [ -n "$KEYS" ] && ! echo "$KEYS" | grep -qi "error"; then
+    FIRST_KEY=$(echo "$KEYS" | head -1 | xargs)
+    if [ -n "$FIRST_KEY" ]; then
+        if OUTPUT=$(run_client "list-key-users \"$FIRST_KEY\"" 2>&1); then
+            pass "Can list key users for: $FIRST_KEY"
+        else
+            # This might be expected if key doesn't exist or has no users
+            pass "Key users command executes (no keys with users yet)"
+        fi
     else
-        error "=== Integration Tests Failed ==="
-        exit 1
+        pass "No keys available to test (expected for fresh install)"
     fi
-}
+else
+    pass "No keys available to test (expected for fresh install)"
+fi
 
-# Set default verbose mode to false
-VERBOSE_MODE=false
-SHOW_HELP=false
+# ============================================================================
+# TEST 8: Check Available Commands
+# ============================================================================
+test_header "Client Command Availability"
+OUTPUT=$(docker run --rm \
+    --user 1000:1000 \
+    "$CLIENT_IMAGE" \
+    sigul --help-commands 2>&1)
 
-# Execute main function with all arguments
-main "$@"
+if echo "$OUTPUT" | grep -q "list-users"; then
+    pass "Client commands are accessible"
+    if [[ "$VERBOSE_MODE" == "true" ]]; then
+        echo "  Sample commands available:"
+        echo "$OUTPUT" | head -10 | sed 's/^/    /'
+    fi
+else
+    fail "Client commands not accessible"
+fi
+
+# ============================================================================
+# TEST 9: Bridge Connection Test
+# ============================================================================
+test_header "Bridge Connection Verification"
+# Quick connection test
+START_TIME=$(date +%s)
+OUTPUT=$(run_client "list-users" 2>&1)
+END_TIME=$(date +%s)
+DURATION=$((END_TIME - START_TIME))
+
+if echo "$OUTPUT" | grep -q "admin"; then
+    pass "Bridge connection successful (${DURATION}s)"
+    if [ $DURATION -lt 5 ]; then
+        echo -e "  ${GREEN}Connection latency is good${NC}"
+    else
+        echo -e "  ${YELLOW}Connection took ${DURATION}s (acceptable)${NC}"
+    fi
+else
+    fail "Bridge connection failed"
+    echo "  Output: $OUTPUT"
+fi
+
+# ============================================================================
+# TEST 10: Batch Mode Input Handling
+# ============================================================================
+test_header "Batch Mode Password Input (NUL-terminated)"
+# Test with explicit NUL terminator
+OUTPUT=$(docker run --rm \
+    --user 1000:1000 \
+    --network "$NETWORK" \
+    -v "${CLIENT_NSS_VOLUME}:/etc/pki/sigul/client:ro" \
+    -v "${CLIENT_CONFIG_VOLUME}:/etc/sigul:ro" \
+    "$CLIENT_IMAGE" \
+    bash -c 'printf "auto_generated_ephemeral\0" | sigul --batch -c /etc/sigul/client.conf list-users 2>&1')
+
+if echo "$OUTPUT" | grep -q "admin"; then
+    pass "Batch mode NUL-terminated password works correctly"
+else
+    fail "Batch mode password handling failed"
+    echo "  Output: $OUTPUT"
+fi
+
+# ============================================================================
+# Print Summary
+# ============================================================================
+echo ""
+echo -e "${BLUE}╔═══════════════════════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║                     TEST SUMMARY                          ║${NC}"
+echo -e "${BLUE}╚═══════════════════════════════════════════════════════════╝${NC}"
+echo ""
+TOTAL=$((PASSED + FAILED))
+echo -e "Total Tests:  ${BLUE}${TOTAL}${NC}"
+echo -e "Passed:       ${GREEN}${PASSED}${NC}"
+echo -e "Failed:       ${RED}${FAILED}${NC}"
+echo ""
+
+if [ $FAILED -eq 0 ]; then
+    echo -e "${GREEN}╔═══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║                                                           ║${NC}"
+    echo -e "${GREEN}║              🎉 ALL TESTS PASSED! 🎉                      ║${NC}"
+    echo -e "${GREEN}║                                                           ║${NC}"
+    echo -e "${GREEN}║  The Sigul client can successfully communicate with      ║${NC}"
+    echo -e "${GREEN}║  the bridge and server via double-TLS!                   ║${NC}"
+    echo -e "${GREEN}║                                                           ║${NC}"
+    echo -e "${GREEN}╚═══════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${GREEN}✓ Client authentication working${NC}"
+    echo -e "${GREEN}✓ Double-TLS connection stable${NC}"
+    echo -e "${GREEN}✓ Certificate validation successful${NC}"
+    echo -e "${GREEN}✓ Multiple operations tested${NC}"
+    echo ""
+    exit 0
+else
+    echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${RED}║                                                           ║${NC}"
+    echo -e "${RED}║                ❌ SOME TESTS FAILED ❌                    ║${NC}"
+    echo -e "${RED}║                                                           ║${NC}"
+    echo -e "${RED}╚═══════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    exit 1
+fi
