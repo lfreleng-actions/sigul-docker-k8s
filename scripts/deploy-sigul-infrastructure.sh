@@ -920,6 +920,9 @@ deploy_sigul_services() {
     export NSS_PASSWORD="$ephemeral_nss_password"
 
     verbose "Generated ephemeral credentials for deployment"
+    log "📝 Generated Passwords:"
+    log "   Admin Password: $ephemeral_admin_password"
+    log "   NSS Password: $ephemeral_nss_password"
 
     # Store passwords for integration tests to use
     mkdir -p "${PROJECT_ROOT}/test-artifacts"
@@ -927,6 +930,7 @@ deploy_sigul_services() {
     printf '%s' "$ephemeral_nss_password" > "${PROJECT_ROOT}/test-artifacts/nss-password"
     chmod 600 "${PROJECT_ROOT}/test-artifacts/admin-password"
     chmod 600 "${PROJECT_ROOT}/test-artifacts/nss-password"
+    log "✅ Passwords saved to test-artifacts/"
 
     # Initialize bridge readiness tracking
     initialize_bridge_readiness_tracking

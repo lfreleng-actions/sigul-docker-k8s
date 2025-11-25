@@ -97,11 +97,33 @@ install_from_source() {
                 if [[ -f "$patch_file" ]]; then
                     log_info "Applying patch: $(basename "$patch_file")"
                     if patch -p1 < "$patch_file"; then
+                        echo ""
+                        echo "╔════════════════════════════════════════════════════════════════╗"
+                        echo "║                                                                ║"
+                        echo "║  ✅ PATCH APPLIED SUCCESSFULLY ✅                              ║"
+                        echo "║                                                                ║"
+                        echo "║  $(printf '%-60s' "$(basename "$patch_file")")  ║"
+                        echo "║                                                                ║"
+                        echo "╚════════════════════════════════════════════════════════════════╝"
+                        echo ""
                         log_info "✓ Patch applied successfully: $(basename "$patch_file")"
+                        
+                        # Output to GitHub Actions summary if available
+                        if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+                            echo "✅ **Patch Applied Successfully**: \`$(basename "$patch_file")\`" >> "$GITHUB_STEP_SUMMARY"
+                        fi
                     else
                         log_error "✗ FATAL: Failed to apply patch: $(basename "$patch_file")"
                         log_error "Patches are REQUIRED for correct operation"
                         log_error "Cannot continue without patches - container would be non-functional"
+                        
+                        # Output to GitHub Actions summary if available
+                        if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+                            echo "❌ **Patch Application FAILED**: \`$(basename "$patch_file")\`" >> "$GITHUB_STEP_SUMMARY"
+                            echo "" >> "$GITHUB_STEP_SUMMARY"
+                            echo "⚠️ **Build cannot continue** - patches are required for proper operation" >> "$GITHUB_STEP_SUMMARY"
+                        fi
+                        
                         return 1
                     fi
                 fi

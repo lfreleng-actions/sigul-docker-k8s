@@ -1,3 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+#
+# Minimal patch to fix double-TLS handshake timing issue in Sigul v1.4
+# This patch ensures the server TLS handshake completes immediately after
+# accepting the connection, preventing timeout errors in containerized
+# environments.
+
 diff --git a/src/bridge.py b/src/bridge.py
 index 278aa20..f5075af 100644
 --- a/src/bridge.py

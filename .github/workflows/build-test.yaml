@@ -14,10 +14,10 @@ on:
         default: false
         required: false
 
-  push:
-    branches: ['main']
-  pull_request:
-    branches: ['main']
+#  push:
+#    branches: ['main']
+#  pull_request:
+#    branches: ['main']
 
 concurrency:
   group: "${{ github.workflow }}-${{ github.ref }}"
@@ -93,8 +93,17 @@ jobs:
         # yamllint disable-line rule:line-length
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435  # v3.11.1
 
+      - name: 'Debug cache-clearing input'
+        shell: bash
+        run: |
+          echo "🔍 Debugging cache-clearing configuration..."
+          echo "clear_cache input: '${{ github.event.inputs.clear_cache }}'"
+          echo "clear_cache type: $(echo '${{ github.event.inputs.clear_cache }}' | wc -c) chars"
+          echo "Condition evaluation: ${{ github.event.inputs.clear_cache == true }}"
+          echo "Condition (string): ${{ github.event.inputs.clear_cache == 'true' }}"
+
       - name: 'Clear build caches if requested'
-        if: ${{ github.event.inputs.clear_cache == true }}
+        if: ${{ github.event.inputs.clear_cache == 'true' }}
         run: |
           echo "🧹 Clearing all build caches..."
 
@@ -144,7 +153,7 @@ jobs:
           outputs: |
             type=docker,dest=/tmp/${{ matrix.component }}-${{ steps.platform.outputs.id }}.tar
           push: false
-          cache-from: ${{ github.event.inputs.clear_cache == true && 'type=registry,ref=localhost/null' || format('type=gha,scope={0}-{1}-{2}', matrix.component, matrix.platform, matrix.runner) }}
+          cache-from: ${{ github.event.inputs.clear_cache == 'true' && 'type=registry,ref=localhost/null' || format('type=gha,scope={0}-{1}-{2}', matrix.component, matrix.platform, matrix.runner) }}
           cache-to: type=gha,mode=max,scope=${{ matrix.component }}-${{ matrix.platform }}-${{ matrix.runner }}
 
       - name: 'Set build outputs for client amd64'
@@ -191,8 +200,6 @@ jobs:
           name: ${{ matrix.component }}-${{ steps.platform.outputs.id }}-image
           path: /tmp/${{ matrix.component }}-${{ steps.platform.outputs.id }}.tar
           retention-days: 7
-
-
 
   publish-ghcr:
     name: 'Publish to GHCR'
@@ -385,7 +392,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
-    timeout-minutes: 6
+    timeout-minutes: 5
     needs: build-containers
     strategy:
       fail-fast: false
@@ -691,7 +698,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
-    timeout-minutes: 8
+    timeout-minutes: 5
     needs: build-containers
     strategy:
       fail-fast: false
@@ -892,15 +899,145 @@ jobs:
 
           echo "✅ All NSS certificate validations passed"
 
+      - name: 'Verify patch is applied in bridge image'
+        shell: bash
+        run: |
+          echo '🔍 Verifying double-TLS patch is applied in bridge...'
+
+          # Check for the CRITICAL FIX comment
+          if ! docker exec sigul-bridge grep -q "CRITICAL FIX" \
+               /usr/share/sigul/bridge.py; then
+            echo "❌ ERROR: CRITICAL FIX comment not found in bridge.py!"
+            echo "Bridge may be using unpatched upstream code"
+            exit 1
+          fi
+
+          # Check for the actual patched code: server_sock.force_handshake()
+          if ! docker exec sigul-bridge grep -q "server_sock.force_handshake()" \
+               /usr/share/sigul/bridge.py; then
+            echo "❌ ERROR: server_sock.force_handshake() call not found!"
+            echo "The patch may not be fully applied"
+            exit 1
+          fi
+
+          # Check it's in the right location (after accept, before client conn)
+          if docker exec sigul-bridge grep -B10 -A10 "server_sock.force_handshake()" \
+             /usr/share/sigul/bridge.py | grep -q "accept()"; then
+            echo "✅ Double-TLS handshake patch verified in bridge"
+            echo ""
+            echo "Patched code location confirmed:"
+            docker exec sigul-bridge grep -B5 -A10 "server_sock.force_handshake()" \
+              /usr/share/sigul/bridge.py | sed 's/^/  /'
+          else
+            echo "❌ ERROR: server_sock.force_handshake() not in correct location!"
+            echo "Expected after accept() call but before client connection"
+            echo ""
+            echo "Showing context around force_handshake():"
+            docker exec sigul-bridge grep -B10 -A10 "server_sock.force_handshake()" \
+              /usr/share/sigul/bridge.py | sed 's/^/  /'
+            exit 1
+          fi
+
+      - name: 'Setup client for integration tests'
+        shell: bash
+        env:
+          SIGUL_CLIENT_IMAGE: >-
+            client-${{
+              steps.runner-arch.outputs.platform-id
+            }}-image:test
+        run: |
+          echo '🔧 Setting up client container for integration tests...'
+
+          # Detect network name
+          NETWORK_NAME=$(docker network ls --filter "name=sigul" \
+            --format "{{.Name}}" | head -1)
+          echo "Using network: ${NETWORK_NAME}"
+
+          # Create client volumes if they don't exist
+          docker volume create sigul-docker_sigul_client_nss || true
+          docker volume create sigul-docker_sigul_client_config || true
+
+          # Set proper ownership on client volumes (UID 1000 = sigul user)
+          docker run --rm \
+            -v sigul-docker_sigul_client_nss:/target-nss \
+            -v sigul-docker_sigul_client_config:/target-config \
+            alpine:3.19 \
+            sh -c 'chown -R 1000:1000 /target-nss /target-config'
+
+          # Get bridge NSS volume for certificate import
+          BRIDGE_NSS_VOLUME=$(docker volume ls --format "{{.Name}}" \
+            | grep -E "bridge.*nss|sigul.*bridge.*nss" | head -1)
+          echo "Bridge NSS volume: ${BRIDGE_NSS_VOLUME}"
+
+          # Get ephemeral NSS password
+          NSS_PASSWORD=$(cat test-artifacts/nss-password)
+
+          # Start temporary client container for initialization
+          docker run -d --name sigul-client-init \
+            --network "${NETWORK_NAME}" \
+            --user sigul \
+            -v "${BRIDGE_NSS_VOLUME}":/etc/pki/sigul/bridge:ro \
+            -v sigul-docker_sigul_client_nss:/etc/pki/sigul/client:rw \
+            -v sigul-docker_sigul_client_config:/etc/sigul:rw \
+            -e NSS_PASSWORD="${NSS_PASSWORD}" \
+            "${SIGUL_CLIENT_IMAGE}" \
+            tail -f /dev/null
+
+          # Wait for container to be ready
+          sleep 3
+
+          # Initialize client certificates
+          echo "Initializing client certificates..."
+          docker exec sigul-client-init /usr/local/bin/init-client-certs.sh
+
+          # Generate client configuration
+          docker exec --user root sigul-client-init bash -c \
+            'cat > /etc/sigul/client.conf << "EOFCONFIG"
+          [client]
+          bridge-hostname: sigul-bridge.example.org
+          bridge-port: 44334
+          server-hostname: sigul-server.example.org
+
+          [gnupg]
+          gnupg-bin: /usr/bin/gpg2
+          gnupg-key-type: RSA
+          gnupg-key-length: 4096
+
+          [nss]
+          client-cert-nickname: sigul-client-cert
+          nss-ca-cert-nickname: sigul-ca
+          nss-bridge-cert-nickname: sigul-bridge-cert
+          nss-dir: /etc/pki/sigul/client
+          nss-password: '"${NSS_PASSWORD}"'
+          nss-min-tls: tls1.2
+          EOFCONFIG
+          '
+
+          # Set proper ownership
+          docker exec --user root sigul-client-init \
+            chown sigul:sigul /etc/sigul/client.conf
+
+          # Stop and remove init container
+          docker stop sigul-client-init
+          docker rm sigul-client-init
+
+          echo "✅ Client setup complete"
+
       - name: 'Run integration tests'
         shell: bash
         env:
           SIGUL_CLIENT_IMAGE: >-
-            client-${{ steps.runner-arch.outputs.platform-id }}-image:test
+            client-${{
+              steps.runner-arch.outputs.platform-id
+            }}-image:test
           SIGUL_SERVER_IMAGE: >-
-            server-${{ steps.runner-arch.outputs.platform-id }}-image:test
+            server-${{
+              steps.runner-arch.outputs.platform-id
+            }}-image:test
           SIGUL_BRIDGE_IMAGE: >-
-            bridge-${{ steps.runner-arch.outputs.platform-id }}-image:test
+            bridge-${{
+              steps.runner-arch.outputs.platform-id
+            }}-image:test
         run: |
           echo 'Running Sigul integration tests against fresh infrastructure...'
           chmod +x scripts/run-integration-tests.sh

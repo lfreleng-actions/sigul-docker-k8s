@@ -26,6 +26,7 @@ services:
   # Certificate Initialization Container (Init Container Pattern)
   # Runs before services start to ensure certificates exist
   cert-init:
+    image: ${SIGUL_BRIDGE_IMAGE:-sigul-docker-sigul-bridge}
     build:
       context: .
       dockerfile: Dockerfile.bridge
@@ -63,12 +64,12 @@ services:
 
   # Sigul Server Container
   sigul-server:
+    image: ${SIGUL_SERVER_IMAGE:-sigul-docker-sigul-server}
     build:
       context: .
       dockerfile: Dockerfile.server
     container_name: sigul-server
     hostname: sigul-server.example.org
-    user: "1000:1000"
     environment:
       # NSS Database password for secure operation
       NSS_PASSWORD: ${NSS_PASSWORD:-auto_generated_ephemeral}
@@ -88,6 +89,7 @@ services:
       - sigul_server_data:/var/lib/sigul/server:rw
       - sigul_server_logs:/var/log/sigul/server:rw
       - sigul_server_run:/run/sigul/server:rw
+      - sigul_server_var_run:/var/run:rw
       # Server imports certificates from bridge (read-only access)
       # Bridge exports: ca-export/, server-export/ (NO CA private key)
       - sigul_bridge_nss:/etc/pki/sigul/bridge:ro
@@ -113,12 +115,12 @@ services:
 
   # Sigul Bridge Container
   sigul-bridge:
+    image: ${SIGUL_BRIDGE_IMAGE:-sigul-docker-sigul-bridge}
     build:
       context: .
       dockerfile: Dockerfile.bridge
     container_name: sigul-bridge
     hostname: sigul-bridge.example.org
-    user: "1000:1000"
     environment:
       # Bridge port configuration
       SIGUL_BRIDGE_CLIENT_PORT: 44334
@@ -140,6 +142,7 @@ services:
       - sigul_bridge_nss:/etc/pki/sigul/bridge:rw
       - sigul_bridge_data:/var/lib/sigul/bridge:rw
       - sigul_bridge_logs:/var/log/sigul/bridge:rw
+      - sigul_bridge_var_run:/var/run:rw
     ports:
       - "44333:44333"
       - "44334:44334"
@@ -163,6 +166,7 @@ services:
 
   # Sigul Client Test Environment
   sigul-client-test:
+    image: ${SIGUL_CLIENT_IMAGE:-sigul-docker-sigul-client-test}
     build:
       context: .
       dockerfile: Dockerfile.client
@@ -457,8 +461,18 @@ volumes:
   sigul_server_run:
     driver: local
     labels:
-      description: "Server runtime files (/run/sigul/server)"
-      backup: "no"
+      description: "Server runtime state files (/run/sigul/server)"
+      backup: "not_required"
+  sigul_server_var_run:
+    driver: local
+    labels:
+      description: "Server PID files (/var/run)"
+      backup: "not_required"
+  sigul_bridge_var_run:
+    driver: local
+    labels:
+      description: "Bridge PID files (/var/run)"
+      backup: "not_required"
 
   # Sigul Client volumes (FHS-compliant) for testing
   sigul_client_config:

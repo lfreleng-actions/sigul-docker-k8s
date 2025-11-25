@@ -131,8 +131,8 @@ RUN if getent passwd sigul >/dev/null; then \
 # Set working directory
 WORKDIR /var/lib/sigul/server
 
-# Switch to sigul user (directories already created with proper ownership above)
-USER sigul
+# NOTE: Container starts as root to fix volume permissions
+# The entrypoint script will drop privileges to sigul user after fixing permissions
 
 # Set entrypoint - sigul direct invocation
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

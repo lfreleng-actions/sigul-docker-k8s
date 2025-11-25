@@ -118,12 +118,16 @@ RUN chmod +x /usr/local/bin/generate-production-aligned-certs.sh && \
 # Set working directory
 WORKDIR /var/lib/sigul/bridge
 
-# Switch to sigul user for runtime
+# Compile Python bytecode as sigul user to avoid permission issues
+# This happens at build time, before we switch back to root for runtime
 USER sigul
-
-# Recompile Python bytecode AS SIGUL USER to ensure proper ownership
 RUN python3 -m compileall /usr/share/sigul/ && \
     python3 -c "import sys, os; print('Python version:', sys.version); print('Running as UID:', os.getuid())"
+
+# Switch back to root for runtime
+# NOTE: Container starts as root to fix volume permissions
+# The entrypoint script will drop privileges to sigul user after fixing permissions
+USER root
 
 # Set entrypoint - sigul direct invocation
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

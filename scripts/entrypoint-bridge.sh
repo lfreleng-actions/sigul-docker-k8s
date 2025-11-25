@@ -35,6 +35,15 @@ readonly NC='\033[0m'
 readonly CONFIG_FILE="/etc/sigul/bridge.conf"
 readonly NSS_DIR="/etc/pki/sigul/bridge"
 
+# Runtime directories that need permission fixes
+readonly RUN_DIR="/var/run"
+readonly LOG_DIR="/var/log/sigul/bridge"
+
+# User to run sigul process as
+readonly SIGUL_USER="sigul"
+readonly SIGUL_UID=990
+readonly SIGUL_GID=987
+
 # Logging functions
 log() {
     echo -e "${BLUE}[$(date '+%H:%M:%S')] BRIDGE:${NC} $*"
@@ -161,6 +170,48 @@ validate_ca_certificate() {
 }
 
 #######################################
+# Permission Fixing
+#######################################
+
+fix_volume_permissions() {
+    log "Fixing volume permissions for runtime directories..."
+
+    # Check if running as root (required to fix permissions)
+    if [ "$(id -u)" -ne 0 ]; then
+        warn "Not running as root - cannot fix volume permissions"
+        warn "Container should start as root to fix Docker volume ownership"
+        return
+    fi
+
+    # Fix ownership of /var/run (Docker creates volumes as root by default)
+    if [ -d "$RUN_DIR" ]; then
+        log "Fixing ownership of $RUN_DIR..."
+        chown -R ${SIGUL_UID}:${SIGUL_GID} "$RUN_DIR" || warn "Failed to chown $RUN_DIR"
+        chmod 755 "$RUN_DIR" || warn "Failed to chmod $RUN_DIR"
+        success "Fixed ownership of $RUN_DIR"
+    else
+        warn "Runtime directory $RUN_DIR does not exist"
+    fi
+
+    # Fix ownership of /var/log/sigul/bridge (for log files)
+    if [ -d "$LOG_DIR" ]; then
+        log "Fixing ownership of $LOG_DIR..."
+        chown -R ${SIGUL_UID}:${SIGUL_GID} "$LOG_DIR" || warn "Failed to chown $LOG_DIR"
+        chmod 755 "$LOG_DIR" || warn "Failed to chmod $LOG_DIR"
+        success "Fixed ownership of $LOG_DIR"
+    else
+        # Create if missing
+        log "Creating log directory $LOG_DIR..."
+        mkdir -p "$LOG_DIR"
+        chown -R ${SIGUL_UID}:${SIGUL_GID} "$LOG_DIR"
+        chmod 755 "$LOG_DIR"
+        success "Created and configured $LOG_DIR"
+    fi
+
+    success "Volume permissions fixed successfully"
+}
+
+#######################################
 # Service Startup
 #######################################
 
@@ -172,25 +223,42 @@ start_bridge_service() {
 
     success "Bridge initialized successfully"
 
-    # Check if DEBUG_MODE is enabled
-    if [[ "${DEBUG_MODE:-0}" == "1" ]]; then
-        warn "DEBUG_MODE enabled - entrypoint will monitor sigul process"
-        start_bridge_service_debug
+    # Check if we're running as root and need to drop privileges
+    if [ "$(id -u)" -eq 0 ]; then
+        log "Running as root - will drop privileges to user $SIGUL_USER (UID $SIGUL_UID)"
+        
+        # Check if DEBUG_MODE is enabled
+        if [[ "${DEBUG_MODE:-0}" == "1" ]]; then
+            warn "DEBUG_MODE enabled - entrypoint will monitor sigul process"
+            # Use su to drop privileges in debug mode
+            exec su -s /bin/bash "$SIGUL_USER" -c "$(declare -f start_bridge_service_debug); start_bridge_service_debug"
+        else
+            # Drop privileges and exec sigul_bridge
+            # Using exec with su to replace shell process with bridge process (becomes PID 1)
+            #
+            # Logging: -vv enables DEBUG level logging
+            #   - Without flags: WARNING level only (errors/warnings)
+            #   - With -v: INFO level (informational messages)
+            #   - With -vv: DEBUG level (all messages including debug)
+            #
+            # Output goes to both:
+            #   - Console (stdout/stderr) - captured by 'docker logs'
+            #   - Log file (/var/log/sigul_bridge.log)
+            exec su -s /bin/bash "$SIGUL_USER" -c "exec /usr/sbin/sigul_bridge -c $CONFIG_FILE -vv"
+        fi
     else
-        # Execute bridge service with sigul command
-        # Using exec to replace shell process with bridge process (becomes PID 1)
-        #
-        # Logging: -vv enables DEBUG level logging
-        #   - Without flags: WARNING level only (errors/warnings)
-        #   - With -v: INFO level (informational messages)
-        #   - With -vv: DEBUG level (all messages including debug)
-        #
-        # Output goes to both:
-        #   - Console (stdout/stderr) - captured by 'docker logs'
-        #   - Log file (/var/log/sigul_bridge.log)
-        exec /usr/sbin/sigul_bridge \
-            -c "$CONFIG_FILE" \
-            -vv
+        # Already running as non-root user
+        log "Running as user $(id -un) (UID $(id -u))"
+        
+        # Check if DEBUG_MODE is enabled
+        if [[ "${DEBUG_MODE:-0}" == "1" ]]; then
+            warn "DEBUG_MODE enabled - entrypoint will monitor sigul process"
+            start_bridge_service_debug
+        else
+            exec /usr/sbin/sigul_bridge \
+                -c "$CONFIG_FILE" \
+                -vv
+        fi
     fi
 }
 
@@ -273,7 +341,10 @@ main() {
     validate_certificate
     validate_ca_certificate
 
-    # Start the service
+    # Fix volume permissions (must be done as root)
+    fix_volume_permissions
+
+    # Start the service (will drop privileges if running as root)
     start_bridge_service
 }
 

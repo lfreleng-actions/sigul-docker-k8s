@@ -39,6 +39,15 @@ readonly DATA_DIR="/var/lib/sigul"
 readonly SERVER_DATA_DIR="/var/lib/sigul/server"
 readonly GNUPG_DIR="$SERVER_DATA_DIR/gnupg"
 
+# Runtime directories that need permission fixes
+readonly RUN_DIR="/var/run"
+readonly LOG_DIR="/var/log/sigul/server"
+
+# User to run sigul process as
+readonly SIGUL_USER="sigul"
+readonly SIGUL_UID=990
+readonly SIGUL_GID=987
+
 # Logging functions
 log() {
     echo -e "${BLUE}[$(date '+%H:%M:%S')] SERVER:${NC} $*"
@@ -325,6 +334,72 @@ initialize_database() {
 }
 
 #######################################
+# Permission Fixing
+#######################################
+
+fix_volume_permissions() {
+    log "Fixing volume permissions for runtime directories..."
+
+    # Check if running as root (required to fix permissions)
+    if [ "$(id -u)" -ne 0 ]; then
+        warn "Not running as root - cannot fix volume permissions"
+        warn "Container should start as root to fix Docker volume ownership"
+        return
+    fi
+
+    # Fix ownership of /var/run (Docker creates volumes as root by default)
+    if [ -d "$RUN_DIR" ]; then
+        log "Fixing ownership of $RUN_DIR..."
+        chown -R ${SIGUL_UID}:${SIGUL_GID} "$RUN_DIR" || warn "Failed to chown $RUN_DIR"
+        chmod 755 "$RUN_DIR" || warn "Failed to chmod $RUN_DIR"
+        success "Fixed ownership of $RUN_DIR"
+    else
+        warn "Runtime directory $RUN_DIR does not exist"
+    fi
+
+    # Fix ownership of /var/log/sigul/server (for log files)
+    if [ -d "$LOG_DIR" ]; then
+        log "Fixing ownership of $LOG_DIR..."
+        chown -R ${SIGUL_UID}:${SIGUL_GID} "$LOG_DIR" || warn "Failed to chown $LOG_DIR"
+        chmod 755 "$LOG_DIR" || warn "Failed to chmod $LOG_DIR"
+        success "Fixed ownership of $LOG_DIR"
+    else
+        # Create if missing
+        log "Creating log directory $LOG_DIR..."
+        mkdir -p "$LOG_DIR"
+        chown -R ${SIGUL_UID}:${SIGUL_GID} "$LOG_DIR"
+        chmod 755 "$LOG_DIR"
+        success "Created and configured $LOG_DIR"
+    fi
+
+    # Fix ownership of /run/sigul/server (runtime state files)
+    local run_sigul_dir="/run/sigul/server"
+    if [ -d "$run_sigul_dir" ]; then
+        log "Fixing ownership of $run_sigul_dir..."
+        chown -R ${SIGUL_UID}:${SIGUL_GID} "$run_sigul_dir" || warn "Failed to chown $run_sigul_dir"
+        chmod 755 "$run_sigul_dir" || warn "Failed to chmod $run_sigul_dir"
+        success "Fixed ownership of $run_sigul_dir"
+    fi
+
+    # Fix ownership of server data directory
+    if [ -d "$SERVER_DATA_DIR" ]; then
+        log "Fixing ownership of $SERVER_DATA_DIR..."
+        chown -R ${SIGUL_UID}:${SIGUL_GID} "$SERVER_DATA_DIR" || warn "Failed to chown $SERVER_DATA_DIR"
+        success "Fixed ownership of $SERVER_DATA_DIR"
+    fi
+
+    # Fix ownership of GnuPG directory if it exists
+    if [ -d "$GNUPG_DIR" ]; then
+        log "Fixing ownership of $GNUPG_DIR..."
+        chown -R ${SIGUL_UID}:${SIGUL_GID} "$GNUPG_DIR" || warn "Failed to chown $GNUPG_DIR"
+        chmod 700 "$GNUPG_DIR" || warn "Failed to chmod $GNUPG_DIR"
+        success "Fixed ownership of $GNUPG_DIR"
+    fi
+
+    success "Volume permissions fixed successfully"
+}
+
+#######################################
 # Service Startup
 #######################################
 
@@ -336,25 +411,42 @@ start_server_service() {
 
     success "Server initialized successfully"
 
-    # Check if DEBUG_MODE is enabled
-    if [[ "${DEBUG_MODE:-0}" == "1" ]]; then
-        warn "DEBUG_MODE enabled - entrypoint will monitor sigul process"
-        start_server_service_debug
+    # Check if we're running as root and need to drop privileges
+    if [ "$(id -u)" -eq 0 ]; then
+        log "Running as root - will drop privileges to user $SIGUL_USER (UID $SIGUL_UID)"
+        
+        # Check if DEBUG_MODE is enabled
+        if [[ "${DEBUG_MODE:-0}" == "1" ]]; then
+            warn "DEBUG_MODE enabled - entrypoint will monitor sigul process"
+            # Use su to drop privileges in debug mode
+            exec su -s /bin/bash "$SIGUL_USER" -c "$(declare -f start_server_service_debug); start_server_service_debug"
+        else
+            # Drop privileges and exec sigul_server
+            # Using exec with su to replace shell process with server process (becomes PID 1)
+            #
+            # Logging: -vv enables DEBUG level logging
+            #   - Without flags: WARNING level only (errors/warnings)
+            #   - With -v: INFO level (informational messages)
+            #   - With -vv: DEBUG level (all messages including debug)
+            #
+            # Output goes to both:
+            #   - Console (stdout/stderr) - captured by 'docker logs'
+            #   - Log file (/var/log/sigul_server.log)
+            exec su -s /bin/bash "$SIGUL_USER" -c "exec /usr/sbin/sigul_server -c $CONFIG_FILE -vv"
+        fi
     else
-        # Execute server service with sigul command
-        # Using exec to replace shell process with server process (becomes PID 1)
-        #
-        # Logging: -vv enables DEBUG level logging
-        #   - Without flags: WARNING level only (errors/warnings)
-        #   - With -v: INFO level (informational messages)
-        #   - With -vv: DEBUG level (all messages including debug)
-        #
-        # Output goes to both:
-        #   - Console (stdout/stderr) - captured by 'docker logs'
-        #   - Log file (/var/log/sigul_server.log)
-        exec /usr/sbin/sigul_server \
-            -c "$CONFIG_FILE" \
-            -vv
+        # Already running as non-root user
+        log "Running as user $(id -un) (UID $(id -u))"
+        
+        # Check if DEBUG_MODE is enabled
+        if [[ "${DEBUG_MODE:-0}" == "1" ]]; then
+            warn "DEBUG_MODE enabled - entrypoint will monitor sigul process"
+            start_server_service_debug
+        else
+            exec /usr/sbin/sigul_server \
+                -c "$CONFIG_FILE" \
+                -vv
+        fi
     fi
 }
 
@@ -445,7 +537,10 @@ main() {
     initialize_directories
     initialize_database
 
-    # Start the service
+    # Fix volume permissions (must be done as root)
+    fix_volume_permissions
+
+    # Start the service (will drop privileges if running as root)
     start_server_service
 }
 
