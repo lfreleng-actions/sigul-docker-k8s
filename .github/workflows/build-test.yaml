@@ -81,26 +81,28 @@ jobs:
     steps:
       # Harden the runner used by this workflow
       # yamllint disable-line rule:line-length
-      - uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+      - uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
         with:
           egress-policy: 'audit'
 
       - name: 'Checkout repository'
         # yamllint disable-line rule:line-length
-        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3  # v6.0.0
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: 'Set up Docker Buildx'
         # yamllint disable-line rule:line-length
-        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435  # v3.11.1
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
 
       - name: 'Debug cache-clearing input'
         shell: bash
+        # yamllint disable rule:line-length
         run: |
           echo "🔍 Debugging cache-clearing configuration..."
           echo "clear_cache input: '${{ github.event.inputs.clear_cache }}'"
           echo "clear_cache type: $(echo '${{ github.event.inputs.clear_cache }}' | wc -c) chars"
           echo "Condition evaluation: ${{ github.event.inputs.clear_cache == true }}"
           echo "Condition (string): ${{ github.event.inputs.clear_cache == 'true' }}"
+        # yamllint enable rule:line-length
 
       - name: 'Clear build caches if requested'
         if: ${{ github.event.inputs.clear_cache == 'true' }}
@@ -128,7 +130,7 @@ jobs:
         id: meta
         if: matrix.component == 'client'
         # yamllint disable-line rule:line-length
-        uses: docker/metadata-action@318604b99e75e41977312d83839a89be02ca4893  # v5.9.0
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051  # v5.10.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           # yamllint disable rule:line-length
@@ -194,7 +196,7 @@ jobs:
 
       - name: 'Upload ${{ matrix.component }} image as artifact'
         # yamllint disable-line rule:line-length
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
         if: success()
         with:
           name: ${{ matrix.component }}-${{ steps.platform.outputs.id }}-image
@@ -215,17 +217,17 @@ jobs:
     steps:
       # Harden the runner used by this workflow
       # yamllint disable-line rule:line-length
-      - uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+      - uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
         with:
           egress-policy: 'audit'
 
       - name: 'Checkout repository'
         # yamllint disable-line rule:line-length
-        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3  # v6.0.0
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: 'Set up Docker Buildx'
         # yamllint disable-line rule:line-length
-        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435  # v3.11.1
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
 
       - name: 'Log in to GitHub Container Registry'
         # yamllint disable-line rule:line-length
@@ -237,7 +239,7 @@ jobs:
 
       - name: 'Download AMD64 Docker image artifact'
         # yamllint disable-line rule:line-length
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
         continue-on-error: true
         id: download-amd64
         with:
@@ -246,7 +248,7 @@ jobs:
 
       - name: 'Download ARM64 Docker image artifact'
         # yamllint disable-line rule:line-length
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
         continue-on-error: true
         id: download-arm64
         with:
@@ -295,7 +297,7 @@ jobs:
       - name: 'Extract metadata for final push'
         id: meta
         # yamllint disable-line rule:line-length
-        uses: docker/metadata-action@318604b99e75e41977312d83839a89be02ca4893  # v5.9.0
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051  # v5.10.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           # yamllint disable rule:line-length
@@ -414,17 +416,17 @@ jobs:
     steps:
       # Harden the runner used by this workflow
       # yamllint disable-line rule:line-length
-      - uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+      - uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
         with:
           egress-policy: 'audit'
 
       - name: 'Checkout repository'
         # yamllint disable-line rule:line-length
-        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: 'Set up Docker Buildx'
         # yamllint disable-line rule:line-length
-        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435  # v3.11.1
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
 
       - name: 'Detect runner architecture'
         id: runner-arch
@@ -452,14 +454,14 @@ jobs:
 
       - name: 'Download Sigul Client image artifact'
         # yamllint disable-line rule:line-length
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
         with:
           name: 'client-${{ steps.runner-arch.outputs.platform-id }}-image'
           path: /tmp
 
       - name: 'Download Sigul Server image artifact'
         # yamllint disable-line rule:line-length
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
         with:
           name: >-
             server-${{ steps.runner-arch.outputs.platform-id }}-image
@@ -467,7 +469,7 @@ jobs:
 
       - name: 'Download Sigul Bridge image artifact'
         # yamllint disable-line rule:line-length
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
         with:
           name: >-
             bridge-${{ steps.runner-arch.outputs.platform-id }}-image
@@ -588,7 +590,7 @@ jobs:
 
       - name: 'Upload PKI and config artifacts'
         # yamllint disable-line rule:line-length
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
         with:
           name: >-
             sigul-infrastructure-config-${{
@@ -681,7 +683,7 @@ jobs:
 
       - name: 'Upload container logs and diagnostics'
         # yamllint disable-line rule:line-length
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
         if: always()
         with:
           name: >-
@@ -711,17 +713,17 @@ jobs:
     steps:
       # Harden the runner used by this workflow
       # yamllint disable-line rule:line-length
-      - uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+      - uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
         with:
           egress-policy: 'audit'
 
       - name: 'Checkout repository'
         # yamllint disable-line rule:line-length
-        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: 'Set up Docker Buildx'
         # yamllint disable-line rule:line-length
-        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435  # v3.11.1
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
 
       - name: 'Detect runner architecture'
         id: runner-arch
@@ -749,14 +751,14 @@ jobs:
 
       - name: 'Download Sigul Client image artifact'
         # yamllint disable-line rule:line-length
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
         with:
           name: 'client-${{ steps.runner-arch.outputs.platform-id }}-image'
           path: /tmp
 
       - name: 'Download Sigul Server image artifact'
         # yamllint disable-line rule:line-length
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
         with:
           name: >-
             server-${{ steps.runner-arch.outputs.platform-id }}-image
@@ -764,7 +766,7 @@ jobs:
 
       - name: 'Download Sigul Bridge image artifact'
         # yamllint disable-line rule:line-length
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
         with:
           name: >-
             bridge-${{ steps.runner-arch.outputs.platform-id }}-image
@@ -901,6 +903,7 @@ jobs:
 
       - name: 'Verify patch is applied in bridge image'
         shell: bash
+        # yamllint disable rule:line-length
         run: |
           echo '🔍 Verifying double-TLS patch is applied in bridge...'
 
@@ -937,6 +940,7 @@ jobs:
               /usr/share/sigul/bridge.py | sed 's/^/  /'
             exit 1
           fi
+        # yamllint enable rule:line-length
 
       - name: 'Setup client for integration tests'
         shell: bash
@@ -1045,7 +1049,7 @@ jobs:
 
       - name: 'Upload integration test artifacts'
         # yamllint disable-line rule:line-length
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
         if: always()
         with:
           name: >-
@@ -1102,7 +1106,7 @@ jobs:
     steps:
       # Harden the runner used by this workflow
       # yamllint disable-line rule:line-length
-      - uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+      - uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
         with:
           egress-policy: 'audit'
 
