@@ -217,7 +217,11 @@ jobs:
     permissions:
       contents: read
       packages: write
-    timeout-minutes: 3
+    # Six sequential image pushes (3 tags x 2 architectures) of
+    # ~20-layer images take more than 3 minutes on cold GHCR
+    # caches; the previous 3-minute cap was killing the job
+    # part-way through arm64.
+    timeout-minutes: 10
     needs: [build-containers]
     if: github.event_name != 'pull_request'
     steps:
@@ -394,326 +398,6 @@ jobs:
               echo "⚠️ Could not pull ${tag} for verification"
             fi
           done
-
-  stack-deploy-test:
-    name: 'Stack Deployment Test: ${{ matrix.platform }}'
-    runs-on: ${{ matrix.runner }}
-    permissions:
-      contents: read
-    timeout-minutes: 5
-    needs: build-containers
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: linux/amd64
-            runner: ubuntu-latest
-          - platform: linux/arm64
-            runner: ubuntu-24.04-arm
-    outputs:
-      server-container: ${{ steps.deploy.outputs.server-container }}
-      bridge-container: ${{ steps.deploy.outputs.bridge-container }}
-      server-ip: ${{ steps.deploy.outputs.server-ip }}
-      bridge-ip: ${{ steps.deploy.outputs.bridge-ip }}
-      # yamllint disable-line rule:line-length
-      client-image: client-${{ steps.runner-arch.outputs.platform-id }}-image:test
-      runner-platform: ${{ steps.runner-arch.outputs.platform-id }}
-      docker-platform: ${{ steps.runner-arch.outputs.docker-platform }}
-    steps:
-      # Harden the runner used by this workflow
-      # yamllint disable-line rule:line-length
-      - uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
-        with:
-          egress-policy: 'audit'
-
-      - name: 'Checkout repository'
-        # yamllint disable-line rule:line-length
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-
-      - name: 'Set up Docker Buildx'
-        # yamllint disable-line rule:line-length
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
-
-      - name: 'Detect runner architecture'
-        id: runner-arch
-        shell: bash
-        run: |
-          # Detect the runner architecture
-          ARCH=$(uname -m)
-          case $ARCH in
-            x86_64)
-              PLATFORM_ID="linux-amd64"
-              DOCKER_PLATFORM="linux/amd64"
-              ;;
-            aarch64|arm64)
-              PLATFORM_ID="linux-arm64"
-              DOCKER_PLATFORM="linux/arm64"
-              ;;
-            *)
-              echo "❌ Unsupported architecture: $ARCH"
-              exit 1
-              ;;
-          esac
-          echo "platform-id=${PLATFORM_ID}" >> "$GITHUB_OUTPUT"
-          echo "docker-platform=${DOCKER_PLATFORM}" >> "$GITHUB_OUTPUT"
-          echo "📍 Detected runner architecture: $ARCH -> $PLATFORM_ID"
-
-      - name: 'Download Sigul Client image artifact'
-        # yamllint disable-line rule:line-length
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: 'client-${{ steps.runner-arch.outputs.platform-id }}-image'
-          path: /tmp
-
-      - name: 'Download Sigul Server image artifact'
-        # yamllint disable-line rule:line-length
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: >-
-            server-${{ steps.runner-arch.outputs.platform-id }}-image
-          path: /tmp
-
-      - name: 'Download Sigul Bridge image artifact'
-        # yamllint disable-line rule:line-length
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: >-
-            bridge-${{ steps.runner-arch.outputs.platform-id }}-image
-          path: /tmp
-
-      - name: 'Showing downloaded docker images'
-        shell: bash
-        run: |
-          # Showing downloaded docker images
-          echo "🔍 Showing downloaded docker images"
-          echo "==================================="
-          ls -la /tmp/*.tar
-          echo "==================================="
-
-      - name: 'Loading/tagging container images'
-        shell: bash
-        run: |
-          # Loading/tagging container images
-          PLATFORM_ID="${{ steps.runner-arch.outputs.platform-id }}"
-          echo "🔧 Loading/tagging ${PLATFORM_ID} container images"
-
-          # Load sigul-client image
-          CLIENT_IMAGE_FILE="/tmp/client-${PLATFORM_ID}.tar"
-          if [ -f "${CLIENT_IMAGE_FILE}" ]; then
-            echo "Loading Sigul client image for ${PLATFORM_ID}..."
-            docker load --input "${CLIENT_IMAGE_FILE}"
-            # Tag the loaded image appropriately
-            docker tag "client:${PLATFORM_ID}" \
-              "client-${PLATFORM_ID}-image:test"
-            echo "✅ Sigul client image loaded and tagged"
-          else
-            echo "❌ Sigul client image not found: ${CLIENT_IMAGE_FILE}"
-            echo "Available files matching client pattern:"
-            ls -la /tmp/client*.tar 2>/dev/null || \
-              echo "No client .tar files found"
-            exit 1
-          fi
-
-          # Load server image
-          SERVER_IMAGE_FILE="/tmp/server-${PLATFORM_ID}.tar"
-          if [ -f "${SERVER_IMAGE_FILE}" ]; then
-            echo "Loading server image for ${PLATFORM_ID}..."
-            docker load --input "${SERVER_IMAGE_FILE}"
-            # Tag the loaded image appropriately
-            docker tag "server:${PLATFORM_ID}" \
-              "server-${PLATFORM_ID}-image:test"
-            echo "✅ Sigul server image loaded and tagged"
-          else
-            echo "❌ Sigul server image not found: ${SERVER_IMAGE_FILE}"
-            echo "Available files matching server pattern:"
-            ls -la /tmp/server*.tar 2>/dev/null || \
-              echo "No server .tar files found"
-            exit 1
-          fi
-
-          # Load bridge image
-          BRIDGE_IMAGE_FILE="/tmp/bridge-${PLATFORM_ID}.tar"
-          if [ -f "${BRIDGE_IMAGE_FILE}" ]; then
-            echo "Loading bridge image for ${PLATFORM_ID}..."
-            docker load --input "${BRIDGE_IMAGE_FILE}"
-            # Tag the loaded image appropriately
-            docker tag "bridge:${PLATFORM_ID}" \
-              "bridge-${PLATFORM_ID}-image:test"
-            echo "✅ Sigul bridge image loaded and tagged"
-          else
-            echo "❌ Sigul bridge image not found: ${BRIDGE_IMAGE_FILE}"
-            echo "Available files matching bridge pattern:"
-            ls -la /tmp/bridge*.tar 2>/dev/null || \
-              echo "No bridge .tar files found"
-            exit 1
-          fi
-
-          # Verify all images are loaded
-          echo "📋 Successfully loaded Docker images:"
-          docker images | grep -E "(client|server|bridge)" || \
-            echo "No Sigul images found"
-          echo ""
-          echo "✅ All Sigul images loaded successfully"
-
-      - name: 'Set client image output'
-        shell: bash
-        # yamllint disable rule:line-length
-        run: |
-          echo "image=client-${{ steps.runner-arch.outputs.platform-id }}-image:test" >> "$GITHUB_OUTPUT"
-
-      # yamllint enable rule:line-length
-      - name: 'Deploy Sigul infrastructure'
-        id: deploy
-        shell: bash
-        env:
-          SIGUL_PLATFORM_ID: ${{ steps.runner-arch.outputs.platform-id }}
-          DOCKER_PLATFORM: ${{ steps.runner-arch.outputs.docker-platform }}
-          # See enable_auth_debug input on workflow_dispatch.
-          SIGUL_DEBUG_AUTH: ${{ inputs.enable_auth_debug && '1' || '0' }}
-        run: |
-          PLATFORM="${SIGUL_PLATFORM_ID}"
-          echo "🚀 Deploying Sigul infrastructure for platform: ${PLATFORM}"
-          echo "📦 Sigul containers will be for platform: ${DOCKER_PLATFORM}"
-          echo "🔍 SIGUL_DEBUG_AUTH=${SIGUL_DEBUG_AUTH}"
-
-          # Export platform info for the deployment script
-          export SIGUL_RUNNER_PLATFORM="${SIGUL_PLATFORM_ID}"
-          export SIGUL_DOCKER_PLATFORM="${DOCKER_PLATFORM}"
-
-          # Use the unified deployment script
-          DEPLOY_SCRIPT="scripts/deploy-sigul-infrastructure.sh"
-          echo "Using deployment script: ${DEPLOY_SCRIPT}"
-
-          chmod +x "${DEPLOY_SCRIPT}"
-          "./${DEPLOY_SCRIPT}" --verbose
-
-          # Set outputs for subsequent jobs
-          {
-            echo "server-container=sigul-server"
-            echo "bridge-container=sigul-bridge"
-            echo "runner-platform=${SIGUL_PLATFORM_ID}"
-            echo "docker-platform=${DOCKER_PLATFORM}"
-          } >> "$GITHUB_OUTPUT"
-
-          echo "✅ Sigul infrastructure deployed for ${PLATFORM}"
-
-      - name: 'Upload PKI and config artifacts'
-        # yamllint disable-line rule:line-length
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: >-
-            sigul-infrastructure-config-${{
-              steps.runner-arch.outputs.platform-id
-            }}
-          path: |
-            pki/
-            configs/
-            test-artifacts/
-          retention-days: 1
-
-      - name: 'Collect container logs and diagnostics'
-        if: always()
-        shell: bash
-        run: |
-          echo "📋 Collecting container logs and diagnostic information..."
-
-          # Stream container logs immediately to workflow output for visibility
-          echo "::group::Container Log Streaming (Immediate Visibility)"
-          for container in sigul-server sigul-bridge; do
-            if docker ps -a --format "{{.Names}}" | \
-              grep -q "^${container}$"; then
-              echo "=== ${container} logs (last 100 lines) ==="
-              docker logs --tail 100 "${container}" 2>&1 || \
-                echo "Unable to fetch logs from ${container}"
-              echo ""
-              echo "=== ${container} container status ==="
-              docker container inspect "${container}" --format \
-                'Status: {{.State.Status}} (Exit: {{.State.ExitCode}})' \
-                2>/dev/null || echo "Cannot inspect ${container}"
-              echo ""
-            else
-              echo "Container not found: ${container}"
-            fi
-          done
-          echo "::endgroup::"
-
-          # Create diagnostics directory for artifacts
-          mkdir -p diagnostics
-
-          # Collect full container logs for artifacts
-          for container in sigul-server sigul-bridge; do
-            if docker ps -a --format "{{.Names}}" | \
-               grep -q "^${container}$"; then
-              echo "Collecting full logs for container: ${container}"
-              docker logs "${container}" > \
-                "diagnostics/${container}.log" 2>&1 || true
-              docker inspect "${container}" > \
-                "diagnostics/${container}.inspect.json" 2>/dev/null || true
-
-              # Capture Sigul's own log file too.  Sigul writes to
-              # /var/log/sigul_<role>.log via setup_logging() and that
-              # path is NOT on a persisted volume, so 'docker logs'
-              # only shows the entrypoint output.  docker cp works
-              # against stopped containers as well as running ones.
-              role="${container#sigul-}"  # 'server' or 'bridge'
-              docker cp \
-                "${container}:/var/log/sigul_${role}.log" \
-                "diagnostics/${container}.sigul.log" 2>/dev/null \
-                || echo "(no /var/log/sigul_${role}.log in ${container})" \
-                   > "diagnostics/${container}.sigul.log"
-            else
-              echo "Container not found: ${container}"
-            fi
-          done
-
-          # Collect volume diagnostics using FHS-compliant paths
-          if docker ps -a --format "{{.Names}}" | grep -q "^sigul-bridge$"; then
-            echo "Collecting bridge volume diagnostics..."
-            bridge_nss_volume=$(
-              docker inspect sigul-bridge --format \
-                '{{range .Mounts}}' \
-                '{{if eq .Destination "/etc/pki/sigul/bridge"}}' \
-                '{{.Name}}{{end}}{{end}}' 2>/dev/null || echo ""
-            )
-            if [[ -n "$bridge_nss_volume" ]]; then
-              echo "Bridge NSS volume name: $bridge_nss_volume"
-              docker run --rm -v "${bridge_nss_volume}":/nss-data \
-                alpine:3.19 sh -c '
-                echo "=== Bridge NSS Volume Directory Structure ===" \
-                  > /tmp/bridge-volume.txt
-                find /nss-data -type f -exec ls -la {} \; >> \
-                  /tmp/bridge-volume.txt 2>&1 || true
-                echo "=== Bridge NSS Database Files ===" \
-                  >> /tmp/bridge-volume.txt
-                ls -la /nss-data/*.db /nss-data/pkcs11.txt >> \
-                  /tmp/bridge-volume.txt 2>&1 || true
-                cat /tmp/bridge-volume.txt
-              ' > diagnostics/bridge-volume.txt 2>&1 || true
-            else
-              echo "Could not determine bridge NSS volume name" > \
-                diagnostics/bridge-volume.txt
-            fi
-          fi
-
-          # Collect system state
-          docker ps -a > diagnostics/docker-containers.txt 2>&1 || true
-          docker volume ls > diagnostics/docker-volumes.txt 2>&1 || true
-          docker network ls > diagnostics/docker-networks.txt 2>&1 || true
-
-          echo "✅ Diagnostics collection completed"
-
-      - name: 'Upload container logs and diagnostics'
-        # yamllint disable-line rule:line-length
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        if: always()
-        with:
-          name: >-
-            sigul-container-diagnostics-${{
-              steps.runner-arch.outputs.platform-id
-            }}
-          path: |
-            diagnostics/
-          retention-days: 3
 
   ### Functional Tests ###
   functional-tests:
@@ -1166,7 +850,7 @@ jobs:
     permissions:
       contents: read
     timeout-minutes: 2
-    needs: [stack-deploy-test, functional-tests]
+    needs: [functional-tests]
     if: always()
     steps:
       # Harden the runner used by this workflow
@@ -1201,14 +885,13 @@ jobs:
 
           echo '✅ Infrastructure cleanup completed'
 
-  ### Sigul Build Summary ###
+  ### Sigul Deploy Summary ###
   summary:
-    name: 'Build Summary'
+    name: 'Deploy Summary'
     runs-on: 'ubuntu-latest'
     needs: [
       build-containers,
       publish-ghcr,
-      stack-deploy-test,
       functional-tests
     ]
     if: always()
@@ -1219,26 +902,20 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## Sigul Build Summary 🐳"
+            echo "## Sigul Deploy Summary 🐳"
             echo ""
 
             echo "### Build Results"
-            echo "| Platform | Build | Stack Deploy | Integration | Status |"
-            echo "|----------|-------|--------------|-------------|--------|"
+            echo "| Platform | Build | Integration | Status |"
+            echo "|----------|-------|-------------|--------|"
 
             # Note: In real implementation, check actual job statuses
             echo "| linux/amd64 | ${{ needs.build-containers.result }} |" \
-              " ${{ needs.stack-deploy-test.result }} |" \
               " ${{ needs.functional-tests.result }} | Complete |"
             echo "| linux/arm64 | ${{ needs.build-containers.result }} |" \
-              " ${{ needs.stack-deploy-test.result }} |" \
               " ${{ needs.functional-tests.result }} | Complete |"
             echo ""
 
-            echo "### Stack Deployment Tests"
-            echo "- **Status**: ${{ needs.stack-deploy-test.result }}"
-            echo "- **Includes**: Stack deployment validation, infrastructure setup"
-            echo ""
             echo "### Functional Tests"
             echo "- **Status**: ${{ needs.functional-tests.result }}"
             echo "- **Includes**: Integration testing against fresh infrastructure"
