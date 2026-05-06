@@ -21,6 +21,15 @@ on:
         type: boolean
         default: false
         required: false
+      publish_ghcr:
+        description: >-
+          Publish the freshly-built images to the GitHub Container
+          Registry (ghcr.io).  Untick to skip publishing - useful
+          when iterating on the workflow itself or running a quick
+          test build that should not change the published images.
+        type: boolean
+        default: true
+        required: false
 
 #  push:
 #    branches: ['main']
@@ -223,7 +232,13 @@ jobs:
     # part-way through arm64.
     timeout-minutes: 10
     needs: [build-containers]
-    if: github.event_name != 'pull_request'
+    # Pull-request triggers never publish.  workflow_dispatch runs
+    # publish by default but a maintainer can untick the
+    # publish_ghcr input to skip the job for quick test builds.
+    if: >-
+      github.event_name != 'pull_request'
+      && (github.event_name != 'workflow_dispatch'
+          || inputs.publish_ghcr)
     steps:
       # Harden the runner used by this workflow
       # yamllint disable-line rule:line-length
