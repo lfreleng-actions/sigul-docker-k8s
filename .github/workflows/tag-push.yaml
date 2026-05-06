@@ -35,7 +35,7 @@ jobs:
 
       - name: 'Verify Pushed Tag'
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/tag-validate-action@4bd433ffdadfcfb8850312059b669dfd3da0bb84  # v0.1.2
+        uses: lfreleng-actions/tag-validate-action@461d187a53b5de27b068c2cea5af972c085a4a6a  # v1.0.2
         with:
           require_type: 'semver'
 
