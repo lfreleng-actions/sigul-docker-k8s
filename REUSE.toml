@@ -25,3 +25,13 @@ path = [
 ]
 SPDX-License-Identifier = "Apache-2.0"
 SPDX-FileCopyrightText = "2025 The Linux Foundation"
+
+[[annotations]]
+path = [
+    "test/fixtures/sigul-import-test-key.b64",
+    "test/fixtures/sigul-import-test-key.fingerprint",
+    "test/fixtures/sigul-import-test-key.passphrase",
+    "test/fixtures/sigul-import-test.passphrase"
+]
+SPDX-License-Identifier = "Apache-2.0"
+SPDX-FileCopyrightText = "2025 The Linux Foundation"
