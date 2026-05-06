@@ -1027,6 +1027,12 @@ jobs:
           bridge-hostname: sigul-bridge.example.org
           bridge-port: 44334
           server-hostname: sigul-server.example.org
+          # Default identity for batch-mode requests.  Without this,
+          # sigul falls back to getpass.getuser() inside the client
+          # container - that resolves to the sigul user, which is not
+          # the admin user we created in the server database, so
+          # every request would fail AUTHENTICATION_FAILED.
+          user-name: admin
 
           [gnupg]
           gnupg-bin: /usr/bin/gpg2
