@@ -43,10 +43,16 @@ readonly GNUPG_DIR="$SERVER_DATA_DIR/gnupg"
 readonly RUN_DIR="/var/run"
 readonly LOG_DIR="/var/log/sigul/server"
 
-# User to run sigul process as
+# User to run sigul process as.
+# Numeric UID/GID are resolved at runtime from the sigul account in the
+# image (see Dockerfile.server).  Hard-coding them here is a footgun
+# because the chown calls below would otherwise leave volume contents
+# owned by a UID that no longer matches the user the daemon runs as.
 readonly SIGUL_USER="sigul"
-readonly SIGUL_UID=990
-readonly SIGUL_GID=987
+SIGUL_UID="$(id -u "$SIGUL_USER" 2>/dev/null || echo 1000)"
+SIGUL_GID="$(id -g "$SIGUL_USER" 2>/dev/null || echo 1000)"
+readonly SIGUL_UID
+readonly SIGUL_GID
 
 # Logging functions
 log() {
@@ -350,7 +356,7 @@ fix_volume_permissions() {
     # Fix ownership of /var/run (Docker creates volumes as root by default)
     if [ -d "$RUN_DIR" ]; then
         log "Fixing ownership of $RUN_DIR..."
-        chown -R ${SIGUL_UID}:${SIGUL_GID} "$RUN_DIR" || warn "Failed to chown $RUN_DIR"
+        chown -R "${SIGUL_UID}:${SIGUL_GID}" "$RUN_DIR" || warn "Failed to chown $RUN_DIR"
         chmod 755 "$RUN_DIR" || warn "Failed to chmod $RUN_DIR"
         success "Fixed ownership of $RUN_DIR"
     else
@@ -360,14 +366,14 @@ fix_volume_permissions() {
     # Fix ownership of /var/log/sigul/server (for log files)
     if [ -d "$LOG_DIR" ]; then
         log "Fixing ownership of $LOG_DIR..."
-        chown -R ${SIGUL_UID}:${SIGUL_GID} "$LOG_DIR" || warn "Failed to chown $LOG_DIR"
+        chown -R "${SIGUL_UID}:${SIGUL_GID}" "$LOG_DIR" || warn "Failed to chown $LOG_DIR"
         chmod 755 "$LOG_DIR" || warn "Failed to chmod $LOG_DIR"
         success "Fixed ownership of $LOG_DIR"
     else
         # Create if missing
         log "Creating log directory $LOG_DIR..."
         mkdir -p "$LOG_DIR"
-        chown -R ${SIGUL_UID}:${SIGUL_GID} "$LOG_DIR"
+        chown -R "${SIGUL_UID}:${SIGUL_GID}" "$LOG_DIR"
         chmod 755 "$LOG_DIR"
         success "Created and configured $LOG_DIR"
     fi
@@ -376,7 +382,7 @@ fix_volume_permissions() {
     local run_sigul_dir="/run/sigul/server"
     if [ -d "$run_sigul_dir" ]; then
         log "Fixing ownership of $run_sigul_dir..."
-        chown -R ${SIGUL_UID}:${SIGUL_GID} "$run_sigul_dir" || warn "Failed to chown $run_sigul_dir"
+        chown -R "${SIGUL_UID}:${SIGUL_GID}" "$run_sigul_dir" || warn "Failed to chown $run_sigul_dir"
         chmod 755 "$run_sigul_dir" || warn "Failed to chmod $run_sigul_dir"
         success "Fixed ownership of $run_sigul_dir"
     fi
@@ -384,14 +390,14 @@ fix_volume_permissions() {
     # Fix ownership of server data directory
     if [ -d "$SERVER_DATA_DIR" ]; then
         log "Fixing ownership of $SERVER_DATA_DIR..."
-        chown -R ${SIGUL_UID}:${SIGUL_GID} "$SERVER_DATA_DIR" || warn "Failed to chown $SERVER_DATA_DIR"
+        chown -R "${SIGUL_UID}:${SIGUL_GID}" "$SERVER_DATA_DIR" || warn "Failed to chown $SERVER_DATA_DIR"
         success "Fixed ownership of $SERVER_DATA_DIR"
     fi
 
     # Fix ownership of GnuPG directory if it exists
     if [ -d "$GNUPG_DIR" ]; then
         log "Fixing ownership of $GNUPG_DIR..."
-        chown -R ${SIGUL_UID}:${SIGUL_GID} "$GNUPG_DIR" || warn "Failed to chown $GNUPG_DIR"
+        chown -R "${SIGUL_UID}:${SIGUL_GID}" "$GNUPG_DIR" || warn "Failed to chown $GNUPG_DIR"
         chmod 700 "$GNUPG_DIR" || warn "Failed to chmod $GNUPG_DIR"
         success "Fixed ownership of $GNUPG_DIR"
     fi
