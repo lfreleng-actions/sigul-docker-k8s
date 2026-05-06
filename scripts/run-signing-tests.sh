@@ -86,9 +86,17 @@ fi
 
 # A scratch host directory that we mount into the client container
 # so signed outputs and verifier inputs can live in the same place.
+# We deliberately chmod 0777: the directory is mounted into
+# containers running as the in-image sigul user (UID 1000), which is
+# unrelated to whichever UID the runner shell happens to be using.
+# On macOS Docker silently maps host-side perms via osxfs so 0700
+# also works there, but on Linux runners (which is what CI uses)
+# the container's UID 1000 cannot otherwise write into a directory
+# owned by the runner user.  This dir holds nothing sensitive - all
+# fixture passphrases here are publicly known - so 0777 is fine.
 HOST_WORKDIR="$(mktemp -d /tmp/sigul-signing-tests.XXXXXX)"
 trap 'rm -rf "$HOST_WORKDIR"' EXIT
-chmod 755 "$HOST_WORKDIR"
+chmod 0777 "$HOST_WORKDIR"
 
 # Test counters.
 PASS=0
