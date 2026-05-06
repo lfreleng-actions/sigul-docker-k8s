@@ -464,14 +464,18 @@ fi
 # TEST 10: Batch Mode Input Handling
 # ============================================================================
 test_header "Batch Mode Password Input (NUL-terminated)"
-# Test with explicit NUL terminator
+# Test with explicit NUL terminator using the loaded admin password.
+# Historically this test hard-coded the literal string
+# "auto_generated_ephemeral" which is the docker-compose default fallback;
+# any deployment that supplies a real password would always fail this
+# test even with a fully working stack.  Use $ADMIN_PASSWORD instead.
 OUTPUT=$(timeout 60 docker run --rm \
     --user 1000:1000 \
     --network "$NETWORK" \
     -v "${CLIENT_NSS_VOLUME}:/etc/pki/sigul/client:ro" \
     -v "${CLIENT_CONFIG_VOLUME}:/etc/sigul:ro" \
     "$CLIENT_IMAGE" \
-    bash -c 'printf "auto_generated_ephemeral\0" | sigul --batch -c /etc/sigul/client.conf list-users 2>&1')
+    bash -c "printf '%s\0' '${ADMIN_PASSWORD}' | sigul --batch -c /etc/sigul/client.conf list-users 2>&1")
 
 if echo "$OUTPUT" | grep -q "admin"; then
     pass "Batch mode NUL-terminated password works correctly"
