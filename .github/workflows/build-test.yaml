@@ -211,9 +211,7 @@ jobs:
       packages: write
     timeout-minutes: 3
     needs: [build-containers]
-    # Temporarily disable while debugging integration tests/stack
-    if: false
-    # if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request'
     steps:
       # Harden the runner used by this workflow
       # yamllint disable-line rule:line-length

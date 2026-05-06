@@ -38,7 +38,7 @@ NSS_PASSWORD="test-password-e2e-$$"
 TEST_FAILED=0
 
 # Cleanup function
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 cleanup() {
     if [ -d "${TEST_BASE_DIR}" ]; then
         rm -rf "${TEST_BASE_DIR}"

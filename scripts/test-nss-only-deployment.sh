@@ -125,7 +125,7 @@ setup_test_environment() {
     success "Test environment setup complete"
 }
 
-# shellcheck disable=SC2317  # Function is called via trap
+# shellcheck disable=SC2317,SC2329  # Function is called via trap
 cleanup_test_environment() {
     log "Cleaning up test environment"
 

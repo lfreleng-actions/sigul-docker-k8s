@@ -289,16 +289,6 @@ fail_test() {
     TEST_RESULTS+=("FAIL: $test_name - $reason")
 }
 
-# shellcheck disable=SC2317  # Function defined for future use
-skip_test() {
-    local test_name="$1"
-    local reason="${2:-Skipped}"
-    echo -e "${YELLOW}⊘ SKIP${NC}: $test_name"
-    echo -e "${YELLOW}   Reason: $reason${NC}"
-    TESTS_SKIPPED=$((TESTS_SKIPPED + 1))
-    TEST_RESULTS+=("SKIP: $test_name - $reason")
-}
-
 # Test Suite: Basic Client Operations
 test_basic_authentication() {
     test_header "Basic Authentication - List Users"
