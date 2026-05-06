@@ -13,6 +13,14 @@ on:
         type: boolean
         default: false
         required: false
+      enable_auth_debug:
+        description: >-
+          Enable verbose auth/handshake logging in bridge & server
+          (sets SIGUL_DEBUG_AUTH=1 for the integration test stack;
+          surfaces AUTHDBG/* lines in container logs)
+        type: boolean
+        default: false
+        required: false
 
 #  push:
 #    branches: ['main']
@@ -560,10 +568,13 @@ jobs:
         env:
           SIGUL_PLATFORM_ID: ${{ steps.runner-arch.outputs.platform-id }}
           DOCKER_PLATFORM: ${{ steps.runner-arch.outputs.docker-platform }}
+          # See enable_auth_debug input on workflow_dispatch.
+          SIGUL_DEBUG_AUTH: ${{ inputs.enable_auth_debug && '1' || '0' }}
         run: |
           PLATFORM="${SIGUL_PLATFORM_ID}"
           echo "🚀 Deploying Sigul infrastructure for platform: ${PLATFORM}"
           echo "📦 Sigul containers will be for platform: ${DOCKER_PLATFORM}"
+          echo "🔍 SIGUL_DEBUG_AUTH=${SIGUL_DEBUG_AUTH}"
 
           # Export platform info for the deployment script
           export SIGUL_RUNNER_PLATFORM="${SIGUL_PLATFORM_ID}"
@@ -824,10 +835,15 @@ jobs:
         env:
           SIGUL_PLATFORM_ID: ${{ steps.runner-arch.outputs.platform-id }}
           DOCKER_PLATFORM: ${{ steps.runner-arch.outputs.docker-platform }}
+          # When enable_auth_debug=true, the bridge and server pick this
+          # up via docker-compose.sigul.yml and emit AUTHDBG/* lines
+          # gated by patches/02-verbose-auth-logging.patch.
+          SIGUL_DEBUG_AUTH: ${{ inputs.enable_auth_debug && '1' || '0' }}
         run: |
           PLATFORM="${SIGUL_PLATFORM_ID}"
           echo "🚀 Deploying fresh Sigul infrastructure for functional tests"
           echo "📦 Platform: ${PLATFORM} (${DOCKER_PLATFORM})"
+          echo "🔍 SIGUL_DEBUG_AUTH=${SIGUL_DEBUG_AUTH}"
 
           # Export platform info for the deployment script
           export SIGUL_RUNNER_PLATFORM="${SIGUL_PLATFORM_ID}"
