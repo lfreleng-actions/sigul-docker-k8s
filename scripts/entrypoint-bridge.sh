@@ -189,12 +189,22 @@ fix_volume_permissions() {
         return
     fi
 
-    # Fix ownership of /var/run (Docker creates volumes as root by default)
-    if [ -d "$RUN_DIR" ]; then
-        log "Fixing ownership of $RUN_DIR..."
-        chown -R "${SIGUL_UID}:${SIGUL_GID}" "$RUN_DIR" || warn "Failed to chown $RUN_DIR"
-        chmod 755 "$RUN_DIR" || warn "Failed to chmod $RUN_DIR"
-        success "Fixed ownership of $RUN_DIR"
+    # Fix ownership of /var/run (Docker creates volumes as root by default).
+    # NOTE: On Fedora /var/run is a symlink to ../run, and Docker mounts
+    # the volume at the symlink *target* (/run).  ``chown -R /var/run``
+    # follows the symlink and chowns its contents but NOT the mount
+    # point itself, leaving /run owned by root and the daemon unable
+    # to remove its pid file at shutdown.  Resolve the symlink first.
+    local run_target
+    run_target="$(readlink -f "$RUN_DIR" 2>/dev/null || echo "$RUN_DIR")"
+    if [ -d "$run_target" ]; then
+        log "Fixing ownership of $RUN_DIR (-> $run_target)..."
+        chown "${SIGUL_UID}:${SIGUL_GID}" "$run_target" \
+            || warn "Failed to chown $run_target"
+        chown -R "${SIGUL_UID}:${SIGUL_GID}" "$run_target" \
+            || warn "Failed to chown -R $run_target"
+        chmod 755 "$run_target" || warn "Failed to chmod $run_target"
+        success "Fixed ownership of $run_target"
     else
         warn "Runtime directory $RUN_DIR does not exist"
     fi
@@ -212,6 +222,17 @@ fix_volume_permissions() {
         chown -R "${SIGUL_UID}:${SIGUL_GID}" "$LOG_DIR"
         chmod 755 "$LOG_DIR"
         success "Created and configured $LOG_DIR"
+    fi
+
+    # Fix ownership of /etc/pki/sigul/bridge (NSS database).
+    # cert-init.sh already chowns its outputs, but be defensive: if
+    # the volume was populated by an older container or a manual
+    # debug step the files may still be root-owned.
+    if [ -d "$NSS_DIR" ]; then
+        log "Fixing ownership of $NSS_DIR..."
+        chown -R "${SIGUL_UID}:${SIGUL_GID}" "$NSS_DIR" \
+            || warn "Failed to chown $NSS_DIR"
+        success "Fixed ownership of $NSS_DIR"
     fi
 
     success "Volume permissions fixed successfully"

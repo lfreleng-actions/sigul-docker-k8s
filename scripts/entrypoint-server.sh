@@ -353,12 +353,22 @@ fix_volume_permissions() {
         return
     fi
 
-    # Fix ownership of /var/run (Docker creates volumes as root by default)
-    if [ -d "$RUN_DIR" ]; then
-        log "Fixing ownership of $RUN_DIR..."
-        chown -R "${SIGUL_UID}:${SIGUL_GID}" "$RUN_DIR" || warn "Failed to chown $RUN_DIR"
-        chmod 755 "$RUN_DIR" || warn "Failed to chmod $RUN_DIR"
-        success "Fixed ownership of $RUN_DIR"
+    # Fix ownership of /var/run (Docker creates volumes as root by default).
+    # NOTE: On Fedora /var/run is a symlink to ../run, and Docker mounts
+    # the volume at the symlink *target* (/run).  ``chown -R /var/run``
+    # follows the symlink and chowns its contents but NOT the mount
+    # point itself, leaving /run owned by root and the daemon unable
+    # to remove its pid file at shutdown.  Resolve the symlink first.
+    local run_target
+    run_target="$(readlink -f "$RUN_DIR" 2>/dev/null || echo "$RUN_DIR")"
+    if [ -d "$run_target" ]; then
+        log "Fixing ownership of $RUN_DIR (-> $run_target)..."
+        chown "${SIGUL_UID}:${SIGUL_GID}" "$run_target" \
+            || warn "Failed to chown $run_target"
+        chown -R "${SIGUL_UID}:${SIGUL_GID}" "$run_target" \
+            || warn "Failed to chown -R $run_target"
+        chmod 755 "$run_target" || warn "Failed to chmod $run_target"
+        success "Fixed ownership of $run_target"
     else
         warn "Runtime directory $RUN_DIR does not exist"
     fi
@@ -400,6 +410,20 @@ fix_volume_permissions() {
         chown -R "${SIGUL_UID}:${SIGUL_GID}" "$GNUPG_DIR" || warn "Failed to chown $GNUPG_DIR"
         chmod 700 "$GNUPG_DIR" || warn "Failed to chmod $GNUPG_DIR"
         success "Fixed ownership of $GNUPG_DIR"
+    fi
+
+    # Fix ownership of /etc/pki/sigul/server (NSS database).
+    # The cert-init / init-server-certs.sh scripts run as root and
+    # leave the NSS DB files owned root:root mode 600.  When
+    # initialize_database invokes sigul_server_add_admin the daemon
+    # drops to the sigul UID per the [daemon] section of server.conf
+    # and can no longer read its own NSS DB, which surfaces as a
+    # bogus "does not contain a valid NSS database" error.
+    if [ -d "$NSS_DIR" ]; then
+        log "Fixing ownership of $NSS_DIR..."
+        chown -R "${SIGUL_UID}:${SIGUL_GID}" "$NSS_DIR" \
+            || warn "Failed to chown $NSS_DIR"
+        success "Fixed ownership of $NSS_DIR"
     fi
 
     success "Volume permissions fixed successfully"
@@ -541,10 +565,18 @@ main() {
     # Initialize required directories
     initialize_gnupg_directory
     initialize_directories
-    initialize_database
 
-    # Fix volume permissions (must be done as root)
+    # Fix volume permissions BEFORE initializing the database, because
+    # initialize_database invokes sigul_server_add_admin which honours
+    # the [daemon] unix-user setting in server.conf and switches to
+    # the sigul UID before opening the NSS database.  If the NSS
+    # files are still owned by root at that point, the tool fails with
+    # a generic "NSS database is invalid" error and the admin user is
+    # silently never created - producing exactly the kind of
+    # downstream auth failure we have been chasing.
     fix_volume_permissions
+
+    initialize_database
 
     # Start the service (will drop privileges if running as root)
     start_server_service
