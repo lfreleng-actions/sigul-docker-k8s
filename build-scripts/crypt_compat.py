@@ -30,29 +30,44 @@ if sys.version_info >= (3, 13):
 
         Args:
             word: The password to hash (str or bytes)
-            salt: The salt string (must start with $6$ for SHA-512)
+            salt: The salt string.  Real callers will pass an
+                  ``$6$...`` SHA-512 crypt salt; legacy code may
+                  also pass a non-crypt placeholder (Sigul, for
+                  example, intentionally calls ``crypt('xx')`` as a
+                  timing-attack guard when the user does not exist).
 
         Returns:
-            The hashed password string in crypt format
-
-        Raises:
-            ValueError: If salt format is not supported
+            The hashed password string in crypt format, or - for
+            placeholder/invalid salts - a deterministic non-crypt
+            string that will never equal a real crypt result and
+            will never equal the salt itself.  This mirrors the
+            POSIX ``crypt(3)`` contract that some libcs implement
+            (return non-matching garbage rather than raising).
         """
         # Convert bytes to string if needed
         if isinstance(word, bytes):
             word = word.decode('utf-8')
 
-        # Validate salt format
+        # Tolerate non-SHA-512 salts the way POSIX crypt(3) does.
+        # Sigul's authenticate_admin uses crypt(password, 'xx') as a
+        # constant-time placeholder when the user lookup misses;
+        # raising here would crash the request handler with a
+        # ValueError and the parent server would exit on the next
+        # waitpid() with 'Child died with status 512'.  Return a
+        # value that:
+        #   * is deterministic (so timing is comparable to the
+        #     SHA-512 path),
+        #   * is not equal to the input salt (so the caller's
+        #     ``crypt(pw, x) != x`` check fires and auth_fail runs),
+        #   * does not look like a valid crypt hash.
         if not salt.startswith('$6$'):
-            raise ValueError(
-                f"Only SHA-512 crypt ($6$) is supported, got: {salt[:3]}"
-            )
+            return '!' + salt + '!invalid-crypt-salt'
 
         # Extract salt and optional rounds
         # Format: $6$salt or $6$rounds=N$salt
         parts = salt.split('$')
         if len(parts) < 3:
-            raise ValueError(f"Invalid salt format: {salt}")
+            return '!' + salt + '!invalid-crypt-salt'
 
         # Check if rounds are specified
         if parts[2].startswith('rounds='):
