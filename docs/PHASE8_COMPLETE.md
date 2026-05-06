@@ -264,15 +264,19 @@ VALIDATION_CHECKLIST.md:
 
 ## Documentation Cross-Reference Matrix
 
-| Document | Purpose | References |
-|----------|---------|------------|
+<!-- markdownlint-disable MD013 -->
+
+| Document                         | Purpose               | References                                                            |
+| -------------------------------- | --------------------- | --------------------------------------------------------------------- |
 | DEPLOYMENT_PRODUCTION_ALIGNED.md | Production deployment | OPERATIONS_GUIDE.md, VALIDATION_CHECKLIST.md, NETWORK_ARCHITECTURE.md |
-| OPERATIONS_GUIDE.md | Daily operations | DEPLOYMENT_PRODUCTION_ALIGNED.md, validation scripts |
-| VALIDATION_CHECKLIST.md | Validation procedures | All validation scripts, all phase docs |
-| NETWORK_ARCHITECTURE.md | Network reference | Configuration evidence, troubleshooting |
-| DEPLOYMENT_GUIDE.md | Base deployment | All new production docs |
-| README.md | Project overview | Production alignment references |
-| ALIGNMENT_PLAN.md | Master plan | All 8 phases |
+| OPERATIONS_GUIDE.md              | Daily operations      | DEPLOYMENT_PRODUCTION_ALIGNED.md, validation scripts                  |
+| VALIDATION_CHECKLIST.md          | Validation procedures | All validation scripts, all phase docs                                |
+| NETWORK_ARCHITECTURE.md          | Network reference     | Configuration evidence, troubleshooting                               |
+| DEPLOYMENT_GUIDE.md              | Base deployment       | All new production docs                                               |
+| README.md                        | Project overview      | Production alignment references                                       |
+| ALIGNMENT_PLAN.md                | Master plan           | All 8 phases                                                          |
+
+<!-- markdownlint-enable MD013 -->
 
 ## Usage Examples
 
@@ -341,16 +345,20 @@ docker-compose -f docker-compose.sigul.yml restart sigul-server
 
 ### All 8 Phases Complete
 
-| Phase | Status | Deliverables |
-|-------|--------|--------------|
-| Phase 1 | ✅ COMPLETE | Directory structure aligned |
+<!-- markdownlint-disable MD060 -->
+
+| Phase   | Status      | Deliverables                       |
+| ------- | ----------- | ---------------------------------- |
+| Phase 1 | ✅ COMPLETE | Directory structure aligned        |
 | Phase 2 | ✅ COMPLETE | Certificate infrastructure aligned |
-| Phase 3 | ✅ COMPLETE | Configuration aligned |
-| Phase 4 | ✅ COMPLETE | Service initialization aligned |
-| Phase 5 | ✅ COMPLETE | Volume persistence aligned |
-| Phase 6 | ✅ COMPLETE | Network & DNS aligned |
-| Phase 7 | ✅ COMPLETE | Integration testing complete |
-| Phase 8 | ✅ COMPLETE | Documentation complete |
+| Phase 3 | ✅ COMPLETE | Configuration aligned              |
+| Phase 4 | ✅ COMPLETE | Service initialization aligned     |
+| Phase 5 | ✅ COMPLETE | Volume persistence aligned         |
+| Phase 6 | ✅ COMPLETE | Network & DNS aligned              |
+| Phase 7 | ✅ COMPLETE | Integration testing complete       |
+| Phase 8 | ✅ COMPLETE | Documentation complete             |
+
+<!-- markdownlint-enable MD060 -->
 
 **Overall Progress:** 100% (8/8 phases complete)
 
@@ -529,43 +537,55 @@ The stack is ready for production deployment with confidence.
 
 ### Phase 8 Deliverables
 
-| File | Type | Lines | Purpose |
-|------|------|-------|---------|
-| DEPLOYMENT_PRODUCTION_ALIGNED.md | Documentation | 518 | Production deployment guide |
-| OPERATIONS_GUIDE.md | Documentation | 633 | Operations procedures |
-| VALIDATION_CHECKLIST.md | Documentation | 602 | Validation procedures |
-| validate-phase8-documentation.sh | Script | 435 | Phase 8 validation |
-| DEPLOYMENT_GUIDE.md (updated) | Documentation | +47 | Updated references |
+<!-- markdownlint-disable MD013 -->
+
+| File                             | Type          | Lines | Purpose                     |
+| -------------------------------- | ------------- | ----- | --------------------------- |
+| DEPLOYMENT_PRODUCTION_ALIGNED.md | Documentation | 518   | Production deployment guide |
+| OPERATIONS_GUIDE.md              | Documentation | 633   | Operations procedures       |
+| VALIDATION_CHECKLIST.md          | Documentation | 602   | Validation procedures       |
+| validate-phase8-documentation.sh | Script        | 435   | Phase 8 validation          |
+| DEPLOYMENT_GUIDE.md (updated)    | Documentation | +47   | Updated references          |
+
+<!-- markdownlint-enable MD013 -->
 
 ### Complete Documentation Suite
 
-| Document | Status | Purpose |
-|----------|--------|---------|
-| README.md | ✅ Current | Project overview |
-| DEPLOYMENT_GUIDE.md | ✅ Updated | Base deployment |
-| DEPLOYMENT_PRODUCTION_ALIGNED.md | ✅ New | Production deployment |
-| OPERATIONS_GUIDE.md | ✅ New | Operations procedures |
-| VALIDATION_CHECKLIST.md | ✅ New | Validation procedures |
-| NETWORK_ARCHITECTURE.md | ✅ Current | Network reference |
-| ALIGNMENT_PLAN.md | ✅ Current | Master alignment plan |
-| PHASE[1-8]_COMPLETE.md | ✅ Complete | Phase documentation |
-| PHASE[4-7]_QUICK_REFERENCE.md | ✅ Complete | Quick references |
-| PROGRESS_SUMMARY.md | ✅ Current | Progress tracking |
+<!-- markdownlint-disable MD060 -->
+
+| Document                         | Status      | Purpose               |
+| -------------------------------- | ----------- | --------------------- |
+| README.md                        | ✅ Current  | Project overview      |
+| DEPLOYMENT_GUIDE.md              | ✅ Updated  | Base deployment       |
+| DEPLOYMENT_PRODUCTION_ALIGNED.md | ✅ New      | Production deployment |
+| OPERATIONS_GUIDE.md              | ✅ New      | Operations procedures |
+| VALIDATION_CHECKLIST.md          | ✅ New      | Validation procedures |
+| NETWORK_ARCHITECTURE.md          | ✅ Current  | Network reference     |
+| ALIGNMENT_PLAN.md                | ✅ Current  | Master alignment plan |
+| PHASE[1-8]_COMPLETE.md           | ✅ Complete | Phase documentation   |
+| PHASE[4-7]_QUICK_REFERENCE.md    | ✅ Complete | Quick references      |
+| PROGRESS_SUMMARY.md              | ✅ Current  | Progress tracking     |
+
+<!-- markdownlint-enable MD060 -->
 
 ### Complete Script Suite
 
-| Script | Type | Tests | Purpose |
-|--------|------|-------|---------|
-| validate-phase4-service-initialization.sh | Validation | 16 | Phase 4 validation |
-| validate-phase5-volume-persistence.sh | Validation | 20 | Phase 5 validation |
-| validate-phase6-network-dns.sh | Validation | 28 | Phase 6 validation |
-| validate-phase7-integration-testing.sh | Validation | 34 | Phase 7 validation |
-| validate-phase8-documentation.sh | Validation | 77 | Phase 8 validation |
-| run-integration-tests.sh | Testing | 100+ | Integration tests |
-| test-signing-operations.sh | Testing | 10+ | Functional tests |
-| test-performance.sh | Testing | 10+ | Performance tests |
-| backup-volumes.sh | Operations | - | Volume backup |
-| restore-volumes.sh | Operations | - | Volume restore |
+<!-- markdownlint-disable MD013 -->
+
+| Script                                    | Type       | Tests | Purpose            |
+| ----------------------------------------- | ---------- | ----- | ------------------ |
+| validate-phase4-service-initialization.sh | Validation | 16    | Phase 4 validation |
+| validate-phase5-volume-persistence.sh     | Validation | 20    | Phase 5 validation |
+| validate-phase6-network-dns.sh            | Validation | 28    | Phase 6 validation |
+| validate-phase7-integration-testing.sh    | Validation | 34    | Phase 7 validation |
+| validate-phase8-documentation.sh          | Validation | 77    | Phase 8 validation |
+| run-integration-tests.sh                  | Testing    | 100+  | Integration tests  |
+| test-signing-operations.sh                | Testing    | 10+   | Functional tests   |
+| test-performance.sh                       | Testing    | 10+   | Performance tests  |
+| backup-volumes.sh                         | Operations | -     | Volume backup      |
+| restore-volumes.sh                        | Operations | -     | Volume restore     |
+
+<!-- markdownlint-enable MD013 -->
 
 **Total Automated Tests:** 193+ across all validation and test scripts
 

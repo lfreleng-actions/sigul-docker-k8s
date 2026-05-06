@@ -223,17 +223,21 @@ nss-min-tls: tls1.2
 
 ## Production Alignment Matrix
 
-| Aspect | Production | Before | After | Status |
-|--------|-----------|--------|-------|--------|
-| **Separator** | Colon `:` | Equals `=` | Colon `:` | ✅ Aligned |
-| **NSS Dir** | `/etc/pki/sigul` | `/var/sigul/nss/*` | `/etc/pki/sigul` | ✅ Aligned |
-| **NSS Password** | Embedded | File reference | Embedded | ✅ Aligned |
-| **Cert Nickname** | FQDN | Generic | FQDN | ✅ Aligned |
-| **Database Path** | `/var/lib/sigul/...` | `/var/sigul/...` | `/var/lib/sigul/...` | ✅ Aligned |
-| **GnuPG Home** | `/var/lib/sigul/gnupg` | `/var/sigul/gnupg` | `/var/lib/sigul/server/gnupg` | ✅ Aligned |
-| **TLS Config** | `nss-min-tls` | `require-tls` | `nss-min-tls` | ✅ Aligned |
-| **TLS Support** | TLS 1.2 only | Any | TLS 1.2+ (1.3 capable) | ✅ Enhanced |
-| **Sections** | `[bridge]`, `[koji]`, `[daemon]`, `[nss]` | Split sections | Match production | ✅ Aligned |
+<!-- markdownlint-disable MD013 MD060 -->
+
+| Aspect            | Production                                | Before             | After                         | Status      |
+| ----------------- | ----------------------------------------- | ------------------ | ----------------------------- | ----------- |
+| **Separator**     | Colon `:`                                 | Equals `=`         | Colon `:`                     | ✅ Aligned  |
+| **NSS Dir**       | `/etc/pki/sigul`                          | `/var/sigul/nss/*` | `/etc/pki/sigul`              | ✅ Aligned  |
+| **NSS Password**  | Embedded                                  | File reference     | Embedded                      | ✅ Aligned  |
+| **Cert Nickname** | FQDN                                      | Generic            | FQDN                          | ✅ Aligned  |
+| **Database Path** | `/var/lib/sigul/...`                      | `/var/sigul/...`   | `/var/lib/sigul/...`          | ✅ Aligned  |
+| **GnuPG Home**    | `/var/lib/sigul/gnupg`                    | `/var/sigul/gnupg` | `/var/lib/sigul/server/gnupg` | ✅ Aligned  |
+| **TLS Config**    | `nss-min-tls`                             | `require-tls`      | `nss-min-tls`                 | ✅ Aligned  |
+| **TLS Support**   | TLS 1.2 only                              | Any                | TLS 1.2+ (1.3 capable)        | ✅ Enhanced |
+| **Sections**      | `[bridge]`, `[koji]`, `[daemon]`, `[nss]` | Split sections     | Match production              | ✅ Aligned  |
+
+<!-- markdownlint-enable MD013 MD060 -->
 
 ---
 

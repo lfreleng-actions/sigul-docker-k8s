@@ -414,7 +414,7 @@ start_server_service() {
     # Check if we're running as root and need to drop privileges
     if [ "$(id -u)" -eq 0 ]; then
         log "Running as root - will drop privileges to user $SIGUL_USER (UID $SIGUL_UID)"
-        
+
         # Check if DEBUG_MODE is enabled
         if [[ "${DEBUG_MODE:-0}" == "1" ]]; then
             warn "DEBUG_MODE enabled - entrypoint will monitor sigul process"
@@ -437,7 +437,7 @@ start_server_service() {
     else
         # Already running as non-root user
         log "Running as user $(id -un) (UID $(id -u))"
-        
+
         # Check if DEBUG_MODE is enabled
         if [[ "${DEBUG_MODE:-0}" == "1" ]]; then
             warn "DEBUG_MODE enabled - entrypoint will monitor sigul process"

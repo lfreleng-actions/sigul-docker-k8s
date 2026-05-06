@@ -106,13 +106,17 @@ The issue is **application-specific**, not infrastructure-related. The differenc
 
 ## Key Differences: Working vs Failing
 
-| Aspect | Python NSS (✅) | Sigul Client (❌) | tstclnt (❌) |
-|--------|----------------|------------------|--------------|
-| NSS Init | Direct `nss_init()` | Via `utils.nss_init()` | Command-line |
-| Password | Lambda callback | `config.nss_password` | File descriptor |
-| Socket | `SSLSocket()` | `DoubleTLSClient()` | Built-in tool |
-| Auth Callback | Lambda inline | `nss_client_auth_callback_single` | Automatic |
-| Success | ✅ Yes | ❌ No | ❌ No |
+<!-- markdownlint-disable MD013 MD060 -->
+
+| Aspect        | Python NSS (✅)     | Sigul Client (❌)                 | tstclnt (❌)    |
+| ------------- | ------------------- | --------------------------------- | --------------- |
+| NSS Init      | Direct `nss_init()` | Via `utils.nss_init()`            | Command-line    |
+| Password      | Lambda callback     | `config.nss_password`             | File descriptor |
+| Socket        | `SSLSocket()`       | `DoubleTLSClient()`               | Built-in tool   |
+| Auth Callback | Lambda inline       | `nss_client_auth_callback_single` | Automatic       |
+| Success       | ✅ Yes              | ❌ No                             | ❌ No           |
+
+<!-- markdownlint-enable MD013 MD060 -->
 
 ---
 

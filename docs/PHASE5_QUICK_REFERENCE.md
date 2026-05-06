@@ -82,12 +82,12 @@ docker-compose -f docker-compose.sigul.yml up -d
 
 ## Backup Priority Levels
 
-| Priority | Volumes | Backup Frequency |
-|----------|---------|------------------|
-| CRITICAL | `sigul_server_data` | Before changes, daily |
-| HIGH | `sigul_server_nss`, `sigul_bridge_nss` | Weekly |
-| MEDIUM | `sigul_server_logs` | Monthly |
-| LOW | Bridge logs, runtime | As needed |
+| Priority | Volumes                                | Backup Frequency      |
+| -------- | -------------------------------------- | --------------------- |
+| CRITICAL | `sigul_server_data`                    | Before changes, daily |
+| HIGH     | `sigul_server_nss`, `sigul_bridge_nss` | Weekly                |
+| MEDIUM   | `sigul_server_logs`                    | Monthly               |
+| LOW      | Bridge logs, runtime                   | As needed             |
 
 ## Best Practices
 

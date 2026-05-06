@@ -20,11 +20,11 @@ Phase 6 implements production-aligned network and DNS configuration with FQDNs, 
 
 ### IP Addresses
 
-| Component | IP Address | Hostname |
-|-----------|------------|----------|
-| Gateway | 172.20.0.1 | N/A |
-| Bridge | 172.20.0.2 | sigul-bridge.example.org |
-| Server | 172.20.0.3 | sigul-server.example.org |
+| Component | IP Address | Hostname                 |
+| --------- | ---------- | ------------------------ |
+| Gateway   | 172.20.0.1 | N/A                      |
+| Bridge    | 172.20.0.2 | sigul-bridge.example.org |
+| Server    | 172.20.0.3 | sigul-server.example.org |
 
 ### Ports
 

@@ -277,12 +277,12 @@ tar czf sigul-debug-$(date +%Y%m%d-%H%M%S).tar.gz \
 
 ## 🔑 Key Facts About "Unexpected EOF in NSPR"
 
-| Fact | Description |
-|------|-------------|
-| **When it occurs** | During TLS handshake, NOT password auth |
-| **Error code** | `PR_END_OF_FILE_ERROR` from NSS/NSPR |
-| **Common causes** | Certificate validation, NSS password, timing |
-| **Not the issue** | Interactive password prompts (Sigul has batch mode) |
+| Fact                 | Description                                         |
+| -------------------- | --------------------------------------------------- |
+| **When it occurs**   | During TLS handshake, NOT password auth             |
+| **Error code**       | `PR_END_OF_FILE_ERROR` from NSS/NSPR                |
+| **Common causes**    | Certificate validation, NSS password, timing        |
+| **Not the issue**    | Interactive password prompts (Sigul has batch mode) |
 | **Source locations** | `client.py:1966`, `utils.py:1113`, `bridge.py:1441` |
 
 ---

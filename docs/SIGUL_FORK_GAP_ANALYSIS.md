@@ -89,15 +89,19 @@ With your fork:
 Total changes: 7 files modified, +409 insertions, -43 deletions
 ```
 
-| File | Lines Changed | Debugging Only | Functional Fixes |
-|------|---------------|----------------|------------------|
-| `src/bridge.py` | +53/-5 | ✅ Yes | ⚠️ **YES - CRITICAL** |
-| `src/client.py` | +44/-1 | ✅ Yes | ⚠️ YES |
-| `src/double_tls.py` | +127/-14 | ✅ Yes | ⚠️ YES |
-| `src/server.py` | +60/-7 | ✅ Yes | ⚠️ YES |
-| `src/server_add_admin.py` | +57/-7 | ✅ Yes | ⚠️ YES |
-| `src/server_common.py` | +17/-2 | ✅ Yes | ⚠️ YES |
-| `src/utils.py` | +94/-6 | ✅ Yes | ⚠️ YES |
+<!-- markdownlint-disable MD013 MD060 -->
+
+| File                      | Lines Changed | Debugging Only | Functional Fixes      |
+| ------------------------- | ------------- | -------------- | --------------------- |
+| `src/bridge.py`           | +53/-5        | ✅ Yes         | ⚠️ **YES - CRITICAL** |
+| `src/client.py`           | +44/-1        | ✅ Yes         | ⚠️ YES                |
+| `src/double_tls.py`       | +127/-14      | ✅ Yes         | ⚠️ YES                |
+| `src/server.py`           | +60/-7        | ✅ Yes         | ⚠️ YES                |
+| `src/server_add_admin.py` | +57/-7        | ✅ Yes         | ⚠️ YES                |
+| `src/server_common.py`    | +17/-2        | ✅ Yes         | ⚠️ YES                |
+| `src/utils.py`            | +94/-6        | ✅ Yes         | ⚠️ YES                |
+
+<!-- markdownlint-enable MD013 MD060 -->
 
 ---
 
@@ -554,12 +558,16 @@ local sigul_branch="debugging"
 
 ## Gap Analysis Summary
 
-| Component | Current State | Required State | Impact |
-|-----------|---------------|----------------|--------|
-| Fork changes | Contains functional fixes | Keep fork | ✅ Required |
-| Build script | Uses upstream Pagure ❌ | Use fork GitHub | 🚨 **BREAKS CI** |
-| CI tests | Failing with EOF errors | Will pass with fork | 🚨 **BROKEN NOW** |
-| Local dev | May work with local source | Use fork | ⚠️ Inconsistent |
+<!-- markdownlint-disable MD013 MD060 -->
+
+| Component    | Current State              | Required State      | Impact            |
+| ------------ | -------------------------- | ------------------- | ----------------- |
+| Fork changes | Contains functional fixes  | Keep fork           | ✅ Required       |
+| Build script | Uses upstream Pagure ❌    | Use fork GitHub     | 🚨 **BREAKS CI**  |
+| CI tests     | Failing with EOF errors    | Will pass with fork | 🚨 **BROKEN NOW** |
+| Local dev    | May work with local source | Use fork            | ⚠️ Inconsistent   |
+
+<!-- markdownlint-enable MD013 MD060 -->
 
 **Root Cause of CI Failures:** `build-scripts/install-sigul.sh` line 70 uses `https://pagure.io/sigul.git` instead of your fork.
 

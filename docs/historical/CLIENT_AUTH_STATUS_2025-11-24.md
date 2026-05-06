@@ -168,11 +168,11 @@ printf "auto_generated_ephemeral\nauto_generated_ephemeral\nauto_generated_ephem
 
 ### Verbosity Levels
 
-| Flag | Level | Numeric | What Gets Logged |
-|------|-------|---------|------------------|
-| (none) | WARNING | 30 | Only warnings and errors |
-| `-v` | INFO | 20 | Informational messages |
-| `-vv` | DEBUG | 10 | All messages including debug |
+| Flag   | Level   | Numeric | What Gets Logged             |
+| ------ | ------- | ------- | ---------------------------- |
+| (none) | WARNING | 30      | Only warnings and errors     |
+| `-v`   | INFO    | 20      | Informational messages       |
+| `-vv`  | DEBUG   | 10      | All messages including debug |
 
 **Current Default:** All containers use `-vv` (DEBUG level)
 

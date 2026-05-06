@@ -179,14 +179,18 @@ The following gaps are **confirmed blockers** based on actual production data ex
 
 ### 1.3 Gap Analysis: Directory Structure
 
-| Aspect | Production | Container | Impact |
-|--------|-----------|-----------|--------|
-| **Config Location** | `/etc/sigul/` | `/var/sigul/config/` | Path mismatch may prevent config loading |
-| **NSS Location** | `/etc/pki/sigul/` (shared) | `/var/sigul/nss/<component>/` (isolated) | Certificate sharing broken |
-| **Database Location** | `/var/lib/sigul/server.sqlite` | `/var/sigul/database/server.sqlite` OR `/var/lib/sigul/server.sqlite` | Inconsistent, may fail to find DB |
-| **GnuPG Location** | `/var/lib/sigul/gnupg` | `/var/sigul/gnupg` OR `/var/lib/sigul/gnupg` | Inconsistent, GPG operations may fail |
-| **NSS Sharing** | Single shared DB for bridge/server | Separate DBs per component | Certificate trust chain issues |
-| **Password File** | `nss-password.txt` | `nss-password` (no extension) | May not be found by hardcoded paths |
+<!-- markdownlint-disable MD013 -->
+
+| Aspect                | Production                         | Container                                                             | Impact                                   |
+| --------------------- | ---------------------------------- | --------------------------------------------------------------------- | ---------------------------------------- |
+| **Config Location**   | `/etc/sigul/`                      | `/var/sigul/config/`                                                  | Path mismatch may prevent config loading |
+| **NSS Location**      | `/etc/pki/sigul/` (shared)         | `/var/sigul/nss/<component>/` (isolated)                              | Certificate sharing broken               |
+| **Database Location** | `/var/lib/sigul/server.sqlite`     | `/var/sigul/database/server.sqlite` OR `/var/lib/sigul/server.sqlite` | Inconsistent, may fail to find DB        |
+| **GnuPG Location**    | `/var/lib/sigul/gnupg`             | `/var/sigul/gnupg` OR `/var/lib/sigul/gnupg`                          | Inconsistent, GPG operations may fail    |
+| **NSS Sharing**       | Single shared DB for bridge/server | Separate DBs per component                                            | Certificate trust chain issues           |
+| **Password File**     | `nss-password.txt`                 | `nss-password` (no extension)                                         | May not be found by hardcoded paths      |
+
+<!-- markdownlint-enable MD013 -->
 
 **Critical Issue:** The production setup uses standard FHS paths (`/etc`, `/var/lib`) which Sigul expects by default. The containerized approach uses non-standard paths (`/var/sigul/*`), requiring explicit configuration overrides and complex volume mounting that may not work correctly.
 
@@ -238,12 +242,16 @@ Container deployment uses:
 
 ### 2.3 Gap Analysis: NSS Database
 
-| Aspect | Production | Container | Issue |
-|--------|-----------|-----------|-------|
-| **Location** | `/etc/pki/sigul/` (standard FHS) | `/var/sigul/nss/<component>/` (non-standard) | **Config override needed** |
-| **Sharing Model** | Single shared database | Separate per component | **Trust chain complexity** |
-| **Path Convention** | Standard system location | Custom application path | **May cause lookup failures** |
-| **Format** | cert8.db (legacy, can be upgraded) | cert9.db (modern, appropriate) | Format is fine, location is the issue |
+<!-- markdownlint-disable MD013 -->
+
+| Aspect              | Production                         | Container                                    | Issue                                 |
+| ------------------- | ---------------------------------- | -------------------------------------------- | ------------------------------------- |
+| **Location**        | `/etc/pki/sigul/` (standard FHS)   | `/var/sigul/nss/<component>/` (non-standard) | **Config override needed**            |
+| **Sharing Model**   | Single shared database             | Separate per component                       | **Trust chain complexity**            |
+| **Path Convention** | Standard system location           | Custom application path                      | **May cause lookup failures**         |
+| **Format**          | cert8.db (legacy, can be upgraded) | cert9.db (modern, appropriate)               | Format is fine, location is the issue |
+
+<!-- markdownlint-enable MD013 -->
 
 **Critical Issue:** The **location** `/var/sigul/nss/<component>/` is non-standard. Sigul may have default paths compiled in or configuration may not properly override the default `/etc/pki/sigul/` location.
 
@@ -422,18 +430,22 @@ log-file = /var/sigul/logs/server.log
 
 ### 3.3 Gap Analysis: Configuration
 
-| Aspect | Production | Container | Compatible? |
-|--------|-----------|-----------|-------------|
-| **Separator** | Colon (`:`) | Equals (`=`) | **Depends on parser** |
-| **[bridge] Section** | Simple, one section | Split into `[bridge]` + `[bridge-server]` | **May not parse** |
-| **nss-dir** | `/etc/pki/sigul` | `/var/sigul/nss/<component>` | **Path mismatch** |
-| **nss-dir prefix** | None (or `dbm:`) | `sql:` (inconsistent) | **Format mismatch** |
-| **Password** | Embedded in config | File reference + embedded (redundant) | **May not read file** |
-| **Cert Nicknames** | Hostname-based | Generic (`sigul-*-cert`) | **Reference mismatch** |
-| **database-path** | `/var/lib/sigul/server.sqlite` | `/var/sigul/database/server.sqlite` | **Wrong location** |
-| **gnupg-home** | `/var/lib/sigul/gnupg` | `/var/sigul/gnupg` | **Wrong location** |
-| **TLS Config** | `nss-min-tls`, `nss-max-tls` | `require-tls` (different) | **Different options** |
-| **Empty Values** | Not present | `unix-user =` (empty) | **May cause parse errors** |
+<!-- markdownlint-disable MD013 -->
+
+| Aspect               | Production                     | Container                                 | Compatible?                |
+| -------------------- | ------------------------------ | ----------------------------------------- | -------------------------- |
+| **Separator**        | Colon (`:`)                    | Equals (`=`)                              | **Depends on parser**      |
+| **[bridge] Section** | Simple, one section            | Split into `[bridge]` + `[bridge-server]` | **May not parse**          |
+| **nss-dir**          | `/etc/pki/sigul`               | `/var/sigul/nss/<component>`              | **Path mismatch**          |
+| **nss-dir prefix**   | None (or `dbm:`)               | `sql:` (inconsistent)                     | **Format mismatch**        |
+| **Password**         | Embedded in config             | File reference + embedded (redundant)     | **May not read file**      |
+| **Cert Nicknames**   | Hostname-based                 | Generic (`sigul-*-cert`)                  | **Reference mismatch**     |
+| **database-path**    | `/var/lib/sigul/server.sqlite` | `/var/sigul/database/server.sqlite`       | **Wrong location**         |
+| **gnupg-home**       | `/var/lib/sigul/gnupg`         | `/var/sigul/gnupg`                        | **Wrong location**         |
+| **TLS Config**       | `nss-min-tls`, `nss-max-tls`   | `require-tls` (different)                 | **Different options**      |
+| **Empty Values**     | Not present                    | `unix-user =` (empty)                     | **May cause parse errors** |
+
+<!-- markdownlint-enable MD013 -->
 
 **Critical Issues:**
 
@@ -532,17 +544,21 @@ aws-us-west-2-lfit-sigul-server-1.dr.codeaurora.org.p12
 
 ### 4.3 Gap Analysis: Certificate Management
 
-| Aspect | Production | Container | Impact |
-|--------|-----------|-----------|--------|
-| **Cert Distribution** | Pre-generated PKCS#12 files | On-the-fly generation | Different trust model |
-| **CA Authority** | External (Puppet/real CA) | Bridge self-signed | No external trust |
-| **Import Method** | `pk12util` import | `certutil -S` generate | Different NSS operations |
-| **Cert Format** | PKCS#12 (`.p12`) | Direct NSS generation | No interchange format |
-| **Nicknames** | FQDN-based | Generic (`sigul-*-cert`) | Config/NSS mismatch |
-| **Trust Chain** | External CA chain | Internal CA only | Different trust model |
-| **Timing** | Static, pre-installed | Dynamic, startup-dependent | Race conditions |
-| **Sharing** | Shared NSS database | Export/import mechanism | Complex, error-prone |
-| **Certificate Subject** | Full DN with O, OU | Simple CN only | May affect verification |
+<!-- markdownlint-disable MD013 -->
+
+| Aspect                  | Production                  | Container                  | Impact                   |
+| ----------------------- | --------------------------- | -------------------------- | ------------------------ |
+| **Cert Distribution**   | Pre-generated PKCS#12 files | On-the-fly generation      | Different trust model    |
+| **CA Authority**        | External (Puppet/real CA)   | Bridge self-signed         | No external trust        |
+| **Import Method**       | `pk12util` import           | `certutil -S` generate     | Different NSS operations |
+| **Cert Format**         | PKCS#12 (`.p12`)            | Direct NSS generation      | No interchange format    |
+| **Nicknames**           | FQDN-based                  | Generic (`sigul-*-cert`)   | Config/NSS mismatch      |
+| **Trust Chain**         | External CA chain           | Internal CA only           | Different trust model    |
+| **Timing**              | Static, pre-installed       | Dynamic, startup-dependent | Race conditions          |
+| **Sharing**             | Shared NSS database         | Export/import mechanism    | Complex, error-prone     |
+| **Certificate Subject** | Full DN with O, OU          | Simple CN only             | May affect verification  |
+
+<!-- markdownlint-enable MD013 -->
 
 **Critical Issues:**
 
@@ -639,14 +655,18 @@ RUN mkdir -p /var/log /var/run /var/lib/sigul /var/lib/sigul/gnupg
 
 ### 5.3 Gap Analysis: Database
 
-| Aspect | Production | Container | Issue |
-|--------|-----------|-----------|-------|
-| **Database Path** | `/var/lib/sigul/server.sqlite` | `/var/sigul/database/server.sqlite` | **Path mismatch** |
-| **Database Name** | `server.sqlite` | `server.sqlite` OR `sigul.db` | **Name inconsistency** |
-| **Directory** | `/var/lib/sigul/` (standard location) | `/var/sigul/database/` (non-standard) | **Non-standard location** |
-| **Initialization** | `sigul_server_create_db -c config` | Same | Same command |
-| **Volume Mounting** | N/A | `/var/sigul` volume | May not persist correctly |
-| **Path Consistency** | Single path across all configs | 4 different paths in templates | **Inconsistent** |
+<!-- markdownlint-disable MD013 -->
+
+| Aspect               | Production                            | Container                             | Issue                     |
+| -------------------- | ------------------------------------- | ------------------------------------- | ------------------------- |
+| **Database Path**    | `/var/lib/sigul/server.sqlite`        | `/var/sigul/database/server.sqlite`   | **Path mismatch**         |
+| **Database Name**    | `server.sqlite`                       | `server.sqlite` OR `sigul.db`         | **Name inconsistency**    |
+| **Directory**        | `/var/lib/sigul/` (standard location) | `/var/sigul/database/` (non-standard) | **Non-standard location** |
+| **Initialization**   | `sigul_server_create_db -c config`    | Same                                  | Same command              |
+| **Volume Mounting**  | N/A                                   | `/var/sigul` volume                   | May not persist correctly |
+| **Path Consistency** | Single path across all configs        | 4 different paths in templates        | **Inconsistent**          |
+
+<!-- markdownlint-enable MD013 -->
 
 **Critical Issue:** The database path inconsistency means:
 
@@ -705,11 +725,15 @@ readonly GNUPG_DIR="/var/lib/sigul/gnupg"
 
 ### 6.3 Gap Analysis: GnuPG
 
-| Aspect | Production | Container | Issue |
-|--------|-----------|-----------|-------|
-| **GnuPG Home** | `/var/lib/sigul/gnupg` | `/var/sigul/gnupg` (config) OR `/var/lib/sigul/gnupg` (Dockerfile) | **Inconsistent paths** |
-| **Permissions** | 700 | 700 (in Dockerfile) | Consistent |
-| **Location Standard** | `/var/lib/` (correct) | `/var/sigul/` (generated config, wrong) | **Non-standard in config** |
+<!-- markdownlint-disable MD013 -->
+
+| Aspect                | Production             | Container                                                          | Issue                      |
+| --------------------- | ---------------------- | ------------------------------------------------------------------ | -------------------------- |
+| **GnuPG Home**        | `/var/lib/sigul/gnupg` | `/var/sigul/gnupg` (config) OR `/var/lib/sigul/gnupg` (Dockerfile) | **Inconsistent paths**     |
+| **Permissions**       | 700                    | 700 (in Dockerfile)                                                | Consistent                 |
+| **Location Standard** | `/var/lib/` (correct)  | `/var/sigul/` (generated config, wrong)                            | **Non-standard in config** |
+
+<!-- markdownlint-enable MD013 -->
 
 **Critical Issue:** Config file points to `/var/sigul/gnupg` but directory may be created at `/var/lib/sigul/gnupg`, causing GPG operations to fail.
 
@@ -775,13 +799,17 @@ nss-password-file = /var/sigul/secrets/nss-password
 
 ### 7.3 Gap Analysis: Password
 
-| Aspect | Production | Container | Compatibility |
-|--------|-----------|-----------|---------------|
-| **Method** | Direct embedding | File reference + embedding | Different |
-| **Config Key** | `nss-password` | `nss-password` + `nss-password-file` | Redundant |
-| **File Extension** | `.txt` | None | May matter for discovery |
-| **File Location** | `/etc/pki/sigul/nss-password.txt` | `/var/sigul/secrets/nss-password` | Path mismatch |
-| **Sharing** | Shared (same host) | Isolated (per volume) | Different model |
+<!-- markdownlint-disable MD013 -->
+
+| Aspect             | Production                        | Container                            | Compatibility            |
+| ------------------ | --------------------------------- | ------------------------------------ | ------------------------ |
+| **Method**         | Direct embedding                  | File reference + embedding           | Different                |
+| **Config Key**     | `nss-password`                    | `nss-password` + `nss-password-file` | Redundant                |
+| **File Extension** | `.txt`                            | None                                 | May matter for discovery |
+| **File Location**  | `/etc/pki/sigul/nss-password.txt` | `/var/sigul/secrets/nss-password`    | Path mismatch            |
+| **Sharing**        | Shared (same host)                | Isolated (per volume)                | Different model          |
+
+<!-- markdownlint-enable MD013 -->
 
 **Potential Issue:** If Sigul's config parser expects embedded passwords (which production uses), the file reference may be ignored. Alternatively, if both are specified, behavior is undefined.
 
@@ -965,17 +993,21 @@ services:
 
 ### 8.3 Gap Analysis: DNS and Networking
 
-| Aspect | Production | Container | Impact |
-|--------|-----------|-----------|--------|
-| **Name Resolution** | Static `/etc/hosts` | Docker embedded DNS | Different resolution method |
-| **Hostname Format** | FQDNs with multiple aliases | Short names only | Certificate CN mismatch |
-| **IP Addresses** | Static private IPs (10.30.x.x) | Dynamic Docker IPs (172.20.x.x) | No static addressing |
-| **Network Segment** | Same subnet (10.30.118.x) | Separate Docker network | Different network model |
-| **DNS Server** | Internal (10.30.112.2) + local cache | Docker DNS (127.0.0.11) | Different DNS infrastructure |
-| **Search Domains** | `dr.codeaurora.org`, AWS domains | None configured | Name expansion differences |
-| **Connectivity Type** | Layer 2 direct (same subnet) | Docker bridge (NAT) | Different network topology |
-| **Multiple Aliases** | Yes (primary + aliases) | No (single name) | Limited naming flexibility |
-| **External Access** | VPN/private network | Port mapping (44334) | Different access model |
+<!-- markdownlint-disable MD013 -->
+
+| Aspect                | Production                           | Container                       | Impact                       |
+| --------------------- | ------------------------------------ | ------------------------------- | ---------------------------- |
+| **Name Resolution**   | Static `/etc/hosts`                  | Docker embedded DNS             | Different resolution method  |
+| **Hostname Format**   | FQDNs with multiple aliases          | Short names only                | Certificate CN mismatch      |
+| **IP Addresses**      | Static private IPs (10.30.x.x)       | Dynamic Docker IPs (172.20.x.x) | No static addressing         |
+| **Network Segment**   | Same subnet (10.30.118.x)            | Separate Docker network         | Different network model      |
+| **DNS Server**        | Internal (10.30.112.2) + local cache | Docker DNS (127.0.0.11)         | Different DNS infrastructure |
+| **Search Domains**    | `dr.codeaurora.org`, AWS domains     | None configured                 | Name expansion differences   |
+| **Connectivity Type** | Layer 2 direct (same subnet)         | Docker bridge (NAT)             | Different network topology   |
+| **Multiple Aliases**  | Yes (primary + aliases)              | No (single name)                | Limited naming flexibility   |
+| **External Access**   | VPN/private network                  | Port mapping (44334)            | Different access model       |
+
+<!-- markdownlint-enable MD013 -->
 
 **Critical Issues:**
 
@@ -1184,14 +1216,18 @@ services:
 
 ### 9.3 Gap Analysis: Network Ports
 
-| Aspect | Production | Container | Issue |
-|--------|-----------|-----------|-------|
-| **Bridge Client Port** | 44334 | 44334 | ✓ Consistent |
-| **Bridge Server Port** | 44333 | 44333 | ✓ Consistent |
-| **Hostname Format** | FQDN | Short (Docker service) | Different but OK |
-| **Network Type** | Physical/AWS network | Docker bridge network | Different but OK |
-| **Section Structure** | Single `[bridge]` | `[bridge]` + `[bridge-server]` | **May not parse** |
-| **Port Exposure** | All ports accessible | Only 44334 exposed | Could cause issues |
+<!-- markdownlint-disable MD013 MD060 -->
+
+| Aspect                 | Production           | Container                      | Issue              |
+| ---------------------- | -------------------- | ------------------------------ | ------------------ |
+| **Bridge Client Port** | 44334                | 44334                          | ✓ Consistent       |
+| **Bridge Server Port** | 44333                | 44333                          | ✓ Consistent       |
+| **Hostname Format**    | FQDN                 | Short (Docker service)         | Different but OK   |
+| **Network Type**       | Physical/AWS network | Docker bridge network          | Different but OK   |
+| **Section Structure**  | Single `[bridge]`    | `[bridge]` + `[bridge-server]` | **May not parse**  |
+| **Port Exposure**      | All ports accessible | Only 44334 exposed             | Could cause issues |
+
+<!-- markdownlint-enable MD013 MD060 -->
 
 **Potential Issue:** The `[bridge-server]` section is not present in production configs. This additional section may cause config parsing failures.
 
@@ -1246,19 +1282,23 @@ services:
 
 ### 10.3 Gap Analysis: Sections
 
-| Section | Production | Container | Issue |
-|---------|-----------|-----------|-------|
-| `[bridge]` | ✓ Present | ✓ Present | OK |
-| `[bridge-server]` | ✗ Absent | ✓ Present | **Extra section** |
-| `[bridge-client]` | ✗ Absent | ✓ In templates | **Extra section** |
-| `[server]` | ✓ Present | ✓ Present | OK (but different options) |
-| `[database]` | ✓ Separate section | ✓ Merged into [server] | **Structure difference** |
-| `[gnupg]` | ✓ Separate section | ✓ Merged into [server] | **Structure difference** |
-| `[nss]` | ✓ Present | ✓ Present | OK (but different values) |
-| `[daemon]` | ✓ Present | ✓ Present | OK (but empty values) |
-| `[koji]` | ✓ Present (empty, unused) | ✗ Absent | **Can be removed** |
-| `[logging]` | ✗ Absent | ✓ In templates | **Extra section** |
-| `[security]` | ✗ Absent | ✓ In templates | **Extra section** |
+<!-- markdownlint-disable MD013 MD060 -->
+
+| Section           | Production                | Container              | Issue                      |
+| ----------------- | ------------------------- | ---------------------- | -------------------------- |
+| `[bridge]`        | ✓ Present                 | ✓ Present              | OK                         |
+| `[bridge-server]` | ✗ Absent                  | ✓ Present              | **Extra section**          |
+| `[bridge-client]` | ✗ Absent                  | ✓ In templates         | **Extra section**          |
+| `[server]`        | ✓ Present                 | ✓ Present              | OK (but different options) |
+| `[database]`      | ✓ Separate section        | ✓ Merged into [server] | **Structure difference**   |
+| `[gnupg]`         | ✓ Separate section        | ✓ Merged into [server] | **Structure difference**   |
+| `[nss]`           | ✓ Present                 | ✓ Present              | OK (but different values)  |
+| `[daemon]`        | ✓ Present                 | ✓ Present              | OK (but empty values)      |
+| `[koji]`          | ✓ Present (empty, unused) | ✗ Absent               | **Can be removed**         |
+| `[logging]`       | ✗ Absent                  | ✓ In templates         | **Extra section**          |
+| `[security]`      | ✗ Absent                  | ✓ In templates         | **Extra section**          |
+
+<!-- markdownlint-enable MD013 MD060 -->
 
 **Critical Issue:** The presence of `[bridge-server]` and `[bridge-client]` sections not found in production may cause the config parser to fail or behave unexpectedly.
 
@@ -1325,17 +1365,21 @@ services:
 
 ### 11.3 Gap Analysis: Initialization
 
-| Aspect | Production | Container | Issue |
-|--------|-----------|-----------|-------|
-| **Cert Source** | Pre-installed | Generated at startup | Timing issues |
-| **CA Authority** | External | Bridge self-signed | Different trust model |
-| **Dependencies** | None | Server depends on bridge CA | Race conditions |
-| **Timing** | Deterministic | Non-deterministic | Startup failures |
-| **Persistence** | Permanent | Volume-dependent | Data loss risk |
-| **Config Generation** | Static | Dynamic | Inconsistency risk |
-| **DB Initialization** | Pre-done | At startup | Ordering issues |
-| **Startup Time** | Fast (< 5 sec) | Slow (30-60 sec) | Health check failures |
-| **Failure Recovery** | Restart service | Recreate certificates | Complex recovery |
+<!-- markdownlint-disable MD013 -->
+
+| Aspect                | Production      | Container                   | Issue                 |
+| --------------------- | --------------- | --------------------------- | --------------------- |
+| **Cert Source**       | Pre-installed   | Generated at startup        | Timing issues         |
+| **CA Authority**      | External        | Bridge self-signed          | Different trust model |
+| **Dependencies**      | None            | Server depends on bridge CA | Race conditions       |
+| **Timing**            | Deterministic   | Non-deterministic           | Startup failures      |
+| **Persistence**       | Permanent       | Volume-dependent            | Data loss risk        |
+| **Config Generation** | Static          | Dynamic                     | Inconsistency risk    |
+| **DB Initialization** | Pre-done        | At startup                  | Ordering issues       |
+| **Startup Time**      | Fast (< 5 sec)  | Slow (30-60 sec)            | Health check failures |
+| **Failure Recovery**  | Restart service | Recreate certificates       | Complex recovery      |
+
+<!-- markdownlint-enable MD013 -->
 
 **Critical Issues:**
 
@@ -1405,14 +1449,18 @@ volumes:
 
 ### 12.3 Gap Analysis: Volumes
 
-| Aspect | Production | Container | Issue |
-|--------|-----------|-----------|-------|
-| **Persistence** | Direct filesystem | Docker volumes | Abstraction complexity |
-| **Sharing** | Shared filesystem | Volume mounting | Different sharing model |
-| **CA Distribution** | Pre-installed | Volume export/import | Race conditions |
-| **Volume Structure** | N/A | Separate per component | Isolation breaks NSS sharing |
-| **Initialization** | One-time | Every container creation | Regeneration issues |
-| **Recovery** | Restore from backup | Volume management | Different procedures |
+<!-- markdownlint-disable MD013 -->
+
+| Aspect               | Production          | Container                | Issue                        |
+| -------------------- | ------------------- | ------------------------ | ---------------------------- |
+| **Persistence**      | Direct filesystem   | Docker volumes           | Abstraction complexity       |
+| **Sharing**          | Shared filesystem   | Volume mounting          | Different sharing model      |
+| **CA Distribution**  | Pre-installed       | Volume export/import     | Race conditions              |
+| **Volume Structure** | N/A                 | Separate per component   | Isolation breaks NSS sharing |
+| **Initialization**   | One-time            | Every container creation | Regeneration issues          |
+| **Recovery**         | Restore from backup | Volume management        | Different procedures         |
+
+<!-- markdownlint-enable MD013 -->
 
 **Critical Issues:**
 
@@ -1540,17 +1588,21 @@ Docker bridge network (172.20.0.0/16)
 
 ### 12.3 Gap Analysis: DNS and Naming
 
-| Aspect | Production | Container | Issue |
-|--------|-----------|-----------|-------|
-| **Name Resolution** | Static `/etc/hosts` | Docker DNS | Different mechanism |
-| **IP Addressing** | Static private IPs (10.30.x.x) | Dynamic IPs (172.20.x.x) | Different ranges |
-| **Hostname Format** | FQDNs (multiple domains) | Short names only | Format mismatch |
-| **Aliases** | Multiple per host | Single name per service | No alias support |
-| **DNS Source** | Local hosts file | Docker embedded DNS | Different sources |
-| **Network Segment** | Production subnet | Isolated Docker network | Different isolation |
-| **IP Persistence** | Static (configured) | Dynamic (changes on restart) | Stability difference |
-| **Multiple Bridges** | Supported (multiple hosts entries) | Not implemented | Architecture limitation |
-| **Cert Nickname Match** | Matches FQDN in hosts | Generic name, doesn't match | **Mismatch** |
+<!-- markdownlint-disable MD013 -->
+
+| Aspect                  | Production                         | Container                    | Issue                   |
+| ----------------------- | ---------------------------------- | ---------------------------- | ----------------------- |
+| **Name Resolution**     | Static `/etc/hosts`                | Docker DNS                   | Different mechanism     |
+| **IP Addressing**       | Static private IPs (10.30.x.x)     | Dynamic IPs (172.20.x.x)     | Different ranges        |
+| **Hostname Format**     | FQDNs (multiple domains)           | Short names only             | Format mismatch         |
+| **Aliases**             | Multiple per host                  | Single name per service      | No alias support        |
+| **DNS Source**          | Local hosts file                   | Docker embedded DNS          | Different sources       |
+| **Network Segment**     | Production subnet                  | Isolated Docker network      | Different isolation     |
+| **IP Persistence**      | Static (configured)                | Dynamic (changes on restart) | Stability difference    |
+| **Multiple Bridges**    | Supported (multiple hosts entries) | Not implemented              | Architecture limitation |
+| **Cert Nickname Match** | Matches FQDN in hosts              | Generic name, doesn't match  | **Mismatch**            |
+
+<!-- markdownlint-enable MD013 -->
 
 **Critical Observations:**
 
@@ -1686,12 +1738,16 @@ unix-group =
 
 ### 13.3 Gap Analysis: Users
 
-| Aspect | Production | Container | Issue |
-|--------|-----------|-----------|-------|
-| **UID/GID** | System-assigned | Fixed (1000:1000) | May not match |
-| **Config Values** | `sigul:sigul` | Empty strings | **Config inconsistency** |
-| **User Spec** | In config only | Dockerfile + compose + config | Redundant, confusing |
-| **Home Dir** | Likely `/var/lib/sigul` | `/var/sigul` | Path difference |
+<!-- markdownlint-disable MD013 -->
+
+| Aspect            | Production              | Container                     | Issue                    |
+| ----------------- | ----------------------- | ----------------------------- | ------------------------ |
+| **UID/GID**       | System-assigned         | Fixed (1000:1000)             | May not match            |
+| **Config Values** | `sigul:sigul`           | Empty strings                 | **Config inconsistency** |
+| **User Spec**     | In config only          | Dockerfile + compose + config | Redundant, confusing     |
+| **Home Dir**      | Likely `/var/lib/sigul` | `/var/sigul`                  | Path difference          |
+
+<!-- markdownlint-enable MD013 -->
 
 **Potential Issue:** Empty `unix-user` and `unix-group` in config may cause service to fail if it expects these values to determine process user.
 
@@ -1742,12 +1798,16 @@ fips-mode = false
 
 ### 14.3 Gap Analysis: TLS
 
-| Aspect | Production | Container | Issue |
-|--------|-----------|-----------|-------|
-| **TLS Version Control** | Explicit min/max | None | **May negotiate wrong version** |
-| **Config Keys** | `nss-min-tls`, `nss-max-tls` | `require-tls` | **Different options** |
-| **FIPS Mode** | Not specified | `fips-mode = false` | Additional option |
-| **Security Policy** | TLS 1.2 only | Any TLS version | **Weaker security** |
+<!-- markdownlint-disable MD013 -->
+
+| Aspect                  | Production                   | Container           | Issue                           |
+| ----------------------- | ---------------------------- | ------------------- | ------------------------------- |
+| **TLS Version Control** | Explicit min/max             | None                | **May negotiate wrong version** |
+| **Config Keys**         | `nss-min-tls`, `nss-max-tls` | `require-tls`       | **Different options**           |
+| **FIPS Mode**           | Not specified                | `fips-mode = false` | Additional option               |
+| **Security Policy**     | TLS 1.2 only                 | Any TLS version     | **Weaker security**             |
+
+<!-- markdownlint-enable MD013 -->
 
 **Critical Issue:** Without TLS version constraints, client and server may negotiate incompatible TLS versions, causing connection failures.
 
@@ -1805,12 +1865,16 @@ start_sigul_service() {
 
 ### 15.3 Gap Analysis: Service Start
 
-| Aspect | Production | Container | Issue |
-|--------|-----------|-----------|-------|
-| **Invocation** | Direct | Via wrapper script | Additional complexity |
-| **Config Path** | `/etc/sigul/<role>.conf` | `/var/sigul/config/<role>.conf` | **Path mismatch** |
-| **Initialization** | None | Full init sequence | Startup delays |
-| **Config Source** | Static file | Generated at runtime | Inconsistency risk |
+<!-- markdownlint-disable MD013 -->
+
+| Aspect             | Production               | Container                       | Issue                 |
+| ------------------ | ------------------------ | ------------------------------- | --------------------- |
+| **Invocation**     | Direct                   | Via wrapper script              | Additional complexity |
+| **Config Path**    | `/etc/sigul/<role>.conf` | `/var/sigul/config/<role>.conf` | **Path mismatch**     |
+| **Initialization** | None                     | Full init sequence              | Startup delays        |
+| **Config Source**  | Static file              | Generated at runtime            | Inconsistency risk    |
+
+<!-- markdownlint-enable MD013 -->
 
 **Potential Issue:** If `sigul_bridge` or `sigul_server` have hardcoded config paths (e.g., looking for `/etc/sigul/bridge.conf` by default), the `-c` flag override may not work correctly.
 
@@ -2271,22 +2335,26 @@ rabbitmq 16882  /usr/lib64/erlang/erts-5.10.4/bin/beam.smp ...
 
 ### 18.11 Gap Analysis: Production Configuration vs Container
 
-| Aspect | Production Pattern | Container Implementation | Priority |
-|--------|-------------------|-------------------------|----------|
-| **Python Version** | 2.7.5 (legacy) | 3.x (modern) | ✓ **MODERNIZATION OK** |
-| **NSS Bindings** | python-nss | python3-nss | ✓ **MODERNIZATION OK** |
-| **NSS Format** | cert8.db (legacy) | cert9.db (modern) | ✓ **MODERNIZATION OK** |
-| **GPG Format** | GPG 1.x (legacy) | GPG 2.x (modern) | ✓ **MODERNIZATION OK** |
-| **Config Path** | `/etc/sigul/` (FHS standard) | `/var/sigul/config/` (non-standard) | **CRITICAL - Must use FHS paths** |
-| **NSS Database Path** | `/etc/pki/sigul/` (FHS standard) | `/var/sigul/nss/<component>/` (non-standard) | **CRITICAL - Must use FHS paths** |
-| **Database Location** | `/var/lib/sigul/server.sqlite` | `/var/sigul/database/server.sqlite` | **CRITICAL - Wrong path** |
-| **GnuPG Location** | `/var/lib/sigul/gnupg` | `/var/sigul/gnupg` | **CRITICAL - Wrong path** |
-| **Bridge Startup** | Simple: `sigul_bridge -v` | Complex init script | **HIGH - Simplify** |
-| **Server Startup** | Template: `server-%i.conf` | Single config | **MEDIUM - Add template support** |
-| **Certificate CN** | FQDN-based | Generic short names | **HIGH - Use FQDNs** |
-| **CA Type** | External (EasyRSA) | Self-signed bridge | **MEDIUM - Use external CA** |
-| **File Permissions** | 0700/0600 | May differ | **MEDIUM - Enforce permissions** |
-| **Multi-Bridge Support** | Yes (via templates) | No | **LOW - Single bridge OK for testing** |
+<!-- markdownlint-disable MD013 MD060 -->
+
+| Aspect                   | Production Pattern               | Container Implementation                     | Priority                               |
+| ------------------------ | -------------------------------- | -------------------------------------------- | -------------------------------------- |
+| **Python Version**       | 2.7.5 (legacy)                   | 3.x (modern)                                 | ✓ **MODERNIZATION OK**                 |
+| **NSS Bindings**         | python-nss                       | python3-nss                                  | ✓ **MODERNIZATION OK**                 |
+| **NSS Format**           | cert8.db (legacy)                | cert9.db (modern)                            | ✓ **MODERNIZATION OK**                 |
+| **GPG Format**           | GPG 1.x (legacy)                 | GPG 2.x (modern)                             | ✓ **MODERNIZATION OK**                 |
+| **Config Path**          | `/etc/sigul/` (FHS standard)     | `/var/sigul/config/` (non-standard)          | **CRITICAL - Must use FHS paths**      |
+| **NSS Database Path**    | `/etc/pki/sigul/` (FHS standard) | `/var/sigul/nss/<component>/` (non-standard) | **CRITICAL - Must use FHS paths**      |
+| **Database Location**    | `/var/lib/sigul/server.sqlite`   | `/var/sigul/database/server.sqlite`          | **CRITICAL - Wrong path**              |
+| **GnuPG Location**       | `/var/lib/sigul/gnupg`           | `/var/sigul/gnupg`                           | **CRITICAL - Wrong path**              |
+| **Bridge Startup**       | Simple: `sigul_bridge -v`        | Complex init script                          | **HIGH - Simplify**                    |
+| **Server Startup**       | Template: `server-%i.conf`       | Single config                                | **MEDIUM - Add template support**      |
+| **Certificate CN**       | FQDN-based                       | Generic short names                          | **HIGH - Use FQDNs**                   |
+| **CA Type**              | External (EasyRSA)               | Self-signed bridge                           | **MEDIUM - Use external CA**           |
+| **File Permissions**     | 0700/0600                        | May differ                                   | **MEDIUM - Enforce permissions**       |
+| **Multi-Bridge Support** | Yes (via templates)              | No                                           | **LOW - Single bridge OK for testing** |
+
+<!-- markdownlint-enable MD013 MD060 -->
 
 **Configuration-Critical Issues (Must Fix):**
 

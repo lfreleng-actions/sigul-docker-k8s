@@ -313,15 +313,19 @@ Follow this order for most efficient debugging:
 
 ## 🔍 Common Issues Quick Lookup
 
-| Issue | Script to Run | What to Check |
-|-------|---------------|---------------|
-| Containers won't start | `debug-deploy-stack.sh --clean` | Logs, initialization errors |
-| "Unexpected EOF" error | `debug-tls-stack.sh --tls` | TLS handshake, certificates |
-| Certificate errors | `debug-tls-stack.sh --certs` | Nicknames, expiration, trust |
-| Network failures | `debug-tls-stack.sh --connectivity` | DNS, TCP, ports |
-| NSS database issues | `debug-tls-stack.sh --nss` | Files, passwords, access |
-| Intermittent failures | `wait-for-tls-ready.sh` | Timing, race conditions |
-| Don't know where to start | `test-nss-isolation.sh` | Progressive layer testing |
+<!-- markdownlint-disable MD013 -->
+
+| Issue                     | Script to Run                       | What to Check                |
+| ------------------------- | ----------------------------------- | ---------------------------- |
+| Containers won't start    | `debug-deploy-stack.sh --clean`     | Logs, initialization errors  |
+| "Unexpected EOF" error    | `debug-tls-stack.sh --tls`          | TLS handshake, certificates  |
+| Certificate errors        | `debug-tls-stack.sh --certs`        | Nicknames, expiration, trust |
+| Network failures          | `debug-tls-stack.sh --connectivity` | DNS, TCP, ports              |
+| NSS database issues       | `debug-tls-stack.sh --nss`          | Files, passwords, access     |
+| Intermittent failures     | `wait-for-tls-ready.sh`             | Timing, race conditions      |
+| Don't know where to start | `test-nss-isolation.sh`             | Progressive layer testing    |
+
+<!-- markdownlint-enable MD013 -->
 
 ---
 

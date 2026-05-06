@@ -135,13 +135,13 @@ RUN chmod +x /usr/local/bin/generate-production-aligned-certs.sh
 
 ### Production-Aligned Attributes
 
-| Attribute | Value |
-|-----------|-------|
-| Key Algorithm | RSA |
-| Key Size | 2048 bits |
-| Signature Hash | SHA-256 |
+| Attribute       | Value                 |
+| --------------- | --------------------- |
+| Key Algorithm   | RSA                   |
+| Key Size        | 2048 bits             |
+| Signature Hash  | SHA-256               |
 | Validity Period | 120 months (10 years) |
-| Database Format | cert9.db (modern) |
+| Database Format | cert9.db (modern)     |
 
 ### Certificate Hierarchy
 

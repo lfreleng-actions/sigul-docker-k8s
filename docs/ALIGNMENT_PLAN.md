@@ -436,11 +436,15 @@ docker exec sigul-server stat -c "%a %U:%G" /var/lib/sigul/gnupg
 
 **Specifications:**
 
-| Component | Common Name (CN) | Subject Alternative Name (SAN) | Extended Key Usage |
-|-----------|------------------|--------------------------------|--------------------|
-| CA | `CN=Sigul CA` | None | None (CA cert) |
-| Bridge | `CN=sigul-bridge.example.org` | `DNS:sigul-bridge.example.org` | serverAuth, clientAuth |
-| Server | `CN=sigul-server.example.org` | `DNS:sigul-server.example.org` | serverAuth, clientAuth |
+<!-- markdownlint-disable MD013 -->
+
+| Component | Common Name (CN)              | Subject Alternative Name (SAN) | Extended Key Usage     |
+| --------- | ----------------------------- | ------------------------------ | ---------------------- |
+| CA        | `CN=Sigul CA`                 | None                           | None (CA cert)         |
+| Bridge    | `CN=sigul-bridge.example.org` | `DNS:sigul-bridge.example.org` | serverAuth, clientAuth |
+| Server    | `CN=sigul-server.example.org` | `DNS:sigul-server.example.org` | serverAuth, clientAuth |
+
+<!-- markdownlint-enable MD013 -->
 
 **Trust Flags (NSS):**
 
@@ -1320,15 +1324,19 @@ docker exec sigul-server netstat -tnp | grep 44333
 
 **Persistent Data Requirements:**
 
-| Component | Data Type | Volume Mount | Persistence | Backup Priority |
-|-----------|-----------|--------------|-------------|-----------------|
-| Bridge | NSS DB | `/etc/pki/sigul` | Must persist | HIGH |
-| Bridge | Logs | `/var/log/sigul` | Should persist | LOW |
-| Bridge | Runtime | `/var/lib/sigul` | Optional | LOW |
-| Server | NSS DB | `/etc/pki/sigul` | Must persist | HIGH |
-| Server | SQLite DB | `/var/lib/sigul/server.sqlite` | Must persist | CRITICAL |
-| Server | GnuPG Keys | `/var/lib/sigul/gnupg` | Must persist | CRITICAL |
-| Server | Logs | `/var/log/sigul` | Should persist | MEDIUM |
+<!-- markdownlint-disable MD013 -->
+
+| Component | Data Type  | Volume Mount                   | Persistence    | Backup Priority |
+| --------- | ---------- | ------------------------------ | -------------- | --------------- |
+| Bridge    | NSS DB     | `/etc/pki/sigul`               | Must persist   | HIGH            |
+| Bridge    | Logs       | `/var/log/sigul`               | Should persist | LOW             |
+| Bridge    | Runtime    | `/var/lib/sigul`               | Optional       | LOW             |
+| Server    | NSS DB     | `/etc/pki/sigul`               | Must persist   | HIGH            |
+| Server    | SQLite DB  | `/var/lib/sigul/server.sqlite` | Must persist   | CRITICAL        |
+| Server    | GnuPG Keys | `/var/lib/sigul/gnupg`         | Must persist   | CRITICAL        |
+| Server    | Logs       | `/var/log/sigul`               | Should persist | MEDIUM          |
+
+<!-- markdownlint-enable MD013 -->
 
 **Volume Lifecycle:**
 

@@ -123,10 +123,14 @@ Status:       ✅ ALL PASSED
 
 **Production Pattern vs. Container Implementation:**
 
-| Component | Production | Container (Phase 4) | Status |
-|-----------|-----------|---------------------|---------|
-| Bridge | `/usr/sbin/sigul_bridge -v` | `exec /usr/sbin/sigul_bridge -v` | ✅ Aligned |
-| Server | `/usr/sbin/sigul_server -c /etc/sigul/server.conf --internal-log-dir=/var/log/sigul-default --internal-pid-dir=/run/sigul-default -v` | `exec /usr/sbin/sigul_server -c $CONFIG_FILE --internal-log-dir=$LOG_DIR --internal-pid-dir=$PID_DIR -v` | ✅ Aligned |
+<!-- markdownlint-disable MD013 MD060 -->
+
+| Component | Production                                                                                                                            | Container (Phase 4)                                                                                      | Status     |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- | ---------- |
+| Bridge    | `/usr/sbin/sigul_bridge -v`                                                                                                           | `exec /usr/sbin/sigul_bridge -v`                                                                         | ✅ Aligned |
+| Server    | `/usr/sbin/sigul_server -c /etc/sigul/server.conf --internal-log-dir=/var/log/sigul-default --internal-pid-dir=/run/sigul-default -v` | `exec /usr/sbin/sigul_server -c $CONFIG_FILE --internal-log-dir=$LOG_DIR --internal-pid-dir=$PID_DIR -v` | ✅ Aligned |
+
+<!-- markdownlint-enable MD013 MD060 -->
 
 ### Healthcheck Alignment
 
