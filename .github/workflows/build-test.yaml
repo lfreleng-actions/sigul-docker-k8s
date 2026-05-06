@@ -763,6 +763,31 @@ jobs:
           chmod +x scripts/run-integration-tests.sh
           ./scripts/run-integration-tests.sh --verbose
 
+      - name: 'Run signing tests'
+        shell: bash
+        env:
+          SIGUL_CLIENT_IMAGE: >-
+            client-${{
+              steps.runner-arch.outputs.platform-id
+            }}-image:test
+          SIGUL_SERVER_IMAGE: >-
+            server-${{
+              steps.runner-arch.outputs.platform-id
+            }}-image:test
+          SIGUL_BRIDGE_IMAGE: >-
+            bridge-${{
+              steps.runner-arch.outputs.platform-id
+            }}-image:test
+        run: |
+          # Drive every supported sigul signing operation through the
+          # live stack and verify each output with the upstream tool
+          # that would consume it in production (gpg, rpm, ...).
+          # Every command and its raw output is shown below in the log
+          # so a human reading the workflow output can copy-paste any
+          # invocation to reproduce a failure.
+          chmod +x scripts/run-signing-tests.sh
+          ./scripts/run-signing-tests.sh
+
       - name: 'Capture Sigul daemon logs and container diagnostics'
         if: always()
         shell: bash

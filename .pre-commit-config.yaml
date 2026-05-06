@@ -101,7 +101,12 @@ repos:
     rev: 2ccb47ff45ad361a21071a7eedda4c37e6ae8c5a  # frozen: v2.4.2
     hooks:
       - id: codespell
-        exclude: "^pki/.*\\.(asc)$"
+        exclude: |
+          (?x)^(
+            pki/.*\.asc
+          | test/fixtures/regenerate-import-test-key\.sh
+          | scripts/run-signing-tests\.sh
+          )$
 
   - repo: https://github.com/python-jsonschema/check-jsonschema.git
     rev: 943377262562a12b57292fc98fabd7dbf81451fe  # frozen: 0.37.2
