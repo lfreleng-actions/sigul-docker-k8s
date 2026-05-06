@@ -105,6 +105,7 @@ repos:
           (?x)^(
             pki/.*\.asc
           | test/fixtures/regenerate-import-test-key\.sh
+          | scripts/run-signing-tests\.sh
           )$
 
   - repo: https://github.com/python-jsonschema/check-jsonschema.git
