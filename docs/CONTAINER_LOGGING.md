@@ -57,11 +57,15 @@ def logging_level_from_options(options):
 
 ### Verbosity Flags
 
-| Verbose Flag | Log Level | What Gets Logged | Use Case |
-|--------------|-----------|------------------|----------|
-| (none) | `WARNING` | Only warnings and errors | Production (quiet) |
-| `-v` | `INFO` | Informational + warnings/errors | Normal operation |
-| `-vv` | `DEBUG` | All messages including debug | Development/troubleshooting |
+<!-- markdownlint-disable MD013 -->
+
+| Verbose Flag | Log Level | What Gets Logged                | Use Case                    |
+| ------------ | --------- | ------------------------------- | --------------------------- |
+| (none)       | `WARNING` | Only warnings and errors        | Production (quiet)          |
+| `-v`         | `INFO`    | Informational + warnings/errors | Normal operation            |
+| `-vv`        | `DEBUG`   | All messages including debug    | Development/troubleshooting |
+
+<!-- markdownlint-enable MD013 -->
 
 ### Current Default Configuration
 
@@ -423,8 +427,8 @@ Use this checklist to verify logging is working correctly:
 
 ## Change Log
 
-| Date | Change | Reason |
-|------|--------|--------|
-| 2025-11-24 | Initial documentation | Standardize logging configuration |
-| 2025-11-24 | Added `-vv` default | Ensure DEBUG level in all environments |
-| 2025-11-24 | Added CI/CD section | Support GitHub Actions logging |
+| Date       | Change                | Reason                                 |
+| ---------- | --------------------- | -------------------------------------- |
+| 2025-11-24 | Initial documentation | Standardize logging configuration      |
+| 2025-11-24 | Added `-vv` default   | Ensure DEBUG level in all environments |
+| 2025-11-24 | Added CI/CD section   | Support GitHub Actions logging         |

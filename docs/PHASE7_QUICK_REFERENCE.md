@@ -167,10 +167,10 @@ See `NETWORK_ARCHITECTURE.md` for full details.
 
 ## Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| 0 | All tests passed |
-| 1 | One or more tests failed |
+| Code | Meaning                  |
+| ---- | ------------------------ |
+| 0    | All tests passed         |
+| 1    | One or more tests failed |
 
 ---
 

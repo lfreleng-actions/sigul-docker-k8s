@@ -141,15 +141,19 @@ sigul list-users
 
 ## Production vs Local Comparison
 
-| Aspect | Production | Local Docker | Status |
-|--------|-----------|--------------|--------|
-| NSS Format | cert8.db (old) | cert9.db (new) | ✅ No impact |
-| CA | EasyRSA | Self-signed | ✅ No impact |
-| Certificates | Real FQDNs | example.org | ⚠️ May affect validation |
-| DNS | Real DNS | Docker + /etc/hosts | ✅ Works with --add-host |
-| Python Version | Python 3.6-3.9 | Python 3.13 | ⚠️ Potential issues |
-| python-nss | python-nss | python-nss-ng | ⚠️ Different library |
-| TLS Config | tls1.2 | tls1.2 | ✅ Matching |
+<!-- markdownlint-disable MD013 MD060 -->
+
+| Aspect         | Production     | Local Docker        | Status                   |
+| -------------- | -------------- | ------------------- | ------------------------ |
+| NSS Format     | cert8.db (old) | cert9.db (new)      | ✅ No impact             |
+| CA             | EasyRSA        | Self-signed         | ✅ No impact             |
+| Certificates   | Real FQDNs     | example.org         | ⚠️ May affect validation |
+| DNS            | Real DNS       | Docker + /etc/hosts | ✅ Works with --add-host |
+| Python Version | Python 3.6-3.9 | Python 3.13         | ⚠️ Potential issues      |
+| python-nss     | python-nss     | python-nss-ng       | ⚠️ Different library     |
+| TLS Config     | tls1.2         | tls1.2              | ✅ Matching              |
+
+<!-- markdownlint-enable MD013 MD060 -->
 
 ---
 

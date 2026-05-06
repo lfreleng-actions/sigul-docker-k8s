@@ -39,11 +39,11 @@ services:
 
 **IP Address Allocation:**
 
-| Component | IP Address | Purpose |
-|-----------|------------|---------|
-| Gateway | 172.20.0.1 | Network gateway |
-| Bridge | 172.20.0.2 | Sigul bridge service |
-| Server | 172.20.0.3 | Sigul server service |
+| Component | IP Address | Purpose              |
+| --------- | ---------- | -------------------- |
+| Gateway   | 172.20.0.1 | Network gateway      |
+| Bridge    | 172.20.0.2 | Sigul bridge service |
+| Server    | 172.20.0.3 | Sigul server service |
 
 **Benefits:**
 
@@ -275,10 +275,14 @@ Status: ✅ ALL CONFIGURATION TESTS PASSED
 
 **Requirement:** Certificate CN and SAN must match container hostname for TLS validation
 
-| Component | Hostname | Certificate CN | Certificate SAN | Status |
-|-----------|----------|----------------|-----------------|--------|
-| Bridge | sigul-bridge.example.org | sigul-bridge.example.org | sigul-bridge.example.org | ✅ Aligned |
-| Server | sigul-server.example.org | sigul-server.example.org | sigul-server.example.org | ✅ Aligned |
+<!-- markdownlint-disable MD013 MD060 -->
+
+| Component | Hostname                 | Certificate CN           | Certificate SAN          | Status     |
+| --------- | ------------------------ | ------------------------ | ------------------------ | ---------- |
+| Bridge    | sigul-bridge.example.org | sigul-bridge.example.org | sigul-bridge.example.org | ✅ Aligned |
+| Server    | sigul-server.example.org | sigul-server.example.org | sigul-server.example.org | ✅ Aligned |
+
+<!-- markdownlint-enable MD013 MD060 -->
 
 ## Files Created/Modified
 

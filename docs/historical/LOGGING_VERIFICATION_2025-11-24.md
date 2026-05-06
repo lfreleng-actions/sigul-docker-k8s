@@ -160,11 +160,11 @@ docker compose -f docker-compose.sigul.yml exec -T sigul-server cat /var/log/sig
 
 All containers start with `-vv` flags, providing DEBUG level logging:
 
-| Level | Numeric | Flag | Description |
-|-------|---------|------|-------------|
-| WARNING | 30 | (none) | Only warnings and errors |
-| INFO | 20 | `-v` | Informational messages |
-| DEBUG | 10 | `-vv` | All messages including debug |
+| Level   | Numeric | Flag   | Description                  |
+| ------- | ------- | ------ | ---------------------------- |
+| WARNING | 30      | (none) | Only warnings and errors     |
+| INFO    | 20      | `-v`   | Informational messages       |
+| DEBUG   | 10      | `-vv`  | All messages including debug |
 
 ### Where Configured
 

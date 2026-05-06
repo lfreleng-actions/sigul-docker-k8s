@@ -119,9 +119,11 @@ install_from_source() {
 
                         # Output to GitHub Actions summary if available
                         if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-                            echo "❌ **Patch Application FAILED**: \`$(basename "$patch_file")\`" >> "$GITHUB_STEP_SUMMARY"
-                            echo "" >> "$GITHUB_STEP_SUMMARY"
-                            echo "⚠️ **Build cannot continue** - patches are required for proper operation" >> "$GITHUB_STEP_SUMMARY"
+                            {
+                                echo "❌ **Patch Application FAILED**: \`$(basename "$patch_file")\`"
+                                echo ""
+                                echo "⚠️ **Build cannot continue** - patches are required for proper operation"
+                            } >> "$GITHUB_STEP_SUMMARY"
                         fi
 
                         return 1

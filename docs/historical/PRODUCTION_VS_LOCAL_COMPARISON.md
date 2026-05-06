@@ -271,14 +271,18 @@ sock.config_secure_server(cert, nss.nss.find_key_by_any_cert(cert),
 
 ## 8. Differences That May Affect Client Authentication
 
-| Aspect | Production | Local Docker | Impact |
-|--------|-----------|--------------|--------|
-| NSS DB Format | cert8.db (old) | cert9.db (new) | **Low** - Both formats supported |
-| Certificate Import | Manual/EasyRSA | Automated/PKCS#12 | **Medium** - Different import methods |
-| Password Storage | Config file | Config file + NSS password file | **Medium** - Multiple password sources |
-| Certificate Nickname | FQDN-based | Generic (sigul-client-cert) | **Low** - Both work |
-| Trust Flags | CT,, | CTu,Cu,Cu | **Low** - Both trust SSL |
-| DNS Resolution | Real DNS | Docker network + /etc/hosts | **Medium** - May affect cert validation |
+<!-- markdownlint-disable MD013 -->
+
+| Aspect               | Production     | Local Docker                    | Impact                                  |
+| -------------------- | -------------- | ------------------------------- | --------------------------------------- |
+| NSS DB Format        | cert8.db (old) | cert9.db (new)                  | **Low** - Both formats supported        |
+| Certificate Import   | Manual/EasyRSA | Automated/PKCS#12               | **Medium** - Different import methods   |
+| Password Storage     | Config file    | Config file + NSS password file | **Medium** - Multiple password sources  |
+| Certificate Nickname | FQDN-based     | Generic (sigul-client-cert)     | **Low** - Both work                     |
+| Trust Flags          | CT,,           | CTu,Cu,Cu                       | **Low** - Both trust SSL                |
+| DNS Resolution       | Real DNS       | Docker network + /etc/hosts     | **Medium** - May affect cert validation |
+
+<!-- markdownlint-enable MD013 -->
 
 ---
 

@@ -25,18 +25,22 @@ Successfully tested the Sigul client from the client's perspective after resolvi
 
 **Result:** 10/10 tests passed (100% success rate)
 
-| Test | Status | Notes |
-|------|--------|-------|
-| Basic Authentication | ✅ PASS | Successfully authenticates with correct password |
-| Wrong Password Rejection | ✅ PASS | Correctly rejects invalid credentials |
-| List Keys | ✅ PASS | Can query available signing keys |
-| Connection Stability | ✅ PASS | 5/5 consecutive operations succeeded |
-| Certificate Authentication | ✅ PASS | Client certificate validation working |
-| User Information Query | ✅ PASS | Can retrieve user details |
-| Key Users Listing | ✅ PASS | Command executes (no keys yet) |
-| Command Availability | ✅ PASS | All client commands accessible |
-| Bridge Connection | ✅ PASS | Connection completes in <1 second |
-| Batch Mode Password | ✅ PASS | NUL-terminated input works correctly |
+<!-- markdownlint-disable MD013 MD060 -->
+
+| Test                       | Status  | Notes                                            |
+| -------------------------- | ------- | ------------------------------------------------ |
+| Basic Authentication       | ✅ PASS | Successfully authenticates with correct password |
+| Wrong Password Rejection   | ✅ PASS | Correctly rejects invalid credentials            |
+| List Keys                  | ✅ PASS | Can query available signing keys                 |
+| Connection Stability       | ✅ PASS | 5/5 consecutive operations succeeded             |
+| Certificate Authentication | ✅ PASS | Client certificate validation working            |
+| User Information Query     | ✅ PASS | Can retrieve user details                        |
+| Key Users Listing          | ✅ PASS | Command executes (no keys yet)                   |
+| Command Availability       | ✅ PASS | All client commands accessible                   |
+| Bridge Connection          | ✅ PASS | Connection completes in <1 second                |
+| Batch Mode Password        | ✅ PASS | NUL-terminated input works correctly             |
+
+<!-- markdownlint-enable MD013 MD060 -->
 
 **Performance Metrics:**
 - Connection latency: <1 second

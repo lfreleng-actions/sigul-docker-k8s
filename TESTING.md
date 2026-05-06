@@ -261,12 +261,12 @@ The CI workflow integrates the client test suite at
 
 ### CI Environment Variables
 
-| Variable | Source | Description |
-|----------|--------|-------------|
-| `SIGUL_CLIENT_IMAGE` | Workflow | Client image name |
-| `SIGUL_ADMIN_PASSWORD` | test-artifacts | Admin password |
-| `SIGUL_NETWORK_NAME` | Auto-detected | Docker network name |
-| `CI` | GitHub Actions | Set to `"true"` in CI |
+| Variable               | Source         | Description           |
+| ---------------------- | -------------- | --------------------- |
+| `SIGUL_CLIENT_IMAGE`   | Workflow       | Client image name     |
+| `SIGUL_ADMIN_PASSWORD` | test-artifacts | Admin password        |
+| `SIGUL_NETWORK_NAME`   | Auto-detected  | Docker network name   |
+| `CI`                   | GitHub Actions | Set to `"true"` in CI |
 
 ---
 

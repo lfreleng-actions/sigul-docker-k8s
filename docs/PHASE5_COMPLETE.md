@@ -19,15 +19,19 @@ Phase 5 has successfully implemented a comprehensive volume and persistence stra
 
 **Data Classification by Backup Priority:**
 
-| Priority | Volume | Data Type | Persistence Required |
-|----------|--------|-----------|---------------------|
-| CRITICAL | `sigul_server_data` | SQLite DB + GnuPG keys | Must persist |
-| HIGH | `sigul_server_nss` | Server NSS certificate DB | Must persist |
-| HIGH | `sigul_bridge_nss` | Bridge NSS certificate DB | Must persist |
-| MEDIUM | `sigul_server_logs` | Server log files | Should persist |
-| LOW | `sigul_bridge_logs` | Bridge log files | Optional |
-| LOW | `sigul_bridge_data` | Bridge runtime data | Optional |
-| NONE | `sigul_server_run` | Runtime files (PID) | Transient |
+<!-- markdownlint-disable MD013 -->
+
+| Priority | Volume              | Data Type                 | Persistence Required |
+| -------- | ------------------- | ------------------------- | -------------------- |
+| CRITICAL | `sigul_server_data` | SQLite DB + GnuPG keys    | Must persist         |
+| HIGH     | `sigul_server_nss`  | Server NSS certificate DB | Must persist         |
+| HIGH     | `sigul_bridge_nss`  | Bridge NSS certificate DB | Must persist         |
+| MEDIUM   | `sigul_server_logs` | Server log files          | Should persist       |
+| LOW      | `sigul_bridge_logs` | Bridge log files          | Optional             |
+| LOW      | `sigul_bridge_data` | Bridge runtime data       | Optional             |
+| NONE     | `sigul_server_run`  | Runtime files (PID)       | Transient            |
+
+<!-- markdownlint-enable MD013 -->
 
 **Volume Lifecycle:**
 
@@ -205,12 +209,12 @@ Status:       ✅ ALL PASSED
 
 **Backup Schedule Recommendations:**
 
-| Priority | Frequency | Retention |
-|----------|-----------|-----------|
+| Priority | Frequency                 | Retention       |
+| -------- | ------------------------- | --------------- |
 | CRITICAL | Before any changes, daily | 30 days minimum |
-| HIGH | Weekly | 7-14 days |
-| MEDIUM | Monthly | 30 days |
-| LOW | As needed | 7 days |
+| HIGH     | Weekly                    | 7-14 days       |
+| MEDIUM   | Monthly                   | 30 days         |
+| LOW      | As needed                 | 7 days          |
 
 **Critical Backup Scenarios:**
 

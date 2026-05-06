@@ -5,11 +5,14 @@ SPDX-FileCopyrightText: 2025 The Linux Foundation
 
 # Sigul Patches
 
-This directory contains patches that fix critical issues in upstream Sigul v1.4 to enable proper operation in containerized environments.
+This directory contains patches that fix critical issues in upstream Sigul v1.4
+to enable proper operation in containerized environments.
 
 ## Purpose
 
-These patches are automatically applied during the Docker image build process to fix issues that prevent Sigul from working correctly in containers. The patches are minimal and focused on critical functionality only.
+These patches are automatically applied during the Docker image build process
+to fix issues that prevent Sigul from working in containers. The
+patches remain minimal and focused on critical functionality.
 
 ## Patches
 
@@ -20,10 +23,15 @@ These patches are automatically applied during the Docker image build process to
 **Affects:** Bridge component
 
 **Problem:**
-The upstream Sigul bridge accepts the server's TCP connection but delays the TLS handshake until a client connects. In containerized environments with variable connection timing, this causes the server-side TLS handshake to timeout, resulting in `PR_END_OF_FILE_ERROR` / "Unexpected EOF in NSPR" errors.
+The upstream Sigul bridge accepts the server's TCP connection but delays the
+TLS handshake until a client connects. In containerized environments with
+variable connection timing, this causes the server-side TLS handshake to
+timeout, resulting in `PR_END_OF_FILE_ERROR` / "Unexpected EOF in NSPR" errors.
 
 **Fix:**
-Completes the server TLS handshake immediately after accepting the TCP connection, before waiting for client connections. This ensures stable double-TLS communication.
+Completes the server TLS handshake right after accepting the TCP
+connection, before waiting for client connections. This ensures stable
+double-TLS communication.
 
 **Impact:**
 
@@ -32,11 +40,11 @@ Completes the server TLS handshake immediately after accepting the TCP connectio
 
 **Code Changes:**
 
-- Adds `server_sock.force_handshake()` immediately after server accept
+- Adds `server_sock.force_handshake()` right after server accept
 - Adds server certificate validation
 - Adds error handling for handshake failures
 
-## How Patches Are Applied
+## Applying Patches
 
 The Docker build process automatically applies these patches:
 
@@ -47,7 +55,9 @@ The Docker build process automatically applies these patches:
 
 ## Upstream Strategy
 
-These patches should be submitted to upstream Sigul (<https://pagure.io/sigul>) to benefit the community and reduce our maintenance burden. Once accepted upstream, we can remove the patches and use official releases.
+Submit these patches to upstream Sigul (<https://pagure.io/sigul>)
+to benefit the community and reduce our maintenance burden. Once accepted
+upstream, we can remove the patches and use official releases.
 
 **Submission Priority:**
 
@@ -55,7 +65,7 @@ These patches should be submitted to upstream Sigul (<https://pagure.io/sigul>) 
 
 ## Testing
 
-To verify patches apply correctly:
+To verify patches apply cleanly:
 
 ```bash
 # Test patch application locally
@@ -72,9 +82,9 @@ echo $?  # Should be 0
 
 When adding new patches:
 
-1. Keep patches minimal - only fix critical issues
+1. Keep patches minimal - fix critical issues
 2. Use descriptive filenames with numeric prefixes: `01-`, `02-`, etc.
-3. Include clear comments explaining WHY the fix is needed
+3. Include clear comments explaining WHY the fix matters
 4. Test that patches apply cleanly to upstream Sigul v1.4
 5. Plan for upstream submission
 
@@ -84,5 +94,5 @@ When upstream Sigul releases new versions:
 
 1. Test if patches still apply cleanly
 2. Update patches if necessary
-3. Remove patches that have been accepted upstream
+3. Remove patches that upstream accepts
 4. Update `build-scripts/install-sigul.sh` if using newer version
