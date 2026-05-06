@@ -649,6 +649,18 @@ jobs:
                 "diagnostics/${container}.log" 2>&1 || true
               docker inspect "${container}" > \
                 "diagnostics/${container}.inspect.json" 2>/dev/null || true
+
+              # Capture Sigul's own log file too.  Sigul writes to
+              # /var/log/sigul_<role>.log via setup_logging() and that
+              # path is NOT on a persisted volume, so 'docker logs'
+              # only shows the entrypoint output.  docker cp works
+              # against stopped containers as well as running ones.
+              role="${container#sigul-}"  # 'server' or 'bridge'
+              docker cp \
+                "${container}:/var/log/sigul_${role}.log" \
+                "diagnostics/${container}.sigul.log" 2>/dev/null \
+                || echo "(no /var/log/sigul_${role}.log in ${container})" \
+                   > "diagnostics/${container}.sigul.log"
             else
               echo "Container not found: ${container}"
             fi
@@ -1060,6 +1072,39 @@ jobs:
           echo 'Running Sigul integration tests against fresh infrastructure...'
           chmod +x scripts/run-integration-tests.sh
           ./scripts/run-integration-tests.sh --verbose
+
+      - name: 'Capture Sigul daemon logs and container diagnostics'
+        if: always()
+        shell: bash
+        run: |
+          # Sigul writes its real log to /var/log/sigul_<role>.log
+          # *inside* the container - that path is not on a persisted
+          # volume, so 'docker logs' only shows the entrypoint output
+          # and AUTHDBG/* lines disappear when the container exits.
+          # docker cp works against running and stopped containers,
+          # so capture the daemon log files into test-artifacts/.
+          mkdir -p test-artifacts/sigul-logs
+          for container in sigul-server sigul-bridge; do
+            if docker ps -a --format '{{.Names}}' \
+                | grep -q "^${container}$"; then
+              role="${container#sigul-}"  # 'server' or 'bridge'
+              echo "Collecting /var/log/sigul_${role}.log from ${container}"
+              docker cp \
+                "${container}:/var/log/sigul_${role}.log" \
+                "test-artifacts/sigul-logs/${container}.sigul.log" \
+                2>/dev/null \
+                || echo "(no /var/log/sigul_${role}.log)" \
+                   > "test-artifacts/sigul-logs/${container}.sigul.log"
+              docker logs "${container}" \
+                > "test-artifacts/sigul-logs/${container}.docker.log" \
+                2>&1 || true
+              docker inspect "${container}" \
+                > "test-artifacts/sigul-logs/${container}.inspect.json" \
+                2>/dev/null || true
+            fi
+          done
+          echo "Captured Sigul daemon logs:"
+          ls -la test-artifacts/sigul-logs/ || true
 
       - name: 'Upload integration test artifacts'
         # yamllint disable-line rule:line-length
