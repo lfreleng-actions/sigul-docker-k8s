@@ -16,7 +16,6 @@ OUTPUT_DIR="${1:-./sigul-production-data-$(date +%Y%m%d-%H%M%S)}"
 HOSTNAME=$(hostname -f 2>/dev/null || hostname)
 
 # Colors for output
-RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
@@ -38,11 +37,6 @@ log_info() {
 
 log_warn() {
     echo -e "${YELLOW}[WARN]${NC} $1"
-}
-
-# shellcheck disable=SC2317  # Function is called indirectly
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $1" >&2
 }
 
 safe_command() {

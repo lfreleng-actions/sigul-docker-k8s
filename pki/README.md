@@ -30,7 +30,8 @@ This directory contains the PKI infrastructure for Sigul integration testing.
 
 ## Client PKI
 
-The system packages client PKI separately in `pki/client-pki-encrypted.asc` and includes:
+The system packages client PKI separately in
+`pki/client-pki-encrypted.asc` and includes:
 
 - Client certificate and private key
 - CA certificate for verification
