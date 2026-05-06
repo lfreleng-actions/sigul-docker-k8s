@@ -35,9 +35,9 @@ COPY patches/ /tmp/patches/
 # Copy local sigul source for debugging builds
 COPY .build-context/sigul /build-context/sigul/
 
-# Install python-nss-ng v1.0.4 from PyPI (Fedora 41 has Python 3.13 which is compatible)
+# Install python-nss-ng v1.0.5 from PyPI (Fedora 41 has Python 3.13 which is compatible)
 ENV INSTALL_SOURCE=pypi
-ENV PYTHON_NSS_NG_VERSION=1.0.4
+ENV PYTHON_NSS_NG_VERSION=1.0.5
 COPY build-scripts/install-python-nss.sh /tmp/install-python-nss.sh
 RUN chmod +x /tmp/install-python-nss.sh && \
     /tmp/install-python-nss.sh --verify && \
