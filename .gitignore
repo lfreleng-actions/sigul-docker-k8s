@@ -84,3 +84,4 @@ test-workspace/
 nss/*/cert9.db
 nss/*/key4.db
 nss/*/pkcs11.txt
+.env.local

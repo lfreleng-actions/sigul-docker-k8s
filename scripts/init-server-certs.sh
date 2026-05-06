@@ -376,6 +376,18 @@ main() {
     verify_certificates
     display_certificate_info
 
+    # When the script runs as root (which it does as part of the
+    # server entrypoint chain) hand the resulting NSS DB to the
+    # sigul user so the daemon can read it after setreuid().  The
+    # entrypoint also chowns this directory in fix_volume_permissions;
+    # this is belt-and-braces so init-server-certs is correct when
+    # invoked stand-alone for debugging too.
+    if [[ "$(id -u)" -eq 0 ]]; then
+        log "Running as root - chowning $SERVER_NSS_DIR to sigul user"
+        chown -R 1000:1000 "$SERVER_NSS_DIR" \
+            || warn "Failed to chown $SERVER_NSS_DIR"
+    fi
+
     success "Server certificate import completed successfully"
     echo ""
     log "Server is ready to connect to bridge"

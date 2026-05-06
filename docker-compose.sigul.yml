@@ -78,6 +78,11 @@ services:
       SIGUL_ADMIN_USER: ${SIGUL_ADMIN_USER:-admin}
       # Debug mode
       DEBUG: ${DEBUG:-false}
+      # Toggle gated verbose authentication logging emitted by the
+      # 02-verbose-auth-logging.patch.  When set to a truthy value
+      # (1, true, yes, on) the bridge and server emit AUTHDBG/* lines
+      # at INFO level for every auth checkpoint.  No-op when unset.
+      SIGUL_DEBUG_AUTH: ${SIGUL_DEBUG_AUTH:-0}
       # Role for unified initialization
       SIGUL_ROLE: server
       # FQDN for certificate generation
@@ -129,6 +134,10 @@ services:
       NSS_PASSWORD: ${NSS_PASSWORD:-auto_generated_ephemeral}
       # Debug mode
       DEBUG: ${DEBUG:-false}
+      # Toggle gated verbose authentication logging emitted by the
+      # 02-verbose-auth-logging.patch (see SIGUL_DEBUG_AUTH on the
+      # server service for details).
+      SIGUL_DEBUG_AUTH: ${SIGUL_DEBUG_AUTH:-0}
       # Role for unified initialization
       SIGUL_ROLE: bridge
       # FQDN for certificate generation
