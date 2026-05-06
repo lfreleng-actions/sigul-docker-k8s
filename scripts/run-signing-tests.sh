@@ -498,6 +498,199 @@ else
 fi
 
 # ----------------------------------------------------------------------
+# PHASE 2: Text and binary signing
+# ----------------------------------------------------------------------
+#
+# Phase 1 left ${NEW_KEY_NAME} on the server with the rotated
+# NEWKEY_NEW passphrase.  Phase 2 reuses that key for every signing
+# operation in the suite: a single key rotation per workflow run
+# matches what a real release pipeline does (keys are long-lived;
+# signatures are made many times).
+
+phase "2: TEXT AND BINARY SIGNING"
+
+note "Re-using ${NEW_KEY_NAME} (created in phase 1, rotated to"
+note "the NEWKEY_NEW passphrase) for all sign-{text,data} tests."
+
+# Set up a throwaway host-side GnuPG keyring with ${NEW_KEY_NAME}'s
+# public key so we can independently verify every signature with
+# upstream gpg.  Using a sibling host-side dir keeps the developer's
+# real keyring untouched.
+VERIFY_GPGHOME="$(mktemp -d /tmp/sigul-verify-gpghome.XXXXXX)"
+chmod 700 "$VERIFY_GPGHOME"
+trap 'rm -rf "$HOST_WORKDIR" "$VERIFY_GPGHOME"' EXIT
+
+testcase "2.0  Set up a throwaway host-side GnuPG keyring for verification"
+
+showrun "GNUPGHOME='${VERIFY_GPGHOME}' gpg --batch --import \\
+    '$(hostpath /work/${NEW_KEY_NAME}.pub.asc)' 2>&1"
+showrun "GNUPGHOME='${VERIFY_GPGHOME}' gpg --list-keys"
+
+NEW_KEY_FP=$(
+    GNUPGHOME="$VERIFY_GPGHOME" gpg --list-keys --with-colons 2>/dev/null \
+        | awk -F: '/^fpr:/{print $10; exit}'
+)
+note "${NEW_KEY_NAME} fingerprint (host keyring): ${NEW_KEY_FP}"
+if [[ -n "$NEW_KEY_FP" ]]; then
+    pass "verification keyring populated with ${NEW_KEY_NAME}"
+else
+    fail "verification keyring is empty - cannot verify signatures"
+fi
+
+# Tell sigul_run callers below that the key passphrase to use is
+# the post-rotation one.  This was already updated at the end of
+# phase 1 but make it explicit here so the phase reads stand-alone.
+export SIGUL_TEST_PW_NEWKEY="$SIGUL_TEST_PW_NEWKEY_NEW"
+
+# ----------------------------------------------------------------------
+testcase "2.1  sign-text: cleartext signature of a UTF-8 text file"
+
+note "sign-text returns a PGP cleartext-signed message: the original"
+note "plaintext wrapped in BEGIN/END PGP SIGNED MESSAGE markers with"
+note "a detached BEGIN/END PGP SIGNATURE block.  gpg --verify will"
+note "both check the signature and reproduce the original text."
+
+showrun "printf '%s\\n' \\
+    'hello sigul - this is a test message' \\
+    'second line, with some non-ASCII: café résumé 你好' \\
+    'third line, end of message' \\
+    > '$(hostpath /work/plain.txt)'"
+showrun "wc -c '$(hostpath /work/plain.txt)'"
+
+if sigul_run_into "$(hostpath /work/plain.signed.txt)" \
+    "NEWKEY" "sigul --batch -c /etc/sigul/client.conf \\
+        sign-text -o /work/plain.signed.txt \\
+        ${NEW_KEY_NAME} /work/plain.txt"; then
+    pass "sign-text returned without error"
+else
+    fail "sign-text exited non-zero"
+fi
+
+showrun "head -3 '$(hostpath /work/plain.signed.txt)'"
+
+# Independent verification: gpg --verify on the cleartext signature.
+# We use --output to recover the original plaintext and diff it
+# against the input - this catches not just signature forgery but
+# silent payload corruption too.
+VERIFY_OUT="$(hostpath /work/plain.recovered.txt)"
+showrun "GNUPGHOME='${VERIFY_GPGHOME}' gpg --batch --yes \\
+    --output '${VERIFY_OUT}' \\
+    --decrypt '$(hostpath /work/plain.signed.txt)' 2>&1"
+if diff -u "$(hostpath /work/plain.txt)" "$VERIFY_OUT" >/dev/null; then
+    pass "sign-text signature verifies AND payload round-trips intact"
+else
+    fail "sign-text payload differs after verify (silent corruption?)"
+fi
+
+# ----------------------------------------------------------------------
+testcase "2.2  sign-data: detached binary signature of 1 KiB random blob"
+
+note "sign-data produces a binary detached signature (RFC 4880 packet"
+note "format, no ASCII armour).  This is what RPM signing builds on"
+note "top of and what most CI pipelines use to sign release tarballs."
+
+showrun "head -c 1024 /dev/urandom > '$(hostpath /work/blob1k.bin)'"
+showrun "sha256sum '$(hostpath /work/blob1k.bin)'"
+
+if sigul_run_into "$(hostpath /work/blob1k.bin.sig)" \
+    "NEWKEY" "sigul --batch -c /etc/sigul/client.conf \\
+        sign-data -o /work/blob1k.bin.sig \\
+        ${NEW_KEY_NAME} /work/blob1k.bin"; then
+    pass "sign-data (binary, 1 KiB) returned without error"
+else
+    fail "sign-data (binary, 1 KiB) exited non-zero"
+fi
+
+showrun "file '$(hostpath /work/blob1k.bin.sig)'"
+showrun "GNUPGHOME='${VERIFY_GPGHOME}' gpg --batch --verify \\
+    '$(hostpath /work/blob1k.bin.sig)' '$(hostpath /work/blob1k.bin)' 2>&1"
+if GNUPGHOME="$VERIFY_GPGHOME" gpg --batch --verify \
+        "$(hostpath /work/blob1k.bin.sig)" \
+        "$(hostpath /work/blob1k.bin)" 2>/dev/null; then
+    pass "detached binary signature verifies against 1 KiB payload"
+else
+    fail "gpg --verify rejected the detached binary signature"
+fi
+
+# ----------------------------------------------------------------------
+testcase "2.3  sign-data --armor: armored detached signature of 4 KiB blob"
+
+note "--armor produces an ASCII-armored detached signature, the same"
+note "shape as a .asc sidecar file alongside a release tarball."
+
+showrun "head -c 4096 /dev/urandom > '$(hostpath /work/blob4k.bin)'"
+
+if sigul_run_into "$(hostpath /work/blob4k.bin.asc)" \
+    "NEWKEY" "sigul --batch -c /etc/sigul/client.conf \\
+        sign-data --armor -o /work/blob4k.bin.asc \\
+        ${NEW_KEY_NAME} /work/blob4k.bin"; then
+    pass "sign-data --armor returned without error"
+else
+    fail "sign-data --armor exited non-zero"
+fi
+
+showrun "head -3 '$(hostpath /work/blob4k.bin.asc)'"
+if head -1 "$(hostpath /work/blob4k.bin.asc)" \
+        | grep -q '^-----BEGIN PGP SIGNATURE-----$'; then
+    pass "output begins with expected ASCII-armor header"
+else
+    fail "output does NOT look like an armored signature"
+fi
+
+showrun "GNUPGHOME='${VERIFY_GPGHOME}' gpg --batch --verify \\
+    '$(hostpath /work/blob4k.bin.asc)' '$(hostpath /work/blob4k.bin)' 2>&1"
+if GNUPGHOME="$VERIFY_GPGHOME" gpg --batch --verify \
+        "$(hostpath /work/blob4k.bin.asc)" \
+        "$(hostpath /work/blob4k.bin)" 2>/dev/null; then
+    pass "armored detached signature verifies against 4 KiB payload"
+else
+    fail "gpg --verify rejected the armored detached signature"
+fi
+
+# ----------------------------------------------------------------------
+testcase "2.4  sign-data: 64 MiB binary blob (large-payload streaming)"
+
+note "Production server.conf has"
+note "  max-memory-payload-size: 1048576       (1 MiB)"
+note "  max-file-payload-size:   1073741824    (1 GiB)"
+note "so a 64 MiB payload exercises the file-backed payload code"
+note "path on the server (tempfile + streaming copy) which the small"
+note "tests above never hit.  Round-tripping a 64 MiB blob through"
+note "the bridge and back also catches any ~16 MiB framing bug in"
+note "the chunk-protocol implementation."
+note ""
+note "This test takes around 30-60 seconds depending on disk speed."
+
+showrun "head -c 67108864 /dev/urandom \\
+    > '$(hostpath /work/blob64m.bin)'"
+showrun "ls -la '$(hostpath /work/blob64m.bin)'"
+showrun "sha256sum '$(hostpath /work/blob64m.bin)'"
+
+T_START=$(date +%s)
+if sigul_run_into "$(hostpath /work/blob64m.bin.sig)" \
+    "NEWKEY" "sigul --batch -c /etc/sigul/client.conf \\
+        sign-data -o /work/blob64m.bin.sig \\
+        ${NEW_KEY_NAME} /work/blob64m.bin"; then
+    T_ELAPSED=$(( $(date +%s) - T_START ))
+    pass "sign-data (64 MiB) returned without error in ${T_ELAPSED}s"
+else
+    fail "sign-data (64 MiB) exited non-zero"
+fi
+
+showrun "file '$(hostpath /work/blob64m.bin.sig)'"
+showrun "ls -la '$(hostpath /work/blob64m.bin.sig)'"
+
+showrun "GNUPGHOME='${VERIFY_GPGHOME}' gpg --batch --verify \\
+    '$(hostpath /work/blob64m.bin.sig)' '$(hostpath /work/blob64m.bin)' 2>&1"
+if GNUPGHOME="$VERIFY_GPGHOME" gpg --batch --verify \
+        "$(hostpath /work/blob64m.bin.sig)" \
+        "$(hostpath /work/blob64m.bin)" 2>/dev/null; then
+    pass "detached signature verifies against 64 MiB payload"
+else
+    fail "gpg --verify rejected the 64 MiB detached signature"
+fi
+
+# ----------------------------------------------------------------------
 # Summary
 # ----------------------------------------------------------------------
 
