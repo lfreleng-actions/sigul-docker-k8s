@@ -257,12 +257,16 @@ failing CI run as the source of truth.
 
 - **Sigul behaviour fixes** — add a numbered patch to
   [`patches/`](./patches/) (`NN-short-description.patch`).  The patch
-  applies on top of upstream Sigul during the image build.  Document
-  every patch in [`patches/README.md`](./patches/README.md) using the
-  same `Status / Affects / Problem / Fix / Impact` structure as the
-  existing entries; if a patch is critical for the stack to start at
-  all, mark it as such.  Verify `git apply --check` works against the
-  bundled Sigul source tree before pushing.
+  applies on top of the bundled Sigul source during the image build.
+  Document every patch in [`patches/README.md`](./patches/README.md)
+  using the same `Status / Affects / Problem / Fix / Impact` structure
+  as the existing entries; if a patch is critical for the stack to
+  start at all, mark it as such.  Verify `git apply --check` works
+  against the bundled Sigul source tree before pushing.  Note that
+  upstream Sigul on Pagure has not had a commit in over a year and
+  Pagure itself is scheduled to be decommissioned around mid-2026, so
+  in practice these patches are a permanent local fork rather than
+  a staging area for upstream submission.
 - **Container build / packaging changes** — prefer
   [`build-scripts/install-sigul.sh`](./build-scripts/install-sigul.sh)
   over editing the Dockerfiles, so the install path stays uniform

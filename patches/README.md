@@ -19,7 +19,7 @@ patches remain minimal and focused on critical functionality.
 ### 01-fix-double-tls-handshake-timing.patch
 
 **Status:** CRITICAL - Required for functionality
-**Upstream Status:** Not yet submitted
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
 **Affects:** Bridge component
 
 **Problem:**
@@ -47,7 +47,7 @@ double-TLS communication.
 ### 02-verbose-auth-logging.patch
 
 **Status:** Optional - controlled by `SIGUL_DEBUG_AUTH` env var
-**Upstream Status:** Not yet submitted
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
 **Affects:** Bridge and server
 
 **Problem:**
@@ -85,7 +85,7 @@ bit-for-bit identical to upstream.
 
 **Status:** CRITICAL - Required for `sigul delete-key` /
 `sigul import-key` round-trip to work.
-**Upstream Status:** Not yet submitted
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
 **Affects:** Server
 
 **Problem:**
@@ -120,7 +120,7 @@ actually deletes.
 ### 04-fix-optional-fedora-client-guard.patch
 
 **Status:** CRITICAL on Fedora 44+ - bridge will not start without it
-**Upstream Status:** Not yet submitted
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
 **Affects:** Bridge
 
 **Problem:**
@@ -157,7 +157,7 @@ continues normal startup.
 ### 05-fix-optional-rpm-head-signing.patch
 
 **Status:** CRITICAL on Fedora 44+ - server will not start without it
-**Upstream Status:** Not yet submitted
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
 **Affects:** Server
 
 **Problem:**
@@ -208,49 +208,63 @@ The Docker build process automatically applies these patches:
 3. The script applies all `*.patch` files in alphanumeric order
 4. Sigul is then built and installed with the fixes included
 
-## Upstream Strategy
+## Upstream status
 
-Submit these patches to upstream Sigul (<https://pagure.io/sigul>)
-to benefit the community and reduce our maintenance burden. Once accepted
-upstream, we can remove the patches and use official releases.
+At the time of writing, upstream Sigul on
+[`pagure.io/sigul`](https://pagure.io/sigul) is effectively
+unmaintained:
 
-**Submission Priority:**
+- The most recent commit is the v1.4 release tag, dated roughly a
+  year ago.
+- Open issues and pull requests have been sitting untouched.
+- Pagure itself is scheduled to be decommissioned around mid-2026
+  (Flock 2026); Fedora-hosted projects are being asked to migrate
+  to `forge.fedoraproject.org`.
 
-1. **HIGH:** Double-TLS handshake timing fix (this is critical for containers)
-2. **HIGH:** Fedora-client / rpm-head-signing optional-import
-   guards (patches 04 and 05) - these unbreak Sigul on Fedora
-   44+ base images and are not platform-specific to our stack.
+In practice this means the patches in this directory are a
+**permanent local fork**, not a staging area for upstream
+submission.  We carry them indefinitely, and any new fix should be
+added here rather than waiting on an upstream release.  When
+Pagure goes away we will need to re-host the v1.4 source tarball
+that `build-scripts/install-sigul.sh` clones; the patch series itself
+is self-contained and will continue to apply against any preserved
+copy of v1.4.
 
-## Testing
+## Adding a patch
 
-To verify patches apply cleanly:
+1. **Keep the patch minimal** — one logical change per file; fix the
+   bug, do not refactor surrounding code.
+2. **Use the `NN-short-description.patch` filename convention** so
+   patches apply in a stable order under
+   `build-scripts/install-sigul.sh`.
+3. **Include an explanatory header in the patch file itself** that
+   describes the bug being fixed and why the chosen fix is the
+   right shape; the existing patches use a `# SPDX…` block plus a
+   prose explanation above the `diff --git` lines.
+4. **Add a corresponding entry to this README** under `## Patches`,
+   following the `Status / Affects / Problem / Fix / Impact`
+   structure.  Mark the entry CRITICAL if the stack will not start
+   without it.
+5. **Verify the whole series still applies cleanly:** with the
+   bundled Sigul v1.4 source available locally,
+
+   ```bash
+   cd .build-context/sigul
+   for p in ../../patches/*.patch; do
+       git apply --check "$p" || { echo "$p failed"; break; }
+   done
+   ```
+
+   should print no errors.
+
+## Verifying a single patch in isolation
 
 ```bash
-# Test patch application locally
+# Local copy of upstream v1.4 (or any preserved mirror once Pagure
+# is decommissioned)
 cd /tmp
 git clone --depth 1 --branch v1.4 https://pagure.io/sigul.git
 cd sigul
 patch -p1 < /path/to/sigul-docker/patches/01-fix-double-tls-handshake-timing.patch
-
-# Verify no errors
 echo $?  # Should be 0
 ```
-
-## Contributing
-
-When adding new patches:
-
-1. Keep patches minimal - fix critical issues
-2. Use descriptive filenames with numeric prefixes: `01-`, `02-`, etc.
-3. Include clear comments explaining WHY the fix matters
-4. Test that patches apply cleanly to upstream Sigul v1.4
-5. Plan for upstream submission
-
-## Maintenance
-
-When upstream Sigul releases new versions:
-
-1. Test if patches still apply cleanly
-2. Update patches if necessary
-3. Remove patches that upstream accepts
-4. Update `build-scripts/install-sigul.sh` if using newer version
