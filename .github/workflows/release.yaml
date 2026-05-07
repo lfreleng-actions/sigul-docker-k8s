@@ -74,10 +74,9 @@ jobs:
           artifact_upload: 'true'
           artifact_formats: 'json'
 
-  ### Step 1: Validate the pushed tag ###
+  ### Step 1: Validate the pushed tag (parallel with repository-metadata) ###
   tag-validate:
     name: 'Validate Tag'
-    needs: [repository-metadata]
     runs-on: 'ubuntu-24.04'
     permissions:
       contents: read
@@ -110,7 +109,10 @@ jobs:
   ### Step 2: Build all three images for both architectures ###
   build-containers:
     name: 'Build: ${{ matrix.component }} (${{ matrix.platform }})'
-    needs: [tag-validate]
+    # Wait for both prelude jobs - repository-metadata and
+    # tag-validate run in parallel, but no expensive build runs
+    # unless both pass.
+    needs: [repository-metadata, tag-validate]
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
