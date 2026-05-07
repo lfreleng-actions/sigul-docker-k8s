@@ -708,7 +708,12 @@ fi
 
 phase "3: RPM SIGNING"
 
-RPM_FILENAME="sigul-ci-test-1.0.0-1.fc41.noarch.rpm"
+# Use a stable, dist-tag-agnostic filename for the test RPM.  We
+# rename the rpmbuild output (which embeds the running container's
+# %{?dist} tag, e.g. .fc41 today, .fc44 after the planned base-image
+# bump) to a fixed name so the rest of the suite can reference it
+# without caring about the platform.
+RPM_FILENAME="sigul-ci-test.rpm"
 RPM_PATH="/work/${RPM_FILENAME}"
 RPM_HOSTPATH="$(hostpath "${RPM_PATH}")"
 
@@ -725,11 +730,16 @@ showrun "docker run --rm \\
     --user 1000:1000 \\
     --entrypoint bash \\
     '${CLIENT_IMAGE}' -c \\
-    'cd /work && rpmbuild \\
+    'set -e; \\
+     rpmbuild \\
         --define \"_topdir /work/rpmbuild\" \\
         --define \"_sourcedir /fixtures\" \\
-        -bb /fixtures/sigul-test-rpm.spec 2>&1 | tail -5 && \\
-     cp /work/rpmbuild/RPMS/noarch/${RPM_FILENAME} /work/'"
+        -bb /fixtures/sigul-test-rpm.spec; \\
+     # Pick whichever noarch RPM rpmbuild produced and rename it \\
+     # to the dist-tag-agnostic name the rest of the suite uses. \\
+     built=\$(ls /work/rpmbuild/RPMS/noarch/*.rpm); \\
+     echo \"rpmbuild produced: \$built\"; \\
+     cp \"\$built\" /work/${RPM_FILENAME}'"
 
 showrun "ls -la '${RPM_HOSTPATH}'"
 showrun "docker run --rm -v '${HOST_WORKDIR}:/work:ro' \\
