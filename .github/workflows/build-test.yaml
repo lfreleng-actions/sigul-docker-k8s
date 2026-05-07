@@ -344,7 +344,7 @@ jobs:
 
   ### Functional Tests ###
   functional-tests:
-    name: 'Functional Tests: ${{ matrix.platform }}'
+    name: 'Tests: ${{ matrix.platform }}'
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read

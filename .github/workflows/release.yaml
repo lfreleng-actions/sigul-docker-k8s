@@ -190,7 +190,7 @@ jobs:
 
   ### Step 3: Functional tests against the freshly-built stack ###
   functional-tests:
-    name: 'Functional Tests: ${{ matrix.platform }}'
+    name: 'Tests: ${{ matrix.platform }}'
     needs: [build-containers]
     runs-on: ${{ matrix.runner }}
     permissions:
