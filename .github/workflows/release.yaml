@@ -561,8 +561,12 @@ jobs:
   ### Step 6: Final summary ###
   summary:
     name: 'Release Summary'
+    # repository-metadata intentionally not listed: the summary
+    # script does not reference its result, and promote-release
+    # transitively requires tag-validate which runs in parallel
+    # with repository-metadata, so summary already runs after both
+    # prelude jobs in practice.
     needs:
-      - repository-metadata
       - tag-validate
       - build-containers
       - functional-tests
