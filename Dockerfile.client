@@ -20,6 +20,7 @@ RUN dnf install -y --setopt=install_weak_deps=False --allowerasing \
         python3-devel python3-pip python3-koji python3-requests \
         python3-rpm python3-setuptools python3-cryptography python3-pexpect python3-gpg \
         gnupg2 koji-utils expect \
+        rpm-build \
         make gcc autoconf automake libtool \
         procps-ng util-linux bind-utils \
         strace lsof \
