@@ -32,10 +32,12 @@
 #          a 64 MiB large-payload streaming test).
 # Phase 3: RPM signing (sign-rpm, sign-rpm --v3-signature,
 #          sign-rpms batch).  Independently verified with rpm -K.
-#
-# Future PRs will add:
 # Phase 4: User and key-access lifecycle (new-user,
 #          grant-key-access, revoke-key-access, delete-user).
+#          Verifies that authorisation actually constrains who can
+#          sign with which key.
+#
+# Future PRs will add (none currently planned).
 #
 # Usage
 # -----
@@ -939,6 +941,289 @@ if [[ $BATCH_VERIFY_FAILS -eq 0 ]]; then
     pass "rpm -Kv accepts all 3 RPMs from the sign-rpms batch"
 else
     fail "${BATCH_VERIFY_FAILS}/3 batch-signed RPMs failed verification"
+fi
+
+# ----------------------------------------------------------------------
+# PHASE 4: User and key-access lifecycle
+# ----------------------------------------------------------------------
+#
+# Phase 1-3 used the admin account exclusively.  Phase 4 verifies
+# that Sigul's authorisation model actually constrains who can do
+# what:
+#
+#  * a freshly-created non-admin user can NOT call admin-only ops
+#    like list-users;
+#  * a freshly-created non-admin user can NOT sign with an
+#    arbitrary key they have not been granted access to;
+#  * once an admin grants the user access to a specific key,
+#    they CAN sign with it (and the resulting signature still
+#    verifies);
+#  * once access is revoked, they can no longer sign with it;
+#  * delete-user removes them entirely.
+#
+# These are the tests that exercise the protocol design described
+# in sigul/doc/protocol-design.txt under "ADMIN REQUESTS",
+# "KEY ADMIN REQUESTS" and "USER REQUESTS".  Without them, a
+# regression in the auth code could go undetected: every previous
+# phase used the same admin user.
+
+phase "4: USER AND KEY-ACCESS LIFECYCLE"
+
+TEST_USER="ci-test-user"
+export SIGUL_TEST_PW_TESTUSER="ci-test-user-password"
+export SIGUL_TEST_PW_TESTUSER_KEY="ci-test-user-key-passphrase"
+
+note "Test user: ${TEST_USER}"
+note "Re-using ${NEW_KEY_NAME} (the key created in phase 1) for the"
+note "grant/revoke/sign-as-grantee tests.  The key passphrase has"
+note "been rotated to NEWKEY_NEW."
+
+# Best-effort cleanup of any leftover ${TEST_USER} from a previous
+# run.  This is the same defensive pattern Phase 0 uses for keys.
+note "Best-effort delete of any leftover ${TEST_USER} (ignoring errors)"
+printf '%s\0' "$ADMIN_PASSWORD" \
+    | docker run --rm -i \
+        --user 1000:1000 \
+        --network "$NETWORK" \
+        -v "${CLIENT_NSS_VOLUME}:/etc/pki/sigul/client:ro" \
+        -v "${CLIENT_CONFIG_VOLUME}:/etc/sigul:ro" \
+        "$CLIENT_IMAGE" \
+        bash -c "sigul --batch -c /etc/sigul/client.conf \
+            delete-user ${TEST_USER} 2>&1" \
+    || true
+
+# ----------------------------------------------------------------------
+testcase "4.1  new-user --with-password: create a non-admin test user"
+
+note "new-user without --admin creates a regular (non-admin) user."
+note "--with-password defines a password for that user, which is"
+note "what they'll use to authenticate non-key admin operations."
+note "new-user feeds two passphrases on stdin: the admin password"
+note "first, then the new user's password."
+
+if sigul_run "ADMIN,TESTUSER" "sigul --batch -c /etc/sigul/client.conf \\
+    new-user --with-password ${TEST_USER}"; then
+    pass "new-user returned without error"
+else
+    fail "new-user exited non-zero"
+fi
+
+# ----------------------------------------------------------------------
+testcase "4.2  user-info: confirm the user exists and is NOT admin"
+
+USER_INFO_OUT=$(
+    _sigul_emit "ADMIN" "sigul --batch -c /etc/sigul/client.conf \
+        user-info ${TEST_USER}" 2>&1
+)
+echo "$USER_INFO_OUT"
+if grep -qi 'administrator: *no' <<< "$USER_INFO_OUT"; then
+    pass "user-info reports ${TEST_USER} with admin=no"
+else
+    fail "user-info did NOT report ${TEST_USER} as admin=no"
+fi
+
+# ----------------------------------------------------------------------
+testcase "4.3  Negative: ${TEST_USER} CANNOT call admin-only list-users"
+
+note "This test invokes sigul as the new user via -u ${TEST_USER}."
+note "list-users is an admin-only operation per the protocol design;"
+note "a non-admin user should be rejected with AUTHENTICATION_FAILED."
+
+NEG_OUT=$(
+    printf '%s\0' "$SIGUL_TEST_PW_TESTUSER" \
+        | docker run --rm -i \
+            --user 1000:1000 \
+            --network "$NETWORK" \
+            -v "${CLIENT_NSS_VOLUME}:/etc/pki/sigul/client:ro" \
+            -v "${CLIENT_CONFIG_VOLUME}:/etc/sigul:ro" \
+            "$CLIENT_IMAGE" \
+            bash -c "sigul --batch -u ${TEST_USER} \
+                -c /etc/sigul/client.conf list-users 2>&1" \
+        || true
+)
+echo "$NEG_OUT"
+if grep -qi 'authentication failed' <<< "$NEG_OUT"; then
+    pass "server correctly rejects non-admin list-users"
+else
+    fail "server did NOT reject non-admin list-users"
+fi
+
+# ----------------------------------------------------------------------
+testcase "4.4  Negative: ${TEST_USER} CANNOT yet sign with ${NEW_KEY_NAME}"
+
+note "Without grant-key-access the user has no key access record;"
+note "sign-text should be rejected at the auth layer."
+
+showrun "echo 'pre-grant test message' \\
+    > '$(hostpath /work/pre-grant.txt)'"
+
+NEG_OUT=$(
+    printf '%s\0' "$SIGUL_TEST_PW_TESTUSER" \
+        | docker run --rm -i \
+            --user 1000:1000 \
+            --network "$NETWORK" \
+            -v "${CLIENT_NSS_VOLUME}:/etc/pki/sigul/client:ro" \
+            -v "${CLIENT_CONFIG_VOLUME}:/etc/sigul:ro" \
+            -v "${HOST_WORKDIR}:/work:rw" \
+            "$CLIENT_IMAGE" \
+            bash -c "sigul --batch -u ${TEST_USER} \
+                -c /etc/sigul/client.conf \
+                sign-text -o /work/pre-grant.signed.txt \
+                ${NEW_KEY_NAME} /work/pre-grant.txt 2>&1" \
+        || true
+)
+echo "$NEG_OUT"
+if grep -qi 'authentication failed' <<< "$NEG_OUT"; then
+    pass "server correctly rejects sign-text from un-granted user"
+else
+    fail "server did NOT reject sign-text from un-granted user"
+fi
+
+# ----------------------------------------------------------------------
+testcase "4.5  grant-key-access: admin grants ${TEST_USER} access to ${NEW_KEY_NAME}"
+
+note "grant-key-access feeds two passphrases on stdin: the existing"
+note "key passphrase first (so the server can re-wrap), then the new"
+note "per-user passphrase the grantee will use to sign with the key."
+
+if sigul_run "NEWKEY,TESTUSER_KEY" \
+    "sigul --batch -c /etc/sigul/client.conf \\
+        grant-key-access ${NEW_KEY_NAME} ${TEST_USER}"; then
+    pass "grant-key-access returned without error"
+else
+    fail "grant-key-access exited non-zero"
+fi
+
+# ----------------------------------------------------------------------
+testcase "4.6  list-key-users: confirm ${TEST_USER} is listed for ${NEW_KEY_NAME}"
+
+LKU_OUT=$(
+    _sigul_emit "ADMIN" "sigul --batch \
+        -c /etc/sigul/client.conf list-key-users \
+        --password ${NEW_KEY_NAME}" 2>&1
+)
+echo "$LKU_OUT"
+if grep -q "^${TEST_USER}$" <<< "$LKU_OUT"; then
+    pass "list-key-users includes ${TEST_USER}"
+else
+    fail "list-key-users does NOT include ${TEST_USER}"
+fi
+
+# ----------------------------------------------------------------------
+testcase "4.7  ${TEST_USER} CAN now sign-text with ${NEW_KEY_NAME}"
+
+note "After grant, the user signs using their per-user key passphrase"
+note "(TESTUSER_KEY), NOT the original key passphrase.  The server"
+note "unwraps the per-user copy and uses the underlying GPG key."
+note "We verify the signature with the same host-side keyring set up"
+note "in Phase 2."
+
+showrun "echo 'post-grant test message - signed by ${TEST_USER}' \\
+    > '$(hostpath /work/post-grant.txt)'"
+
+if printf '%s\0' "$SIGUL_TEST_PW_TESTUSER_KEY" \
+    | docker run --rm -i \
+        --user 1000:1000 \
+        --network "$NETWORK" \
+        -v "${CLIENT_NSS_VOLUME}:/etc/pki/sigul/client:ro" \
+        -v "${CLIENT_CONFIG_VOLUME}:/etc/sigul:ro" \
+        -v "${HOST_WORKDIR}:/work:rw" \
+        "$CLIENT_IMAGE" \
+        bash -c "sigul --batch -u ${TEST_USER} \
+            -c /etc/sigul/client.conf \
+            sign-text -o /work/post-grant.signed.txt \
+            ${NEW_KEY_NAME} /work/post-grant.txt"; then
+    pass "sign-text as ${TEST_USER} returned without error"
+else
+    fail "sign-text as ${TEST_USER} exited non-zero"
+fi
+
+if [[ -s "$(hostpath /work/post-grant.signed.txt)" ]]; then
+    showrun "head -3 '$(hostpath /work/post-grant.signed.txt)'"
+    VERIFY_OUT_PG="$(hostpath /work/post-grant.recovered.txt)"
+    showrun "GNUPGHOME='${VERIFY_GPGHOME}' gpg --batch --yes \\
+        --output '${VERIFY_OUT_PG}' \\
+        --decrypt '$(hostpath /work/post-grant.signed.txt)' 2>&1"
+    if diff -u "$(hostpath /work/post-grant.txt)" "$VERIFY_OUT_PG" \
+            >/dev/null; then
+        pass "signature by ${TEST_USER} verifies and content round-trips"
+    else
+        fail "signature by ${TEST_USER} verified but content differs"
+    fi
+else
+    fail "sign-text output is empty; cannot verify"
+fi
+
+# ----------------------------------------------------------------------
+testcase "4.8  revoke-key-access: admin revokes ${TEST_USER}'s access"
+
+note "revoke-key-access can be invoked by an admin (--password) or"
+note "by a key admin.  The admin path is what we exercise here."
+
+if sigul_run "ADMIN" "sigul --batch \\
+    -c /etc/sigul/client.conf \\
+    revoke-key-access --password ${NEW_KEY_NAME} ${TEST_USER}"; then
+    pass "revoke-key-access returned without error"
+else
+    fail "revoke-key-access exited non-zero"
+fi
+
+LKU2_OUT=$(
+    _sigul_emit "ADMIN" "sigul --batch \
+        -c /etc/sigul/client.conf list-key-users \
+        --password ${NEW_KEY_NAME}" 2>&1
+)
+echo "$LKU2_OUT"
+if grep -q "^${TEST_USER}$" <<< "$LKU2_OUT"; then
+    fail "list-key-users still includes ${TEST_USER} after revoke"
+else
+    pass "list-key-users no longer includes ${TEST_USER}"
+fi
+
+# ----------------------------------------------------------------------
+testcase "4.9  Negative: ${TEST_USER} CAN NO LONGER sign with ${NEW_KEY_NAME}"
+
+NEG_OUT=$(
+    printf '%s\0' "$SIGUL_TEST_PW_TESTUSER_KEY" \
+        | docker run --rm -i \
+            --user 1000:1000 \
+            --network "$NETWORK" \
+            -v "${CLIENT_NSS_VOLUME}:/etc/pki/sigul/client:ro" \
+            -v "${CLIENT_CONFIG_VOLUME}:/etc/sigul:ro" \
+            -v "${HOST_WORKDIR}:/work:rw" \
+            "$CLIENT_IMAGE" \
+            bash -c "sigul --batch -u ${TEST_USER} \
+                -c /etc/sigul/client.conf \
+                sign-text -o /work/post-revoke.signed.txt \
+                ${NEW_KEY_NAME} /work/post-grant.txt 2>&1" \
+        || true
+)
+echo "$NEG_OUT"
+if grep -qi 'authentication failed' <<< "$NEG_OUT"; then
+    pass "server correctly rejects sign-text after revoke"
+else
+    fail "server did NOT reject sign-text after revoke"
+fi
+
+# ----------------------------------------------------------------------
+testcase "4.10  delete-user: tear down ${TEST_USER} for clean re-runs"
+
+if sigul_run "ADMIN" "sigul --batch -c /etc/sigul/client.conf \\
+    delete-user ${TEST_USER}"; then
+    pass "delete-user returned without error"
+else
+    fail "delete-user exited non-zero"
+fi
+
+LU_OUT=$(
+    _sigul_emit "ADMIN" "sigul --batch -c /etc/sigul/client.conf \
+        list-users" 2>&1
+)
+echo "$LU_OUT"
+if grep -q "^${TEST_USER}$" <<< "$LU_OUT"; then
+    fail "list-users still includes ${TEST_USER} after delete"
+else
+    pass "list-users no longer includes ${TEST_USER}"
 fi
 
 # ----------------------------------------------------------------------
