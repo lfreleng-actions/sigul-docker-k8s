@@ -63,19 +63,22 @@ install_from_source() {
         cp -r /build-context/sigul ./sigul
         log_info "Copied local sigul source"
     else
-        # CI/Production: Always use official public Sigul repository
+        # CI/Production: Always use official public Sigul repository.
+        # Pinned to the SIGUL_VERSION release tag because the patches
+        # in patches/ are written against that tree (see
+        # patches/README.md).
         log_info "Cloning sigul from official upstream repository (Pagure)"
 
         local sigul_repo="https://pagure.io/sigul.git"
-        local sigul_branch="master"
+        local sigul_branch="v${SIGUL_VERSION}"
 
         log_info "Repository: $sigul_repo"
-        log_info "Branch: $sigul_branch"
+        log_info "Branch / tag: $sigul_branch"
 
         if ! git clone --depth 1 --branch "$sigul_branch" "$sigul_repo" sigul; then
             log_error "Failed to clone sigul from official upstream repository"
             log_error "Repository: $sigul_repo"
-            log_error "Branch: $sigul_branch"
+            log_error "Branch / tag: $sigul_branch"
             return 1
         fi
 
