@@ -6,16 +6,16 @@ SPDX-FileCopyrightText: 2025 The Linux Foundation
 # 🔏 Sigul Signing
 
 A GitHub Action and supporting Docker stack for signing build artefacts and
-git tags using a [Sigul](https://pagure.io/sigul) signing server.
+git tags using a [Sigul](https://pagure.io/sigul) signing server.  Two
+deliverables live in this repository:
 
-This repository provides two things:
-
-1. **A composite GitHub Action** (`sigul-sign-docker`) that workflows can use
-   to sign files or git tags by talking to a Sigul server over its bridge.
-2. **A complete reference Sigul stack** (server + bridge + client containers,
-   Docker Compose definition, deployment scripts and end-to-end test suite)
-   used to validate the action against a live Sigul instance and to provide
-   a reproducible local debugging environment.
+1. **A composite GitHub Action** (`sigul-docker`) that workflows can use to
+   sign files or git tags by talking to a Sigul server over its bridge.
+2. **A complete reference Sigul stack** — server + bridge + client
+   containers, Docker Compose definition, deployment scripts and
+   end-to-end test suite — used to validate the action against a live
+   Sigul instance and to provide a reproducible local debugging
+   environment.
 
 ## Action usage
 
@@ -26,7 +26,7 @@ files or a git tag.
 ### Sign a single file
 
 ```yaml
-- uses: lfreleng-actions/sigul-sign-docker@v1
+- uses: lfreleng-actions/sigul-docker@v1
   with:
       sign-type: 'sign-data'
       sign-object: ${{ github.workspace }}/artifacts/mypackage.tar.gz
@@ -47,7 +47,7 @@ files or a git tag.
 ### Sign multiple files in a single invocation
 
 ```yaml
-- uses: lfreleng-actions/sigul-sign-docker@v1
+- uses: lfreleng-actions/sigul-docker@v1
   with:
       sign-type: 'sign-data'
       sign-object: |
@@ -68,7 +68,7 @@ files or a git tag.
 ### Sign a git tag
 
 ```yaml
-- uses: lfreleng-actions/sigul-sign-docker@v1
+- uses: lfreleng-actions/sigul-docker@v1
   with:
       sign-type: 'sign-git-tag'
       sign-object: 'v1.1' # Existing unsigned annotated tag in the repo
@@ -83,8 +83,6 @@ files or a git tag.
 ```
 
 ## Action inputs
-
-All inputs reflect [`action.yml`](./action.yml).
 
 | Input | Required | Default | Description |
 | ----- | -------- | ------- | ----------- |
@@ -170,7 +168,7 @@ following inputs:
 | ----- | ------- | ------- |
 | `clear_cache` | `false` | Bypass GitHub Actions cache and rebuild images from scratch. |
 | `enable_auth_debug` | `false` | Set `SIGUL_DEBUG_AUTH=1` in the bridge and server, surfacing `AUTHDBG/*` lines in container logs. |
-| `publish_ghcr` | `true` | Publish freshly-built images to `ghcr.io/<org>/<repo>/sigul-sign-docker`. Untick when iterating on the workflow itself. |
+| `publish_ghcr` | `true` | Publish freshly-built images to `ghcr.io/<org>/<repo>/sigul-docker`. Untick when iterating on the workflow itself. |
 
 ## Local development
 
@@ -232,9 +230,8 @@ docker volume ls --format '{{.Name}}' | grep '^sigul-docker_' \
 
 ### Documentation
 
-- [`DEPLOYMENT_GUIDE.md`](./DEPLOYMENT_GUIDE.md) — deploying the stack outside
-  CI, including the production-aligned PKI patterns the Docker images derive
-  from.
+- [`DEPLOYMENT_GUIDE.md`](./DEPLOYMENT_GUIDE.md) — deploying the stack
+  outside CI.
 - [`OPERATIONS_GUIDE.md`](./OPERATIONS_GUIDE.md) — day-to-day operation,
   monitoring, health checks.
 - [`TESTING.md`](./TESTING.md) — test infrastructure overview and the local

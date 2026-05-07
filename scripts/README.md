@@ -6,7 +6,7 @@ SPDX-FileCopyrightText: 2025 The Linux Foundation
 # Scripts Directory
 
 This directory contains scripts for building, testing, and managing the
-sigul-sign-docker containers after the comprehensive refactoring that
+sigul-docker containers after the comprehensive refactoring that
 unified the initialization system.
 
 ## 🚀 Quick Start

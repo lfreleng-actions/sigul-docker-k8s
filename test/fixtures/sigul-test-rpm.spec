@@ -22,7 +22,7 @@ Release:        1%{?dist}
 Summary:        Throwaway RPM for Sigul integration signing tests
 
 License:        Apache-2.0
-URL:            https://github.com/modeseven-lfreleng-actions/sigul-docker
+URL:            https://github.com/lfreleng-actions/sigul-docker
 BuildArch:      noarch
 
 # No Source0: this RPM has no payload to fetch.

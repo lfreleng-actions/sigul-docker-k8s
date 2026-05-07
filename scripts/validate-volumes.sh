@@ -99,11 +99,11 @@ parse_args() {
 # Detect volume name prefix
 detect_volume_prefix() {
     local prefix
-    # Try to find existing volumes with known suffixes
+    # Try to find existing volumes with known suffixes.  The current
+    # docker-compose project name is 'sigul-docker'; bare
+    # 'sigul_bridge_nss' is the no-prefix case for hand-crafted setups.
     if docker volume ls --format "{{.Name}}" | grep -q "sigul-docker_sigul_bridge_nss"; then
         prefix="sigul-docker"
-    elif docker volume ls --format "{{.Name}}" | grep -q "sigul-sign-docker_sigul_bridge_nss"; then
-        prefix="sigul-sign-docker"
     elif docker volume ls --format "{{.Name}}" | grep -q "sigul_bridge_nss"; then
         prefix=""
     else

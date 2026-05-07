@@ -53,7 +53,7 @@ import docker
 
 # Test Configuration
 COMPOSE_FILE = "docker-compose.sigul.yml"
-NETWORK_NAME = "sigul-sign-docker_sigul-network"
+NETWORK_NAME = "sigul-docker_sigul-network"
 CONTAINERS = {
     "bridge": "sigul-bridge",
     "server": "sigul-server",
@@ -75,7 +75,7 @@ class SigulTestFixture:
 
     def __init__(self):
         self.docker_client = docker.from_env()
-        self.compose_project = "sigul-sign-docker"
+        self.compose_project = "sigul-docker"
         self.containers = {}
         self.network = None
 
@@ -499,11 +499,11 @@ class TestCommunication:
             "--network",
             NETWORK_NAME,
             "-v",
-            "sigul-sign-docker_sigul_client_config:/etc/sigul",
+            "sigul-docker_sigul_client_config:/etc/sigul",
             "-v",
-            "sigul-sign-docker_sigul_client_nss:/etc/pki/sigul/client",
+            "sigul-docker_sigul_client_nss:/etc/pki/sigul/client",
             "-v",
-            "sigul-sign-docker_sigul_bridge_nss:/etc/pki/sigul/bridge-shared:ro",
+            "sigul-docker_sigul_bridge_nss:/etc/pki/sigul/bridge-shared:ro",
             "-e",
             "SIGUL_ROLE=client",
             "-e",
@@ -529,7 +529,7 @@ class TestCommunication:
             "--user",
             "1000:1000",
             "-v",
-            "sigul-sign-docker_sigul_client_config:/etc/sigul",
+            "sigul-docker_sigul_client_config:/etc/sigul",
             CLIENT_IMAGE,
             "cat",
             "/etc/sigul/client.conf",
@@ -598,11 +598,11 @@ class TestAuthentication:
             "--network",
             NETWORK_NAME,
             "-v",
-            "sigul-sign-docker_sigul_client_config:/etc/sigul",
+            "sigul-docker_sigul_client_config:/etc/sigul",
             "-v",
-            "sigul-sign-docker_sigul_client_nss:/etc/pki/sigul/client",
+            "sigul-docker_sigul_client_nss:/etc/pki/sigul/client",
             "-v",
-            "sigul-sign-docker_sigul_bridge_nss:/etc/pki/sigul/bridge-shared:ro",
+            "sigul-docker_sigul_bridge_nss:/etc/pki/sigul/bridge-shared:ro",
             CLIENT_IMAGE,
             "bash",
             "-c",
@@ -699,11 +699,11 @@ class TestFunctional:
             "--network",
             NETWORK_NAME,
             "-v",
-            "sigul-sign-docker_sigul_client_config:/etc/sigul",
+            "sigul-docker_sigul_client_config:/etc/sigul",
             "-v",
-            "sigul-sign-docker_sigul_client_nss:/etc/pki/sigul/client",
+            "sigul-docker_sigul_client_nss:/etc/pki/sigul/client",
             "-v",
-            "sigul-sign-docker_sigul_bridge_nss:/etc/pki/sigul/bridge-shared:ro",
+            "sigul-docker_sigul_bridge_nss:/etc/pki/sigul/bridge-shared:ro",
             "-e",
             "SIGUL_ROLE=client",
             "-e",
@@ -726,9 +726,9 @@ class TestFunctional:
             "--network",
             NETWORK_NAME,
             "-v",
-            "sigul-sign-docker_sigul_client_config:/etc/sigul",
+            "sigul-docker_sigul_client_config:/etc/sigul",
             "-v",
-            "sigul-sign-docker_sigul_client_nss:/etc/pki/sigul/client",
+            "sigul-docker_sigul_client_nss:/etc/pki/sigul/client",
             CLIENT_IMAGE,
             "bash",
             "-c",
