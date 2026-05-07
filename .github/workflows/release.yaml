@@ -265,6 +265,86 @@ jobs:
           SIGUL_RUNNER_PLATFORM: ${{ steps.platform.outputs.id }}
         run: ./scripts/deploy-sigul-infrastructure.sh
 
+      # yamllint disable rule:line-length
+      - name: 'Setup client for integration tests'
+        shell: bash
+        env:
+          SIGUL_CLIENT_IMAGE: 'client-${{ steps.platform.outputs.id }}-image:test'
+        run: |
+          set -euo pipefail
+          echo '🔧 Setting up client container for integration tests...'
+
+          NETWORK_NAME=$(docker network ls --filter "name=sigul" \
+            --format "{{.Name}}" | head -1)
+          echo "Using network: ${NETWORK_NAME}"
+
+          docker volume create sigul-docker_sigul_client_nss || true
+          docker volume create sigul-docker_sigul_client_config || true
+
+          docker run --rm \
+            -v sigul-docker_sigul_client_nss:/target-nss \
+            -v sigul-docker_sigul_client_config:/target-config \
+            alpine:3.19 \
+            sh -c 'chown -R 1000:1000 /target-nss /target-config'
+
+          BRIDGE_NSS_VOLUME=$(docker volume ls --format "{{.Name}}" \
+            | grep -E "bridge.*nss|sigul.*bridge.*nss" | head -1)
+          echo "Bridge NSS volume: ${BRIDGE_NSS_VOLUME}"
+
+          NSS_PASSWORD=$(cat test-artifacts/nss-password)
+
+          docker run -d --name sigul-client-init \
+            --network "${NETWORK_NAME}" \
+            --user sigul \
+            -v "${BRIDGE_NSS_VOLUME}":/etc/pki/sigul/bridge:ro \
+            -v sigul-docker_sigul_client_nss:/etc/pki/sigul/client:rw \
+            -v sigul-docker_sigul_client_config:/etc/sigul:rw \
+            -e NSS_PASSWORD="${NSS_PASSWORD}" \
+            "${SIGUL_CLIENT_IMAGE}" \
+            tail -f /dev/null
+
+          sleep 3
+
+          echo "Initializing client certificates..."
+          docker exec sigul-client-init /usr/local/bin/init-client-certs.sh
+
+          docker exec --user root sigul-client-init bash -c \
+            'cat > /etc/sigul/client.conf << "EOFCONFIG"
+          [client]
+          bridge-hostname: sigul-bridge.example.org
+          bridge-port: 44334
+          server-hostname: sigul-server.example.org
+          # Default identity for batch-mode requests.  Without this,
+          # sigul falls back to getpass.getuser() inside the client
+          # container - that resolves to the sigul user, which is not
+          # the admin user we created in the server database, so
+          # every request would fail AUTHENTICATION_FAILED.
+          user-name: admin
+
+          [gnupg]
+          gnupg-bin: /usr/bin/gpg2
+          gnupg-key-type: RSA
+          gnupg-key-length: 4096
+
+          [nss]
+          client-cert-nickname: sigul-client-cert
+          nss-ca-cert-nickname: sigul-ca
+          nss-bridge-cert-nickname: sigul-bridge-cert
+          nss-dir: /etc/pki/sigul/client
+          nss-password: '"${NSS_PASSWORD}"'
+          nss-min-tls: tls1.2
+          EOFCONFIG
+          '
+
+          docker exec --user root sigul-client-init \
+            chown sigul:sigul /etc/sigul/client.conf
+
+          docker stop sigul-client-init
+          docker rm sigul-client-init
+
+          echo "✅ Client setup complete"
+      # yamllint enable rule:line-length
+
       - name: 'Run integration tests'
         shell: bash
         env:
