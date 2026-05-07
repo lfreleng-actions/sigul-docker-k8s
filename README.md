@@ -239,15 +239,101 @@ docker compose -f docker-compose.sigul.yml down -v --remove-orphans
   outside CI.
 - [`OPERATIONS_GUIDE.md`](./OPERATIONS_GUIDE.md) — day-to-day operation,
   monitoring, health checks.
-- [`TESTING.md`](./TESTING.md) — test infrastructure overview and the local
-  ↔ CI parity guarantees the suites enforce.
+- [`TESTING.md`](./TESTING.md) — test infrastructure overview.
 - [`patches/README.md`](./patches/README.md) — what each downstream Sigul
   patch fixes and why.
-- [`docs/`](./docs) — deeper dives on individual subsystems (NSS, container
-  logging, network architecture).
+- [`docs/`](./docs) — deeper dives on individual topics.
 
 ## Contributing
 
-See the patches `README.md` for guidance on how the Sigul source patches are
-structured and applied. New CI changes should land via a pull request to
-`main`; the build/test workflow gates the merge.
+Contributions land through GitHub pull requests against `main`.  The
+`Sigul Build/Test 🐳` workflow is required to pass before a PR can
+merge — it builds all three images for both `linux/amd64` and
+`linux/arm64`, runs the integration test suite, and then runs the full
+end-to-end signing test suite against the resulting stack.  Treat a
+failing CI run as the source of truth.
+
+### Where to make which change
+
+- **Sigul behaviour fixes** — add a numbered patch to
+  [`patches/`](./patches/) (`NN-short-description.patch`).  The patch
+  applies on top of upstream Sigul during the image build.  Document
+  every patch in [`patches/README.md`](./patches/README.md) using the
+  same `Status / Affects / Problem / Fix / Impact` structure as the
+  existing entries; if a patch is critical for the stack to start at
+  all, mark it as such.  Verify `git apply --check` works against the
+  bundled Sigul source tree before pushing.
+- **Container build / packaging changes** — prefer
+  [`build-scripts/install-sigul.sh`](./build-scripts/install-sigul.sh)
+  over editing the Dockerfiles, so the install path stays uniform
+  across `linux/amd64` and `linux/arm64`.  When you do touch a
+  Dockerfile, change all three (`Dockerfile.{client,server,bridge}`)
+  consistently — they share a base image and most of their package
+  set.
+- **Test changes** — the two end-to-end suites are
+  [`scripts/run-integration-tests.sh`](./scripts/run-integration-tests.sh)
+  (control plane: list-users, list-keys, double-TLS handshake, etc.)
+  and
+  [`scripts/run-signing-tests.sh`](./scripts/run-signing-tests.sh)
+  (key lifecycle, sign-text/data/rpm/rpms, user and key-access
+  lifecycle, with each output independently verified by gpg or rpm).
+  New tests should fit into the existing `phase`/`testcase`/`pass`/
+  `fail` shape and remain idempotent against repeated runs.
+- **Workflow / CI changes** — [`build-test.yaml`](./.github/workflows/build-test.yaml)
+  is the only workflow that exercises the stack end-to-end; iterate
+  on it via `workflow_dispatch` with `publish_ghcr: false` until
+  it's green.
+- **Documentation changes** — keep the assertions in this README,
+  `DEPLOYMENT_GUIDE.md`, `OPERATIONS_GUIDE.md` and `TESTING.md`
+  consistent with what the scripts and Dockerfiles actually do.
+  When you delete a script or rename a file, run a `grep -rn` for
+  the old name across the repo and update or drop the dangling
+  references.
+
+### Local verification before pushing
+
+1. Build the three images for your host architecture (see
+   [Bringing up the stack locally](#bringing-up-the-stack-locally)).
+2. Bring the stack up with `scripts/deploy-sigul-infrastructure.sh`.
+3. Run `scripts/run-integration-tests.sh` and
+   `scripts/run-signing-tests.sh`; both should exit `0` with all tests
+   passing.
+4. If you changed the action surface, run a manual
+   `workflow_dispatch` of `Sigul Build/Test 🐳` with
+   `publish_ghcr: false` to confirm both `linux/amd64` and
+   `linux/arm64` legs stay green.
+
+### Commit and PR conventions
+
+- **Conventional Commits**, capitalised types: `Fix(scope):`,
+  `Feat(scope):`, `Docs(scope):`, `Refactor(scope):`,
+  `Test(scope):`, `Chore(scope):`, `CI(scope):`, `Build(scope):`,
+  `Perf(scope):`, `Style(scope):`, `Revert(scope):`.  See
+  [`.gitlint`](./.gitlint) for the enforced set.
+- **Subject ≤ 50 chars, body wrapped at 72** (URL lines exempt).
+- **DCO sign-off required** — every commit must end with
+  `Signed-off-by: Name <email>`; use `git commit -s`.
+- **Atomic commits** — one logical change per commit.  In particular,
+  do not mix code or doc changes with task-tracking updates.
+- **Pre-commit hooks** — the repository ships a
+  [`.pre-commit-config.yaml`](./.pre-commit-config.yaml) that runs
+  ruff, mypy, yamllint, actionlint, reuse (SPDX), codespell,
+  markdownlint, gitlint and a few project-specific validators.
+  Install with `pre-commit install`; never bypass with `--no-verify`.
+  If a hook auto-fixes files, stage the fixes and re-commit — do
+  not `git reset` after a failed commit.
+- **AI-assisted commits** — include a `Co-authored-by:` trailer for
+  the model used (e.g. `Co-authored-by: Claude <claude@anthropic.com>`)
+  immediately above the `Signed-off-by` line.
+- **SPDX headers** — every new source file needs SPDX
+  `Apache-2.0` and copyright headers.  See
+  [`REUSE.toml`](./REUSE.toml) for file-type-specific patterns; the
+  `reuse` pre-commit hook will flag misses.
+
+### Reporting an issue
+
+Use [GitHub Issues](https://github.com/lfreleng-actions/sigul-docker/issues).
+For TLS / NSS / handshake problems include the auth-debug capture
+produced by setting `enable_auth_debug: true` on the
+`workflow_dispatch` form, or by exporting `SIGUL_DEBUG_AUTH=1`
+before running the deploy script locally.
