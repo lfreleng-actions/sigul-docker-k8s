@@ -22,11 +22,15 @@ deliverables live in this repository:
 The action is a GitHub composite action that builds the Sigul client image
 on the runner and uses it to sign one or more workspace files or a git
 tag.  The build only reuses an already-present local image, so on
-GitHub-hosted runners (where the Docker daemon is ephemeral) the build
-runs once per workflow run; on self-hosted runners or within a single
-job the image persists between steps.  If you need cross-run caching,
-layer a `docker/build-push-action` step with `cache-from`/`cache-to` of
-type `gha` ahead of the `uses:` line below.
+GitHub-hosted runners (where the Docker daemon is per-job) the build
+runs once per job; on self-hosted runners the image persists across
+jobs that share the same daemon.  If you need cross-run caching, run a
+`docker/build-push-action` step with `cache-from` / `cache-to: type=gha`
+*and* tag the loaded image as either
+`client-${PLATFORM_ID}-image:${PLATFORM_ID}` or
+`client-${PLATFORM_ID}-image:action` ahead of the `uses:` line below —
+those are the tags this action's build step looks for before deciding
+to skip its own `docker build`.
 
 ### Sign a single file
 
@@ -88,7 +92,7 @@ type `gha` ahead of the `uses:` line below.
 | `sign-type` | no | `sign-data` | Either `sign-data` or `sign-git-tag`. |
 | `sign-object` | yes | — | File to sign (or newline-separated list of files), or the name of an annotated git tag. |
 | `sigul-key-name` | yes | — | Name of the key on the Sigul server to sign with. |
-| `sigul-conf` | yes | — | Body of the Sigul client configuration file (`client.conf`).  Written verbatim into the container at `client.conf` and used by every `sigul --batch -c client.conf …` invocation, so the bridge hostname / port / NSS settings the client needs all live here. |
+| `sigul-conf` | yes | — | Body of the Sigul client configuration file. The action's entrypoint writes it to `client.conf` inside the container's Sigul config directory (`/var/sigul/config`, falling back to `/etc/sigul` or `$HOME/.sigul-config`) and passes the resulting path to every `sigul --batch -c …` invocation. The bridge hostname / port / NSS settings the client needs all live here. |
 | `sigul-pass` | yes | — | Passphrase for the Sigul key.  Also used as the GPG passphrase to decrypt `sigul-pki`. |
 | `sigul-pki` | yes | — | Client PKI material: a `tar.xz` archive containing a `.sigul/` directory (NSS database, certificates, private key), GPG-encrypted with `sigul-pass`.  May be supplied raw or base64-encoded; the entrypoint auto-detects. |
 | `gh-user` | no | `github.actor` | GitHub user to push the signed tag as (`sign-git-tag` only). |

@@ -242,21 +242,26 @@ _sigul_emit() {
     #     ... <volume mounts> ... <client-image> bash -c '...'`
     #     wrapper is omitted because logging it on every line
     #     would drown out the interesting Sigul commands.
-    #   * The trailing rc-capture / chmod-fixup / `exit \$rc`
-    #     housekeeping that the real exec uses is shown as
-    #     `chmod ... /work` rather than the literal find pipeline
-    #     - the housekeeping is a CI-permission workaround, not
-    #     part of what the sigul command is doing.
+    #   * The trailing `rc=\$?; find /work ... -exec chmod ...;
+    #     exit \$rc` housekeeping that the real exec uses is
+    #     omitted from the printed payload entirely - it's a
+    #     CI-permission workaround, not part of what the sigul
+    #     command is doing, and including it would make a
+    #     copy-pasted line fail because of the shell-quoting
+    #     and find-pipeline syntax.  The find pipeline is
+    #     visible in the source below this printf if you need
+    #     to see the exact form.
     #
     # To reproduce a printed line, take the in-container payload
-    # and substitute it into the docker-run wrapper template that
+    # (just the `umask 0022; <cmd>` portion shown below) and
+    # substitute it into the docker-run wrapper template that
     # the script's startup banner emits as a `[note]` block
     # immediately after the title banner.  That template is
     # generated from the same `CLIENT_IMAGE`, `NETWORK`, volume
     # variables, and `--user 1000:1000` flag that this helper
     # uses, so the wrapper matches the real exec exactly.
     printf '%b$ printf %q | %s%b\n' "${C_YELLOW}" \
-        "$printed_stdin" "umask 0022; ${cmd}; chmod ... /work" \
+        "$printed_stdin" "umask 0022; ${cmd}" \
         "${C_RESET}" >&2
 
     # shellcheck disable=SC2059
@@ -361,15 +366,26 @@ note "Client config volume: ${CLIENT_CONFIG_VOLUME}"
 note "Admin password loaded from test-artifacts/admin-password"
 note ""
 note "Reproducer wrapper for printed sigul-client invocations:"
+# Render the wrapper template with shell-escaped substitutions (via
+# printf %q) so a path containing whitespace or shell metacharacters
+# would still produce a copy-pasteable command, matching what the
+# real `docker run` invocation tolerates.
+_REPRO_NETWORK=$(printf '%q' "${NETWORK}")
+_REPRO_NSS=$(printf '%q' "${CLIENT_NSS_VOLUME}")
+_REPRO_CFG=$(printf '%q' "${CLIENT_CONFIG_VOLUME}")
+_REPRO_WORK=$(printf '%q' "${HOST_WORKDIR}")
+_REPRO_FIX=$(printf '%q' "${FIXTURES_DIR}")
+_REPRO_IMG=$(printf '%q' "${CLIENT_IMAGE}")
 note "  printf '<passphrase>\\0' | docker run --rm -i \\"
 note "    --user 1000:1000 \\"
-note "    --network ${NETWORK} \\"
-note "    -v ${CLIENT_NSS_VOLUME}:/etc/pki/sigul/client:ro \\"
-note "    -v ${CLIENT_CONFIG_VOLUME}:/etc/sigul:ro \\"
-note "    -v ${HOST_WORKDIR}:/work:rw \\"
-note "    -v ${FIXTURES_DIR}:/fixtures:ro \\"
-note "    ${CLIENT_IMAGE} \\"
+note "    --network ${_REPRO_NETWORK} \\"
+note "    -v ${_REPRO_NSS}:/etc/pki/sigul/client:ro \\"
+note "    -v ${_REPRO_CFG}:/etc/sigul:ro \\"
+note "    -v ${_REPRO_WORK}:/work:rw \\"
+note "    -v ${_REPRO_FIX}:/fixtures:ro \\"
+note "    ${_REPRO_IMG} \\"
 note "    bash -c '<paste in-container command here>'"
+unset _REPRO_NETWORK _REPRO_NSS _REPRO_CFG _REPRO_WORK _REPRO_FIX _REPRO_IMG
 
 # ----------------------------------------------------------------------
 # PHASE 0: Reset state for idempotent reruns
