@@ -36,8 +36,6 @@ type `gha` ahead of the `uses:` line below.
       sign-type: 'sign-data'
       sign-object: ${{ github.workspace }}/artifacts/mypackage.tar.gz
       sigul-key-name: 'my-release-key'
-      sigul-ip: ${{ secrets.SIGUL_IP }}
-      sigul-uri: ${{ secrets.SIGUL_URI }}
       sigul-conf: ${{ secrets.SIGUL_CONF }}
       sigul-pass: ${{ secrets.SIGUL_PASS }}
       sigul-pki: ${{ secrets.SIGUL_PKI }}
@@ -60,8 +58,6 @@ type `gha` ahead of the `uses:` line below.
           artifacts/my-file.jar
           docs/signme.md
       sigul-key-name: 'my-release-key'
-      sigul-ip: ${{ secrets.SIGUL_IP }}
-      sigul-uri: ${{ secrets.SIGUL_URI }}
       sigul-conf: ${{ secrets.SIGUL_CONF }}
       sigul-pass: ${{ secrets.SIGUL_PASS }}
       sigul-pki: ${{ secrets.SIGUL_PKI }}
@@ -80,8 +76,6 @@ type `gha` ahead of the `uses:` line below.
       sigul-key-name: 'my-release-key'
       gh-user: automation-username
       gh-key: ${{ secrets.GITHUB_TOKEN }}
-      sigul-ip: ${{ secrets.SIGUL_IP }}
-      sigul-uri: ${{ secrets.SIGUL_URI }}
       sigul-conf: ${{ secrets.SIGUL_CONF }}
       sigul-pass: ${{ secrets.SIGUL_PASS }}
       sigul-pki: ${{ secrets.SIGUL_PKI }}
@@ -92,15 +86,13 @@ type `gha` ahead of the `uses:` line below.
 | Input | Required | Default | Description |
 | ----- | -------- | ------- | ----------- |
 | `sign-type` | no | `sign-data` | Either `sign-data` or `sign-git-tag`. |
-| `sign-object` | yes | — | File to sign (or newline-separated list of files), or the name of a git tag. |
+| `sign-object` | yes | — | File to sign (or newline-separated list of files), or the name of an annotated git tag. |
 | `sigul-key-name` | yes | — | Name of the key on the Sigul server to sign with. |
-| `sigul-ip` | yes | — | IP address of the Sigul server. Used together with `sigul-uri` to populate `/etc/hosts` inside the action's container. |
-| `sigul-uri` | yes | — | Hostname (URI) of the Sigul server. |
-| `sigul-conf` | yes | — | Sigul client configuration file contents. |
-| `sigul-pass` | yes | — | Passphrase for the Sigul key (key-specific). |
-| `sigul-pki` | yes | — | PKI material for the client, stored as a GPG-armoured file encrypted with `sigul-pass`. |
+| `sigul-conf` | yes | — | Body of the Sigul client configuration file (`client.conf`).  Written verbatim into the container at `client.conf` and used by every `sigul --batch -c client.conf …` invocation, so the bridge hostname / port / NSS settings the client needs all live here. |
+| `sigul-pass` | yes | — | Passphrase for the Sigul key.  Also used as the GPG passphrase to decrypt `sigul-pki`. |
+| `sigul-pki` | yes | — | Client PKI material: a `tar.xz` archive containing a `.sigul/` directory (NSS database, certificates, private key), GPG-encrypted with `sigul-pass`.  May be supplied raw or base64-encoded; the entrypoint auto-detects. |
 | `gh-user` | no | `github.actor` | GitHub user to push the signed tag as (`sign-git-tag` only). |
-| `gh-key` | no | — | GitHub API key for `gh-user`. **Required** for `sign-git-tag`; not used for `sign-data`. |
+| `gh-key` | no | — | GitHub API key for `gh-user`. **Required** for `sign-git-tag`; ignored for `sign-data`. |
 | `sigul-mock-mode` | no | `false` | When `true`, emit deterministic mock signatures locally without contacting a Sigul server. Useful for testing workflow plumbing. |
 
 ### Requirements
@@ -109,9 +101,13 @@ To use the action against a real signing server you need:
 
 - A reachable Sigul server with bridge.
 - A Sigul key whose passphrase matches `sigul-pass`.
-- PKI material (NSS database / certificates) packaged into `sigul-pki`,
-  encrypted using `sigul-pass`.
-- Network connectivity from the GitHub Actions runner to the Sigul bridge.
+- A `client.conf` body for `sigul-conf` that points the client at
+  the right bridge (typically `bridge-hostname` and the matching
+  bridge cert nickname in `[nss]`).
+- A `sigul-pki` archive whose certificates align with the keys and
+  hostnames the bridge expects.
+- Network connectivity from the GitHub Actions runner to the Sigul
+  bridge.
 
 ## Container architecture
 
