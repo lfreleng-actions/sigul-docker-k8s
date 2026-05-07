@@ -938,23 +938,28 @@ jobs:
     timeout-minutes: 1
     # yamllint disable rule:line-length
     steps:
-      - name: 'Generate build summary'
+      - name: 'Generate deploy summary'
         shell: bash
         run: |
           {
             echo "## Sigul Deploy Summary 🐳"
             echo ""
 
-            echo "### Build Results"
-            echo "| Platform | Build | Integration | Status |"
-            echo "|----------|-------|-------------|--------|"
-
-            # Note: In real implementation, check actual job statuses
-            echo "| linux/amd64 | ${{ needs.build-containers.result }} |" \
-              " ${{ needs.functional-tests.result }} | Complete |"
-            echo "| linux/arm64 | ${{ needs.build-containers.result }} |" \
-              " ${{ needs.functional-tests.result }} | Complete |"
+            echo "### Job Results"
+            echo "| Job | Status |"
+            echo "|-----|--------|"
+            echo "| Build (matrix: amd64 + arm64) |" \
+              " ${{ needs.build-containers.result }} |"
+            echo "| Functional Tests (matrix: amd64 + arm64) |" \
+              " ${{ needs.functional-tests.result }} |"
             echo ""
+
+            # Note: needs.<job>.result is the *overall* matrix outcome
+            # ('success' iff every matrix leg passed).  GitHub does not
+            # currently expose per-leg results to a downstream summary
+            # job without explicit job outputs, so we report the
+            # overall status only and let maintainers click into the
+            # individual matrix legs in the UI for per-platform detail.
 
             echo "### Functional Tests"
             echo "- **Status**: ${{ needs.functional-tests.result }}"
