@@ -68,6 +68,11 @@ fi
 while [ $# -gt 0 ]; do
     case "$1" in
         --source)
+            if [ $# -lt 2 ]; then
+                echo "Error: --source requires a directory argument" >&2
+                usage >&2
+                exit 2
+            fi
             SRC="$2"
             shift 2
             ;;
@@ -88,10 +93,17 @@ while [ $# -gt 0 ]; do
 done
 
 if [ "$CLEAN" -eq 1 ]; then
-    echo "Removing any previously-synced sigul source from ${DEST}"
-    # Preserve the .gitkeep so the path is still legal in Dockerfiles
-    find "${DEST}" -mindepth 1 -not -name '.gitkeep' -delete
-    echo "Done.  Next docker build will clone Sigul from upstream."
+    if [ -d "${DEST}" ]; then
+        echo "Removing any previously-synced sigul source from ${DEST}"
+        # Preserve the .gitkeep so the path is still legal in
+        # Dockerfiles after the wipe.
+        find "${DEST}" -mindepth 1 -not -name '.gitkeep' -delete
+        echo "Done.  Next docker build will clone Sigul from upstream."
+    else
+        # Nothing to clean - --clean is idempotent and a no-op when
+        # the destination doesn't exist yet.
+        echo "Nothing to clean: ${DEST} does not exist."
+    fi
     exit 0
 fi
 
@@ -128,7 +140,12 @@ else
     if [ -f "${DEST}/.gitkeep" ]; then
         cp "${DEST}/.gitkeep" "${keepfile}"
     fi
-    rm -rf "${DEST:?}/"*
+    # Mimic 'rsync --delete' semantics: remove regular files AND
+    # dotfiles/dotdirs (e.g. .github, .pytest_cache).  Plain
+    # 'rm -rf ${DEST:?}/*' does not match dotted entries so they
+    # would otherwise survive into the new tree.
+    find "${DEST}" -mindepth 1 -not -name '.gitkeep' \
+        -exec rm -rf {} +
     if [ -s "${keepfile}" ]; then
         cp "${keepfile}" "${DEST}/.gitkeep"
     fi
