@@ -1,0 +1,67 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+#
+# Fix: bridge no longer hard-references fedora.client when FAS is absent.
+#
+# Sigul's bridge.py imports fedora.client conditionally::
+#
+#     try:
+#         import fedora.client
+#         have_fas = True
+#     except ImportError:
+#         have_fas = False
+#
+# but later in main() the privilege-drop block sets attributes on
+# ``fedora.client.baseclient`` *unconditionally*.  When the optional
+# python-fedora package is not installed, the module reference is
+# never created and the bare ``fedora.client.baseclient.SESSION_DIR``
+# expression raises::
+#
+#     NameError: name 'fedora' is not defined
+#
+# which the surrounding ``try/except Exception`` catches but reports
+# misleadingly as::
+#
+#     ERROR: Error switching to user 1000: name 'fedora' is not defined
+#
+# (formatted by the unrelated 'switching to user' logger) and the
+# bridge daemon exits.  The end result is that bridges built on
+# Fedora 44+ - where python3-fedora was retired from the package set
+# - cannot start at all even though FAS authentication is purely
+# optional and our deployment doesn't use it.
+#
+# Fix
+# ---
+# Guard the FAS session-dir initialisation with ``if have_fas:``,
+# matching the import guard at the top of the module.  When FAS is
+# absent the privilege drop continues to work and the bridge starts
+# normally.
+#
+# Companion to patches 01, 02, 03; applied after all of them.
+
+diff --git a/src/bridge.py b/src/bridge.py
+--- a/src/bridge.py
++++ b/src/bridge.py
+@@ -1517,11 +1517,17 @@ def main():
+             os.seteuid(config.daemon_uid)
+             utils.update_HOME_for_uid(config)
+             # Ugly hack: FAS uses $HOME at time of import
+-            fedora.client.baseclient.SESSION_DIR = \
+-                os.path.expanduser('~/.fedora')
+-            fedora.client.baseclient.SESSION_FILE = \
+-                os.path.join(fedora.client.baseclient.SESSION_DIR,
+-                             '.fedora_session')
++            # Only do this when the optional fedora.client module was
++            # actually imported successfully at module load time.  On
++            # systems without python-fedora installed (e.g. Fedora 44+
++            # where python3-fedora was retired) the bare reference
++            # would raise NameError and abort daemon startup.
++            if have_fas:
++                fedora.client.baseclient.SESSION_DIR = \
++                    os.path.expanduser('~/.fedora')
++                fedora.client.baseclient.SESSION_FILE = \
++                    os.path.join(fedora.client.baseclient.SESSION_DIR,
++                                 '.fedora_session')
+         except Exception:
+             logging.error('Error switching to user %d: %s', config.daemon_uid,
+                           sys.exc_info()[1])

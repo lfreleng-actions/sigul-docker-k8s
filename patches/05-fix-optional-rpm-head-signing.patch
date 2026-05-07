@@ -1,0 +1,82 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+#
+# Fix: rpm_head_signing import is now optional.
+#
+# Sigul's server.py imports rpm_head_signing at module top level.
+# On Fedora 44 the stock rpm-head-signing-1.7.4-12.fc44 package
+# ships a C extension that references rpmWriteSignature, a symbol
+# the librpm ABI no longer exports as of RPM 6.0.1 (the version
+# shipped with Fedora 44).  The package itself was last rebuilt
+# against the older RPM 4.x ABI; it has not yet been updated for
+# the RPM 6 ABI.  At import time the C-extension therefore fails
+# to resolve the symbol and raises::
+#
+#     ImportError: /usr/lib64/python3.14/site-packages/
+#         rpm_head_signing/insertlib.cpython-314-aarch64-linux-gnu.so:
+#         undefined symbol: rpmWriteSignature
+#
+# Because the import is at module top level, the whole server
+# crashes on startup before any client request can be handled.
+#
+# rpm_head_signing is only used by the optional ``sign-rpms
+# --head-signing`` code path.  Standard sign-rpm and sign-rpms
+# without --head-signing do not need it.  Tolerate the import
+# failure here and only raise a helpful error if and when a
+# head-signing request actually arrives, so the server starts
+# cleanly on a stock Fedora 44+ host.
+#
+# Companion to patches 01, 02, 03, 04; applied after all of them.
+
+diff --git a/src/server.py b/src/server.py
+--- a/src/server.py
++++ b/src/server.py
+@@ -44,8 +44,29 @@ from cryptography.hazmat.backends import default_backend \
+     as crypto_default_backend
+ from cryptography import x509
+
+-import rpm_head_signing.extract_header
+-import rpm_head_signing.insert_signature
++# Optional dependency: rpm_head_signing is only needed for the
++# 'sign-rpms --head-signing' code path.  On Fedora 44 the stock
++# rpm-head-signing package was last rebuilt against the older
++# RPM 4.x ABI and references rpmWriteSignature, a symbol that
++# RPM 6.0.1 (shipped with Fedora 44) no longer exports, so the
++# C-extension fails to load:
++#
++#     ImportError: insertlib.cpython-314-aarch64-linux-gnu.so:
++#     undefined symbol: rpmWriteSignature
++#
++# The standard sign-rpm code path does not need this module, so
++# tolerate the import failure here and only raise a helpful error
++# when a head-signing request actually arrives (see
++# RpmHeadSignSigningContext.sign_rpm below).
++try:
++    import rpm_head_signing.extract_header
++    import rpm_head_signing.insert_signature
++    _have_rpm_head_signing = True
++    _rpm_head_signing_import_error = None
++except ImportError as _rhs_e:
++    rpm_head_signing = None
++    _have_rpm_head_signing = False
++    _rpm_head_signing_import_error = str(_rhs_e)
+
+ import nss.error
+ import nss.nss
+@@ -1041,6 +1041,16 @@ class RpmHeadSignSigningContext(object):
+
+         '''
+
++        if not _have_rpm_head_signing:
++            raise RPMFileError(
++                'sign-rpms --head-signing is not available on this server: '
++                'rpm_head_signing failed to import at startup ({0!s}). '
++                'On Fedora 44+ the stock rpm-head-signing package is '
++                'incompatible with RPM 6.x; rebuild it against the new '
++                'API or use the standard sign-rpm code path '
++                '(without --head-signing).'.format(
++                    _rpm_head_signing_import_error))
++
+         logging.info("Starting signing operation (head-signing)")
+         with (tempfile.NamedTemporaryFile() as header_file,
+                 tempfile.NamedTemporaryFile() as signed_header_file,

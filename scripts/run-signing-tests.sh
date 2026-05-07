@@ -98,7 +98,26 @@ fi
 # owned by the runner user.  This dir holds nothing sensitive - all
 # fixture passphrases here are publicly known - so 0777 is fine.
 HOST_WORKDIR="$(mktemp -d /tmp/sigul-signing-tests.XXXXXX)"
-trap 'rm -rf "$HOST_WORKDIR"' EXIT
+# The cleanup runs as the host runner, but Phase 3 produces files
+# (rpmbuild trees, rpm databases) owned by the in-container sigul
+# user UID 1000.  On Linux CI runners the host runner UID differs
+# from 1000, so a host-side `rm -rf` hits EACCES on every
+# container-owned tree.  Do the deletion inside a throwaway
+# container running as root, where the deletion always succeeds
+# regardless of ownership; the bind-mount means the host-side
+# directory ends up empty and the host `rm` only has to remove
+# the (host-owned) outer mktemp dir.
+cleanup_workdir() {
+    docker run --rm \
+        -v "${HOST_WORKDIR}:/work:rw" \
+        --entrypoint sh \
+        --user 0:0 \
+        alpine:3.19 \
+        -c 'rm -rf /work/* /work/.[!.]* /work/..?* 2>/dev/null || true' \
+        >/dev/null 2>&1 || true
+    rmdir "$HOST_WORKDIR" 2>/dev/null || rm -rf "$HOST_WORKDIR"
+}
+trap cleanup_workdir EXIT
 chmod 0777 "$HOST_WORKDIR"
 
 # Test counters.
@@ -197,8 +216,34 @@ _sigul_emit() {
     done
     unset IFS
 
+    # Emit a single human-readable line describing what is about
+    # to run.  Two simplifications are deliberate:
+    #
+    #   * Passphrase values are replaced with [REDACTED:<LABEL>]
+    #     placeholders so the log never carries a secret value
+    #     even when the test fixture passphrases are public.
+    #   * Only the *in-container* shell command is shown - i.e.
+    #     what `bash -c` will execute inside the sigul-client
+    #     image.  The surrounding `docker run --rm -i --user
+    #     1000:1000 --network ... <volume mounts> ...` boilerplate
+    #     is constant across every invocation and would just
+    #     drown the actually-interesting payload in noise.
+    #
+    # As a consequence the line is NOT directly copy-pasteable
+    # into a host shell - reproducing a failure means running the
+    # same `umask 0022; <cmd>; chmod -R a+rX /work` block inside
+    # `docker run --rm -i --user 1000:1000 --network <network>
+    # -v <client-nss>:/etc/pki/sigul/client:ro -v <client-config>:
+    # /etc/sigul:ro -v <workdir>:/work:rw -v <fixtures>:/fixtures
+    # :ro <client-image> bash -c '...'`.  See the wrapping
+    # `docker run` invocation immediately below for the exact
+    # form.  All of that wrapper context (network name, volume
+    # names, image tag, workdir) is logged separately at the top
+    # of the run by `phase` / `note` banners, which is enough to
+    # reconstruct the full invocation.
     printf '%b$ printf %q | %s%b\n' "${C_YELLOW}" \
-        "$printed_stdin" "${cmd}" "${C_RESET}" >&2
+        "$printed_stdin" "umask 0022; ${cmd}; chmod -R a+rX /work" \
+        "${C_RESET}" >&2
 
     # shellcheck disable=SC2059
     printf "$printf_fmt" "${printf_args[@]}" \
@@ -210,7 +255,28 @@ _sigul_emit() {
             -v "${HOST_WORKDIR}:/work:rw" \
             -v "${FIXTURES_DIR}:/fixtures:ro" \
             "$CLIENT_IMAGE" \
-            bash -c "${cmd}"
+            bash -c "umask 0022; ${cmd}; rc=\$?; chmod -R a+rX /work 2>/dev/null || true; exit \$rc"
+    # ^ Two layers are needed to make sigul's output files
+    # readable from the host shell on Linux CI runners:
+    #
+    #   1. umask 0022 in the container so any *new* files sigul
+    #      creates via open(O_CREAT) end up mode 0644.
+    #   2. A post-command 'chmod -R a+rX /work' to fix up files
+    #      created via Python's tempfile.mkstemp() which hardcodes
+    #      mode 0600 and ignores the umask entirely.  Sigul's
+    #      utils.write_new_file() goes through mkstemp() and then
+    #      os.rename()s the temp file into place, so the final
+    #      output stays mode 0600 unless we explicitly relax it.
+    #
+    # On macOS Docker (osxfs) host-side UID/perms are silently
+    # mapped so the difference is invisible there; on Linux CI
+    # the runner UID and the in-container sigul UID 1000 are
+    # distinct, so without the chmod the host shell gets EACCES
+    # on every output file and Phase 2/4 verifications fail with
+    # 'Permission denied' / 'payload differs after verify'.
+    # The rc capture preserves the underlying command's exit
+    # status so the caller's `if sigul_run ...; then` branch
+    # still works correctly.
 }
 
 sigul_run() {
@@ -289,7 +355,7 @@ for _key in ci-test-new-key ci-test-imported-key; do
             -v "${CLIENT_NSS_VOLUME}:/etc/pki/sigul/client:ro" \
             -v "${CLIENT_CONFIG_VOLUME}:/etc/sigul:ro" \
             "$CLIENT_IMAGE" \
-            bash -c "sigul --batch -c /etc/sigul/client.conf \
+            bash -c "umask 0022; sigul --batch -c /etc/sigul/client.conf \
                 delete-key $_key 2>&1" \
         || true
 done
@@ -521,7 +587,7 @@ note "the NEWKEY_NEW passphrase) for all sign-{text,data} tests."
 # real keyring untouched.
 VERIFY_GPGHOME="$(mktemp -d /tmp/sigul-verify-gpghome.XXXXXX)"
 chmod 700 "$VERIFY_GPGHOME"
-trap 'rm -rf "$HOST_WORKDIR" "$VERIFY_GPGHOME"' EXIT
+trap 'cleanup_workdir; rm -rf "$VERIFY_GPGHOME"' EXIT
 
 testcase "2.0  Set up a throwaway host-side GnuPG keyring for verification"
 
@@ -712,9 +778,9 @@ phase "3: RPM SIGNING"
 
 # Use a stable, dist-tag-agnostic filename for the test RPM.  We
 # rename the rpmbuild output (which embeds the running container's
-# %{?dist} tag, e.g. .fc41 today, .fc44 after the planned base-image
-# bump) to a fixed name so the rest of the suite can reference it
-# without caring about the platform.
+# %{?dist} tag, e.g. .fc44 on the current images) to a fixed name
+# so the rest of the suite can reference it without caring about
+# the platform.
 RPM_FILENAME="sigul-ci-test.rpm"
 RPM_PATH="/work/${RPM_FILENAME}"
 RPM_HOSTPATH="$(hostpath "${RPM_PATH}")"
@@ -761,6 +827,14 @@ note "Using --dbpath keeps this isolated from any real RPM database."
 
 RPMDB="$(hostpath /work/rpmdb)"
 mkdir -p "$RPMDB"
+# rpm 6 in F44 takes an exclusive sqlite lock on $RPMDB/.rpm.lock
+# at startup.  When this directory is created on the host (by
+# the runner UID) and then mounted into a container running as
+# UID 1000, the host-owned 0755 perms block the container from
+# creating .rpm.lock and the whole rpmdb operation fails with
+# 'can't create transaction lock' / 'Operation not permitted'.
+# Drop perms so the in-container UID can write.
+chmod 0777 "$RPMDB"
 showrun "docker run --rm \\
     -v '${HOST_WORKDIR}:/work:rw' \\
     --entrypoint rpm \\
@@ -835,8 +909,23 @@ SIGNED_V4_OUT=$(
         "${CLIENT_IMAGE}" \
         --dbpath /work/rpmdb -Kv "${SIGNED_V4}" 2>&1
 )
-if grep -q 'Header V4 RSA/SHA256 Signature.*OK' <<< "$SIGNED_V4_OUT"; then
-    pass "rpm -Kv accepts the V4 RSA/SHA256 signature"
+# RPM 4 (Fedora <= 41) prints lines like:
+#   Header V4 RSA/SHA256 Signature, key ID ...: OK
+# RPM 6 (Fedora 44+) prints:
+#   Header OpenPGP V4 RSA/SHA512 signature, key fingerprint ...: OK
+# Be tolerant of:
+#   - the optional 'Header' / 'Header OpenPGP' prefix wording
+#   - the SHA-* digest variant (SHA256 -> SHA512 default in RPM 6)
+#   - the lowercase 'signature' vs uppercase 'Signature'
+# Anchor 'OK' at end-of-line so we DO NOT match the 'NOKEY'
+# variant rpm prints when the signing key is not in the verifier
+# rpmdb.  Without the anchor 'V4 ... [Ss]ignature.*OK' matches
+# 'signature, key ID ...: NOKEY' (because NOKEY ends in OK) and
+# the 'pass' assertion silently passes when the key is missing
+# from the verifier db - which is exactly what happens on F44 if
+# the rpm --initdb step fails for any reason (see test 3.1).
+if grep -qE 'V4 RSA/SHA[0-9]+ [Ss]ignature.*: OK$' <<< "$SIGNED_V4_OUT"; then
+    pass "rpm -Kv accepts the V4 RSA/SHA-* signature"
 else
     fail "rpm -Kv did NOT report a valid V4 signature"
 fi
@@ -885,7 +974,9 @@ SIGNED_V3_OUT=$(
 #    RPM (the test above verified the exit code);
 #  * rpm -Kv accepts the resulting RPM with a valid V4 signature
 #    (i.e. the V3 path does not break V4 too).
-if grep -q 'V4.*Signature.*OK' <<< "$SIGNED_V3_OUT"; then
+# Tolerate both the RPM 4 and RPM 6 output spellings; see test 3.2.
+# Anchor on ': OK$' to avoid the 'NOKEY' false positive.
+if grep -qE 'V4 .*[Ss]ignature.*: OK$' <<< "$SIGNED_V3_OUT"; then
     pass "rpm -Kv accepts the --v3-signature output (V4 sig still OK)"
 else
     fail "rpm -Kv did NOT report a valid V4 signature on --v3 output"
@@ -933,7 +1024,10 @@ for n in 1 2 3; do
     )
     echo "== batch-${n}.rpm =="
     echo "$OUT"
-    if ! grep -q 'Header V4 RSA/SHA256 Signature.*OK' <<< "$OUT"; then
+    # Tolerate both the RPM 4 and RPM 6 output spellings; see
+    # test 3.2.  Anchor on ': OK$' to avoid the 'NOKEY' false
+    # positive.
+    if ! grep -qE 'V4 RSA/SHA[0-9]+ [Ss]ignature.*: OK$' <<< "$OUT"; then
         BATCH_VERIFY_FAILS=$((BATCH_VERIFY_FAILS + 1))
     fi
 done
@@ -988,7 +1082,7 @@ printf '%s\0' "$ADMIN_PASSWORD" \
         -v "${CLIENT_NSS_VOLUME}:/etc/pki/sigul/client:ro" \
         -v "${CLIENT_CONFIG_VOLUME}:/etc/sigul:ro" \
         "$CLIENT_IMAGE" \
-        bash -c "sigul --batch -c /etc/sigul/client.conf \
+        bash -c "umask 0022; sigul --batch -c /etc/sigul/client.conf \
             delete-user ${TEST_USER} 2>&1" \
     || true
 
@@ -1037,7 +1131,7 @@ NEG_OUT=$(
             -v "${CLIENT_NSS_VOLUME}:/etc/pki/sigul/client:ro" \
             -v "${CLIENT_CONFIG_VOLUME}:/etc/sigul:ro" \
             "$CLIENT_IMAGE" \
-            bash -c "sigul --batch -u ${TEST_USER} \
+            bash -c "umask 0022; sigul --batch -u ${TEST_USER} \
                 -c /etc/sigul/client.conf list-users 2>&1" \
         || true
 )
@@ -1076,10 +1170,11 @@ NEG_OUT=$(
             -v "${CLIENT_CONFIG_VOLUME}:/etc/sigul:ro" \
             -v "${HOST_WORKDIR}:/work:rw" \
             "$CLIENT_IMAGE" \
-            bash -c "sigul --batch -u ${TEST_USER} \
+            bash -c "umask 0022; sigul --batch -u ${TEST_USER} \
                 -c /etc/sigul/client.conf \
                 sign-text -o /work/pre-grant.signed.txt \
-                ${NEW_KEY_NAME} /work/pre-grant.txt 2>&1" \
+                ${NEW_KEY_NAME} /work/pre-grant.txt 2>&1; rc=\$?; \
+                chmod -R a+rX /work 2>/dev/null || true; exit \$rc" \
         || true
 )
 echo "$NEG_OUT"
@@ -1139,10 +1234,11 @@ if printf '%s\0' "$SIGUL_TEST_PW_TESTUSER_KEY" \
         -v "${CLIENT_CONFIG_VOLUME}:/etc/sigul:ro" \
         -v "${HOST_WORKDIR}:/work:rw" \
         "$CLIENT_IMAGE" \
-        bash -c "sigul --batch -u ${TEST_USER} \
+        bash -c "umask 0022; sigul --batch -u ${TEST_USER} \
             -c /etc/sigul/client.conf \
             sign-text -o /work/post-grant.signed.txt \
-            ${NEW_KEY_NAME} /work/post-grant.txt"; then
+            ${NEW_KEY_NAME} /work/post-grant.txt; rc=\$?; \
+            chmod -R a+rX /work 2>/dev/null || true; exit \$rc"; then
     pass "sign-text as ${TEST_USER} returned without error"
 else
     fail "sign-text as ${TEST_USER} exited non-zero"
@@ -1202,10 +1298,11 @@ NEG_OUT=$(
             -v "${CLIENT_CONFIG_VOLUME}:/etc/sigul:ro" \
             -v "${HOST_WORKDIR}:/work:rw" \
             "$CLIENT_IMAGE" \
-            bash -c "sigul --batch -u ${TEST_USER} \
+            bash -c "umask 0022; sigul --batch -u ${TEST_USER} \
                 -c /etc/sigul/client.conf \
                 sign-text -o /work/post-revoke.signed.txt \
-                ${NEW_KEY_NAME} /work/post-grant.txt 2>&1" \
+                ${NEW_KEY_NAME} /work/post-grant.txt 2>&1; rc=\$?; \
+                chmod -R a+rX /work 2>/dev/null || true; exit \$rc" \
         || true
 )
 echo "$NEG_OUT"

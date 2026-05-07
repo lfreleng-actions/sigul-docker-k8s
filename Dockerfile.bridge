@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
 # Simplified Dockerfile for sigul bridge using dedicated build scripts
-FROM fedora:41
+FROM fedora:44
 
 LABEL maintainer="releng@linuxfoundation.org"
 LABEL org.opencontainers.image.title="Sigul Bridge"
@@ -31,14 +31,18 @@ RUN dnf update -y && \
 
 # Install EPEL-dependent packages and Python packages via pip
 # Note: nss-devel and nspr-devel removed - python-nss-ng installed from PyPI (pre-built)
-# Note: Python 3.13 removed the crypt module - install passlib for compatibility
+# Note: Python 3.13/3.14 removed the crypt module - install passlib for compatibility
+# Note: python3-fedora was dropped between Fedora 41 and 44; the bridge's
+#       'import fedora.client' is wrapped in try/except ImportError and only
+#       used when FAS authentication is enabled, which we don't use.
+# Note: gnupg2 is preinstalled in fedora:44, so it's not in the install list.
 RUN dnf install -y --setopt=install_weak_deps=False \
-        rpm-head-signing gnupg2 jq python3-fedora && \
+        rpm-head-signing jq && \
     pip3 install SQLAlchemy==1.3.24 passlib && \
     dnf clean all
 
-# Install crypt module compatibility shim for Python 3.13
-COPY build-scripts/crypt_compat.py /usr/lib/python3.13/site-packages/crypt.py
+# Install crypt module compatibility shim for Python 3.14
+COPY build-scripts/crypt_compat.py /usr/lib/python3.14/site-packages/crypt.py
 
 # Copy patches for debugging (if they exist)
 COPY patches/ /tmp/patches/
@@ -72,7 +76,7 @@ RUN if getent passwd sigul >/dev/null; then \
     echo "sigul ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/sigul && \
     chmod 0440 /etc/sudoers.d/sigul
 
-# Install python-nss-ng v1.0.5 from PyPI (Fedora 41 has Python 3.13 which is compatible)
+# Install python-nss-ng v1.0.5 from PyPI (Fedora 44 has Python 3.14 which is compatible)
 ENV INSTALL_SOURCE=pypi
 ENV PYTHON_NSS_NG_VERSION=1.0.5
 COPY build-scripts/install-python-nss.sh /tmp/install-python-nss.sh
