@@ -19,9 +19,14 @@ deliverables live in this repository:
 
 ## Action usage
 
-The action is a GitHub composite action that builds the Sigul client image on
-the runner (cached across runs) and uses it to sign one or more workspace
-files or a git tag.
+The action is a GitHub composite action that builds the Sigul client image
+on the runner and uses it to sign one or more workspace files or a git
+tag.  The build only reuses an already-present local image, so on
+GitHub-hosted runners (where the Docker daemon is ephemeral) the build
+runs once per workflow run; on self-hosted runners or within a single
+job the image persists between steps.  If you need cross-run caching,
+layer a `docker/build-push-action` step with `cache-from`/`cache-to` of
+type `gha` ahead of the `uses:` line below.
 
 ### Sign a single file
 
@@ -223,9 +228,9 @@ cleans up via a trap on EXIT; nothing is left behind on a successful run.
 ### Tearing the stack down
 
 ```bash
+# Removes all containers, networks and named volumes Compose created
+# from this docker-compose.sigul.yml regardless of project prefix.
 docker compose -f docker-compose.sigul.yml down -v --remove-orphans
-docker volume ls --format '{{.Name}}' | grep '^sigul-docker_' \
-    | xargs -r docker volume rm
 ```
 
 ### Documentation
