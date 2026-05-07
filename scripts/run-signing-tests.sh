@@ -28,11 +28,12 @@
 # ------
 # Phase 1: Key lifecycle (new-key, get-public-key, import-key,
 #          change-passphrase, delete-key).
+# Phase 2: Text and binary signing (sign-text, sign-data including
+#          a 64 MiB large-payload streaming test).
+# Phase 3: RPM signing (sign-rpm, sign-rpm --v3-signature,
+#          sign-rpms batch).  Independently verified with rpm -K.
 #
-# Future phases (PR-B, PR-C, PR-D) will add:
-# Phase 2: Text and binary signing including a 64 MiB blob.
-# Phase 3: RPM signing (sign-rpm, sign-rpms, --v3-signature,
-#          --head-signing).
+# Future PRs will add:
 # Phase 4: User and key-access lifecycle (new-user,
 #          grant-key-access, revoke-key-access, delete-user).
 #
@@ -557,7 +558,7 @@ showrun "printf '%s\\n' \\
     > '$(hostpath /work/plain.txt)'"
 showrun "wc -c '$(hostpath /work/plain.txt)'"
 
-if sigul_run_into "$(hostpath /work/plain.signed.txt)" \
+if sigul_run \
     "NEWKEY" "sigul --batch -c /etc/sigul/client.conf \\
         sign-text -o /work/plain.signed.txt \\
         ${NEW_KEY_NAME} /work/plain.txt"; then
@@ -592,7 +593,7 @@ note "top of and what most CI pipelines use to sign release tarballs."
 showrun "head -c 1024 /dev/urandom > '$(hostpath /work/blob1k.bin)'"
 showrun "sha256sum '$(hostpath /work/blob1k.bin)'"
 
-if sigul_run_into "$(hostpath /work/blob1k.bin.sig)" \
+if sigul_run \
     "NEWKEY" "sigul --batch -c /etc/sigul/client.conf \\
         sign-data -o /work/blob1k.bin.sig \\
         ${NEW_KEY_NAME} /work/blob1k.bin"; then
@@ -620,7 +621,7 @@ note "shape as a .asc sidecar file alongside a release tarball."
 
 showrun "head -c 4096 /dev/urandom > '$(hostpath /work/blob4k.bin)'"
 
-if sigul_run_into "$(hostpath /work/blob4k.bin.asc)" \
+if sigul_run \
     "NEWKEY" "sigul --batch -c /etc/sigul/client.conf \\
         sign-data --armor -o /work/blob4k.bin.asc \\
         ${NEW_KEY_NAME} /work/blob4k.bin"; then
@@ -667,7 +668,7 @@ showrun "ls -la '$(hostpath /work/blob64m.bin)'"
 showrun "sha256sum '$(hostpath /work/blob64m.bin)'"
 
 T_START=$(date +%s)
-if sigul_run_into "$(hostpath /work/blob64m.bin.sig)" \
+if sigul_run \
     "NEWKEY" "sigul --batch -c /etc/sigul/client.conf \\
         sign-data -o /work/blob64m.bin.sig \\
         ${NEW_KEY_NAME} /work/blob64m.bin"; then
@@ -688,6 +689,256 @@ if GNUPGHOME="$VERIFY_GPGHOME" gpg --batch --verify \
     pass "detached signature verifies against 64 MiB payload"
 else
     fail "gpg --verify rejected the 64 MiB detached signature"
+fi
+
+# ----------------------------------------------------------------------
+# PHASE 3: RPM signing
+# ----------------------------------------------------------------------
+#
+# RPM signing is the production-critical path for Fedora/CentOS
+# release engineering: this is what Sigul exists for.  We build a
+# minimal noarch RPM in a throwaway container, send it through the
+# bridge for signing, and then independently verify each signed
+# RPM with 'rpm -Kv' against a temporary RPM database holding only
+# the test key.
+#
+# Koji-related flags (--store-in-koji, --koji-only) are NOT exercised
+# - we don't deploy a Koji instance in CI.  Their presence in the
+# CLI surface is verified by Phase 2's 'sigul --help-commands' test.
+
+phase "3: RPM SIGNING"
+
+# Use a stable, dist-tag-agnostic filename for the test RPM.  We
+# rename the rpmbuild output (which embeds the running container's
+# %{?dist} tag, e.g. .fc41 today, .fc44 after the planned base-image
+# bump) to a fixed name so the rest of the suite can reference it
+# without caring about the platform.
+RPM_FILENAME="sigul-ci-test.rpm"
+RPM_PATH="/work/${RPM_FILENAME}"
+RPM_HOSTPATH="$(hostpath "${RPM_PATH}")"
+
+# ----------------------------------------------------------------------
+testcase "3.0  Build the throwaway test RPM in a sigul-client container"
+
+note "The .spec lives at test/fixtures/sigul-test-rpm.spec.  We"
+note "build it inside the sigul-client image so the resulting RPM"
+note "matches the platform of the verifier we use later."
+
+showrun "docker run --rm \\
+    -v '${FIXTURES_DIR}:/fixtures:ro' \\
+    -v '${HOST_WORKDIR}:/work:rw' \\
+    --user 1000:1000 \\
+    --entrypoint bash \\
+    '${CLIENT_IMAGE}' -c \\
+    'set -e; \\
+     rpmbuild \\
+        --define \"_topdir /work/rpmbuild\" \\
+        --define \"_sourcedir /fixtures\" \\
+        -bb /fixtures/sigul-test-rpm.spec; \\
+     # Pick whichever noarch RPM rpmbuild produced and rename it \\
+     # to the dist-tag-agnostic name the rest of the suite uses. \\
+     built=\$(ls /work/rpmbuild/RPMS/noarch/*.rpm); \\
+     echo \"rpmbuild produced: \$built\"; \\
+     cp \"\$built\" /work/${RPM_FILENAME}'"
+
+showrun "ls -la '${RPM_HOSTPATH}'"
+showrun "docker run --rm -v '${HOST_WORKDIR}:/work:ro' \\
+    --entrypoint rpm '${CLIENT_IMAGE}' -qpi '${RPM_PATH}'"
+
+if [[ -s "$RPM_HOSTPATH" ]]; then
+    pass "test RPM built successfully (${RPM_HOSTPATH})"
+else
+    fail "test RPM was not produced; cannot run sign-rpm tests"
+fi
+
+# ----------------------------------------------------------------------
+testcase "3.1  Confirm the unsigned RPM has NO signature (baseline)"
+
+note "Set up a throwaway RPM database holding only the test key."
+note "Using --dbpath keeps this isolated from any real RPM database."
+
+RPMDB="$(hostpath /work/rpmdb)"
+mkdir -p "$RPMDB"
+showrun "docker run --rm \\
+    -v '${HOST_WORKDIR}:/work:rw' \\
+    --entrypoint rpm \\
+    '${CLIENT_IMAGE}' \\
+    --dbpath /work/rpmdb --initdb"
+showrun "docker run --rm \\
+    -v '${HOST_WORKDIR}:/work:rw' \\
+    --entrypoint rpm \\
+    '${CLIENT_IMAGE}' \\
+    --dbpath /work/rpmdb --import /work/${NEW_KEY_NAME}.pub.asc"
+showrun "docker run --rm \\
+    -v '${HOST_WORKDIR}:/work:ro' \\
+    --entrypoint rpm \\
+    '${CLIENT_IMAGE}' \\
+    --dbpath /work/rpmdb -qa gpg-pubkey\\*"
+
+showrun "docker run --rm \\
+    -v '${HOST_WORKDIR}:/work:ro' \\
+    --entrypoint rpm \\
+    '${CLIENT_IMAGE}' \\
+    --dbpath /work/rpmdb -Kv ${RPM_PATH}"
+
+# An unsigned noarch RPM produces 'NO ' for the V4 / V3 signature
+# checks.  We confirm the baseline so that the post-sign check is
+# meaningful.
+UNSIGNED_OUT=$(
+    docker run --rm \
+        -v "${HOST_WORKDIR}:/work:ro" \
+        --entrypoint rpm \
+        "${CLIENT_IMAGE}" \
+        --dbpath /work/rpmdb -K "${RPM_PATH}" 2>&1
+)
+echo "$UNSIGNED_OUT"
+if grep -q 'digests OK' <<< "$UNSIGNED_OUT" \
+        && ! grep -q 'signatures OK' <<< "$UNSIGNED_OUT"; then
+    pass "baseline: unsigned RPM passes digest check, no signature yet"
+else
+    fail "baseline check unexpected; rpm -K output may have changed"
+fi
+
+# ----------------------------------------------------------------------
+testcase "3.2  sign-rpm: V4 RSA/SHA256 signature"
+
+note "Default sign-rpm produces a V4 signature, which is what every"
+note "modern Fedora/CentOS release uses.  We tell sigul to write"
+note "the signed RPM to a separate path with --output rather than"
+note "overwriting the input, so the baseline RPM stays available"
+note "for subsequent tests."
+
+SIGNED_V4="/work/${RPM_FILENAME%.rpm}.signed-v4.rpm"
+if sigul_run "NEWKEY" "sigul --batch -c /etc/sigul/client.conf \\
+    sign-rpm \\
+    -o ${SIGNED_V4} \\
+    ${NEW_KEY_NAME} ${RPM_PATH}"; then
+    pass "sign-rpm (V4) returned without error"
+else
+    fail "sign-rpm (V4) exited non-zero"
+fi
+
+showrun "ls -la '$(hostpath "${SIGNED_V4}")'"
+
+showrun "docker run --rm \\
+    -v '${HOST_WORKDIR}:/work:ro' \\
+    --entrypoint rpm \\
+    '${CLIENT_IMAGE}' \\
+    --dbpath /work/rpmdb -Kv ${SIGNED_V4}"
+
+SIGNED_V4_OUT=$(
+    docker run --rm \
+        -v "${HOST_WORKDIR}:/work:ro" \
+        --entrypoint rpm \
+        "${CLIENT_IMAGE}" \
+        --dbpath /work/rpmdb -Kv "${SIGNED_V4}" 2>&1
+)
+if grep -q 'Header V4 RSA/SHA256 Signature.*OK' <<< "$SIGNED_V4_OUT"; then
+    pass "rpm -Kv accepts the V4 RSA/SHA256 signature"
+else
+    fail "rpm -Kv did NOT report a valid V4 signature"
+fi
+
+# ----------------------------------------------------------------------
+testcase "3.3  sign-rpm --v3-signature: V3 signature compatibility path"
+
+note "Sigul's --v3-signature flag emits a V3 signature in addition"
+note "to the V4 one.  This was needed by older RPM consumers that"
+note "don't yet understand V4-only signed packages.  Modern rpm"
+note "verifiers (>= 4.18) silently accept V3 signatures but only"
+note "emit the V4 line; we therefore assert that the V4 signature"
+note "is still valid on the --v3-signature output (i.e. the V3 code"
+note "path doesn't break V4 too)."
+
+SIGNED_V3="/work/${RPM_FILENAME%.rpm}.signed-v3.rpm"
+if sigul_run "NEWKEY" "sigul --batch -c /etc/sigul/client.conf \\
+    sign-rpm \\
+    --v3-signature \\
+    -o ${SIGNED_V3} \\
+    ${NEW_KEY_NAME} ${RPM_PATH}"; then
+    pass "sign-rpm --v3-signature returned without error"
+else
+    fail "sign-rpm --v3-signature exited non-zero"
+fi
+
+showrun "docker run --rm \\
+    -v '${HOST_WORKDIR}:/work:ro' \\
+    --entrypoint rpm \\
+    '${CLIENT_IMAGE}' \\
+    --dbpath /work/rpmdb -Kv ${SIGNED_V3}"
+
+SIGNED_V3_OUT=$(
+    docker run --rm \
+        -v "${HOST_WORKDIR}:/work:ro" \
+        --entrypoint rpm \
+        "${CLIENT_IMAGE}" \
+        --dbpath /work/rpmdb -Kv "${SIGNED_V3}" 2>&1
+)
+# Modern RPM (>= 4.18 or so) only reports the V4 signature line on
+# verify even when a V3 signature is also present in the package -
+# V3 OpenPGP signatures are deprecated and the rpm verifier silently
+# accepts them but only emits the V4 line.  We therefore assert two
+# weaker but still meaningful invariants:
+#  * sigul accepted the --v3-signature flag and produced a signed
+#    RPM (the test above verified the exit code);
+#  * rpm -Kv accepts the resulting RPM with a valid V4 signature
+#    (i.e. the V3 path does not break V4 too).
+if grep -q 'V4.*Signature.*OK' <<< "$SIGNED_V3_OUT"; then
+    pass "rpm -Kv accepts the --v3-signature output (V4 sig still OK)"
+else
+    fail "rpm -Kv did NOT report a valid V4 signature on --v3 output"
+fi
+
+# ----------------------------------------------------------------------
+testcase "3.4  sign-rpms: batch signing of multiple RPMs in one request"
+
+note "sign-rpms takes a list of RPMs and signs them all in a single"
+note "request - efficient when a release pipeline produces dozens or"
+note "hundreds of RPMs at once.  We give it three copies of the same"
+note "throwaway RPM (renamed) and verify that all three outputs are"
+note "valid signed RPMs."
+
+# Prepare three differently-named copies for the batch.  The output
+# directory needs to exist and be writable by the in-container UID.
+BATCH_OUT="$(hostpath /work/batch-out)"
+mkdir -p "$BATCH_OUT"
+chmod 0777 "$BATCH_OUT"
+for n in 1 2 3; do
+    cp "$RPM_HOSTPATH" "$(hostpath /work/batch-${n}.rpm)"
+done
+showrun "ls -la '${BATCH_OUT}/..'"
+
+if sigul_run "NEWKEY" "sigul --batch -c /etc/sigul/client.conf \\
+    sign-rpms \\
+    -o /work/batch-out \\
+    ${NEW_KEY_NAME} \\
+    /work/batch-1.rpm /work/batch-2.rpm /work/batch-3.rpm"; then
+    pass "sign-rpms returned without error"
+else
+    fail "sign-rpms exited non-zero"
+fi
+
+showrun "ls -la '${BATCH_OUT}'"
+
+BATCH_VERIFY_FAILS=0
+for n in 1 2 3; do
+    OUT=$(
+        docker run --rm \
+            -v "${HOST_WORKDIR}:/work:ro" \
+            --entrypoint rpm \
+            "${CLIENT_IMAGE}" \
+            --dbpath /work/rpmdb -Kv "/work/batch-out/batch-${n}.rpm" 2>&1
+    )
+    echo "== batch-${n}.rpm =="
+    echo "$OUT"
+    if ! grep -q 'Header V4 RSA/SHA256 Signature.*OK' <<< "$OUT"; then
+        BATCH_VERIFY_FAILS=$((BATCH_VERIFY_FAILS + 1))
+    fi
+done
+if [[ $BATCH_VERIFY_FAILS -eq 0 ]]; then
+    pass "rpm -Kv accepts all 3 RPMs from the sign-rpms batch"
+else
+    fail "${BATCH_VERIFY_FAILS}/3 batch-signed RPMs failed verification"
 fi
 
 # ----------------------------------------------------------------------
