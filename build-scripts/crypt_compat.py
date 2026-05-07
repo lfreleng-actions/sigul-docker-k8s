@@ -33,8 +33,9 @@ if sys.version_info >= (3, 13):
             salt: The salt string.  Real callers will pass an
                   ``$6$...`` SHA-512 crypt salt; legacy code may
                   also pass a non-crypt placeholder (Sigul, for
-                  example, intentionally calls ``crypt('xx')`` as a
-                  timing-attack guard when the user does not exist).
+                  example, intentionally calls
+                  ``crypt(password, 'xx')`` as a timing-attack
+                  guard when the user does not exist).
 
         Returns:
             The hashed password string in crypt format, or - for
@@ -55,11 +56,16 @@ if sys.version_info >= (3, 13):
         # ValueError and the parent server would exit on the next
         # waitpid() with 'Child died with status 512'.  Return a
         # value that:
-        #   * is deterministic (so timing is comparable to the
-        #     SHA-512 path),
+        #   * is deterministic,
         #   * is not equal to the input salt (so the caller's
         #     ``crypt(pw, x) != x`` check fires and auth_fail runs),
         #   * does not look like a valid crypt hash.
+        # NOTE: this fast-path does NOT preserve the timing parity
+        # the upstream timing-attack guard relies on - it returns
+        # immediately rather than performing equivalent work to the
+        # SHA-512 path.  Re-implementing parity here would require
+        # invoking sha512_crypt with a synthesised salt and is not
+        # worth the complexity for a placeholder-salt code path.
         if not salt.startswith('$6$'):
             return '!' + salt + '!invalid-crypt-salt'
 
