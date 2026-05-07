@@ -22,10 +22,11 @@ on:
         default: false
         required: false
       publish_ghcr:
+        # Publish images to GHCR with a `manual-<sha>` tag.
         description: >-
           Publish images to the GitHub Container Registry
         type: boolean
-        default: true
+        default: false
         required: false
 
   pull_request:
@@ -49,6 +50,36 @@ env:
   BUILDKIT_PROGRESS: plain
 
 jobs:
+  repository-metadata:
+    name: 'Repository Metadata'
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: read
+      pull-requests: read
+    timeout-minutes: 5
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: 'Gather repository metadata'
+        id: repo-metadata
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/repository-metadata-action@ceabcd987d13d7bfefd2372e01eebb0ddac45956  # v0.2.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_summary: 'true'
+          gerrit_summary: 'false'
+          artifact_upload: 'true'
+          artifact_formats: 'json'
+
   ### Build Sigul Client Container ###
   build-containers:
     name: "Build: ${{ matrix.component }} (${{ matrix.platform }})"
@@ -99,7 +130,6 @@ jobs:
       server-arm64-digest: ${{ steps.build-server-arm64.outputs.digest }}
       bridge-amd64-digest: ${{ steps.build-bridge-amd64.outputs.digest }}
       bridge-arm64-digest: ${{ steps.build-bridge-arm64.outputs.digest }}
-      client-image-tag: ${{ steps.meta.outputs.tags }}
     steps:
       # Harden the runner used by this workflow
       # yamllint disable-line rule:line-length
@@ -148,21 +178,7 @@ jobs:
           echo "id=${platform_id}" >> "$GITHUB_OUTPUT"
           echo "Platform ID: ${platform_id}"
 
-      - name: 'Extract metadata for tagging (client only)'
-        id: meta
-        if: matrix.component == 'client'
-        # yamllint disable-line rule:line-length
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf  # v6.0.0
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # yamllint disable rule:line-length
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=sha,prefix=main-,enable=${{ github.ref == 'refs/heads/main' }}
-            type=sha,prefix=pr-,enable=${{ github.event_name == 'pull_request' }}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-
+      # yamllint disable rule:line-length
       - name: "Build ${{ matrix.component }} container for ${{ matrix.platform }}"
         # yamllint disable-line rule:line-length
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
@@ -171,9 +187,11 @@ jobs:
           context: .
           file: Dockerfile.${{ matrix.component }}
           platforms: ${{ matrix.runner == 'ubuntu-24.04-arm' && '' || matrix.platform }}
+          # Local-only build tag. The publish-ghcr job below applies
+          # the manual-<sha> tag if a maintainer opts into
+          # publishing.
           tags: |
             ${{ matrix.component }}:${{ steps.platform.outputs.id }}
-            ${{ matrix.component == 'client' && steps.meta.outputs.tags || '' }}
           outputs: |
             type=docker,dest=/tmp/${{ matrix.component }}-${{ steps.platform.outputs.id }}.tar
           push: false
@@ -224,26 +242,28 @@ jobs:
           name: ${{ matrix.component }}-${{ steps.platform.outputs.id }}-image
           path: /tmp/${{ matrix.component }}-${{ steps.platform.outputs.id }}.tar
           retention-days: 7
+      # yamllint enable rule:line-length
 
   publish-ghcr:
-    name: 'Publish to GHCR'
+    name: 'Publish: ${{ matrix.component }}'
     runs-on: 'ubuntu-latest'
     permissions:
       contents: read
       packages: write
-    # Six sequential image pushes (3 tags x 2 architectures) of
-    # ~20-layer images take more than 3 minutes on cold GHCR
-    # caches; the previous 3-minute cap was killing the job
-    # part-way through arm64.
     timeout-minutes: 10
     needs: [build-containers]
-    # Pull-request triggers never publish.  workflow_dispatch runs
-    # publish by default but a maintainer can untick the
-    # publish_ghcr input to skip the job for quick test builds.
+    # Pull-request triggers never publish.  workflow_dispatch only
+    # publishes when the maintainer explicitly ticks publish_ghcr
+    # (default: false). Tagged releases go through release.yaml,
+    # which is the only path that ever applies semver / `latest`
+    # tags; this job only ever applies a `manual-<sha>` tag.
     if: >-
-      github.event_name != 'pull_request'
-      && (github.event_name != 'workflow_dispatch'
-          || inputs.publish_ghcr)
+      github.event_name == 'workflow_dispatch'
+      && inputs.publish_ghcr
+    strategy:
+      fail-fast: false
+      matrix:
+        component: ['client', 'server', 'bridge']
     steps:
       # Harden the runner used by this workflow
       # yamllint disable-line rule:line-length
@@ -267,157 +287,60 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 'Download AMD64 Docker image artifact'
+      - name: 'Download AMD64 image artifact'
         # yamllint disable-line rule:line-length
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        continue-on-error: true
-        id: download-amd64
         with:
-          name: client-linux-amd64-image
+          name: ${{ matrix.component }}-linux-amd64-image
           path: /tmp
 
-      - name: 'Download ARM64 Docker image artifact'
+      - name: 'Download ARM64 image artifact'
         # yamllint disable-line rule:line-length
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        continue-on-error: true
-        id: download-arm64
         with:
-          name: client-linux-arm64-image
+          name: ${{ matrix.component }}-linux-arm64-image
           path: /tmp
 
-      - name: 'Load and prepare Docker images'
+      - name: 'Load platform images'
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
+          docker load --input /tmp/${{ matrix.component }}-linux-amd64.tar
+          docker load --input /tmp/${{ matrix.component }}-linux-arm64.tar
+          docker images | grep '^${{ matrix.component }} ' || true
 
-          # Load and tag images
-          platforms_built=()
+      # yamllint disable rule:line-length
+      - name: 'Push images and create multi-arch manifest'
+        shell: bash
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.component }}
+          TAG: manual-${{ github.sha }}
+        run: |
+          set -euo pipefail
 
-          if [ "${{ steps.download-amd64.outcome }}" = "success" ] && [ -f "/tmp/client-linux-amd64.tar" ]; then
-            echo "Loading AMD64 image..."
-            docker load --input /tmp/client-linux-amd64.tar
+          # Per-arch images
+          docker tag "${{ matrix.component }}:linux-amd64" "${IMAGE}:${TAG}-amd64"
+          docker tag "${{ matrix.component }}:linux-arm64" "${IMAGE}:${TAG}-arm64"
+          docker push "${IMAGE}:${TAG}-amd64"
+          docker push "${IMAGE}:${TAG}-arm64"
 
-            # Get the loaded image name and retag it for pushing
-            amd64_image=$(docker images --format "table {{.Repository}}:{{.Tag}}" | grep "client:linux-amd64" | head -1)
-            if [ -n "$amd64_image" ]; then
-              platforms_built+=("linux/amd64")
-              echo "AMD64 image loaded: $amd64_image"
-            fi
-          fi
+          # Multi-arch manifest
+          docker manifest create "${IMAGE}:${TAG}" \
+              "${IMAGE}:${TAG}-amd64" "${IMAGE}:${TAG}-arm64"
+          docker manifest annotate "${IMAGE}:${TAG}" "${IMAGE}:${TAG}-amd64" \
+              --arch amd64 --os linux
+          docker manifest annotate "${IMAGE}:${TAG}" "${IMAGE}:${TAG}-arm64" \
+              --arch arm64 --os linux
+          docker manifest push "${IMAGE}:${TAG}"
+          echo "✅ Published multi-arch manifest: ${IMAGE}:${TAG}"
 
-          if [ "${{ steps.download-arm64.outcome }}" = "success" ] && [ -f "/tmp/client-linux-arm64.tar" ]; then
-            echo "Loading ARM64 image..."
-            docker load --input /tmp/client-linux-arm64.tar
-
-            # Get the loaded image name and retag it for pushing
-            arm64_image=$(docker images --format "table {{.Repository}}:{{.Tag}}" | grep "client:linux-arm64" | head -1)
-            if [ -n "$arm64_image" ]; then
-              platforms_built+=("linux/arm64")
-              echo "ARM64 image loaded: $arm64_image"
-            fi
-          fi
-
-          echo "Platforms available: ${platforms_built[*]}"
-
-          if [ ${#platforms_built[@]} -eq 0 ]; then
-            echo "❌ No platforms were successfully built and downloaded"
-            exit 1
-          fi
-
-      - name: 'Extract metadata for final push'
-        id: meta
-        # yamllint disable-line rule:line-length
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf  # v6.0.0
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # yamllint disable rule:line-length
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=sha,prefix=main-,enable=${{ github.ref == 'refs/heads/main' }}
-            type=sha,prefix=pr-,enable=${{ github.event_name == 'pull_request' }}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-
+      - name: 'Verify pushed manifest'
+        shell: bash
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.component }}
+          TAG: manual-${{ github.sha }}
+        run: docker manifest inspect "${IMAGE}:${TAG}"
       # yamllint enable rule:line-length
-      - name: 'Push pre-built images to registry'
-        shell: bash
-        run: |
-          set -e
-
-          # Push individual platform images first
-          if [ "${{ steps.download-amd64.outcome }}" = "success" ] && \
-             [ -f "/tmp/client-linux-amd64.tar" ]; then
-            echo "Pushing AMD64 image..."
-            # shellcheck disable=SC2043
-            readarray -t tags <<< "${{ steps.meta.outputs.tags }}"
-            for tag in "${tags[@]}"; do
-              docker tag client:linux-amd64 "${tag}-amd64"
-              docker push "${tag}-amd64"
-            done
-          fi
-
-          if [ "${{ steps.download-arm64.outcome }}" = "success" ] && \
-             [ -f "/tmp/client-linux-arm64.tar" ]; then
-            echo "Pushing ARM64 image..."
-            # shellcheck disable=SC2043
-            readarray -t tags <<< "${{ steps.meta.outputs.tags }}"
-            for tag in "${tags[@]}"; do
-              docker tag client:linux-arm64 "${tag}-arm64"
-              docker push "${tag}-arm64"
-            done
-          fi
-
-          # Create and push multi-platform manifests
-          # shellcheck disable=SC2043
-          readarray -t tags <<< "${{ steps.meta.outputs.tags }}"
-          for tag in "${tags[@]}"; do
-            echo "Creating manifest for: $tag"
-
-            manifest_args=()
-            if [ "${{ steps.download-amd64.outcome }}" = "success" ]; then
-              manifest_args+=("${tag}-amd64")
-            fi
-            if [ "${{ steps.download-arm64.outcome }}" = "success" ]; then
-              manifest_args+=("${tag}-arm64")
-            fi
-
-            if [ ${#manifest_args[@]} -gt 0 ]; then
-              docker manifest create "$tag" "${manifest_args[@]}"
-
-              # Annotate platform-specific images
-              if [ "${{ steps.download-amd64.outcome }}" = "success" ]; then
-                docker manifest annotate "$tag" "${tag}-amd64" \
-                  --arch amd64 --os linux
-              fi
-              if [ "${{ steps.download-arm64.outcome }}" = "success" ]; then
-                docker manifest annotate "$tag" "${tag}-arm64" \
-                  --arch arm64 --os linux
-              fi
-
-              docker manifest push "$tag"
-              echo "✅ Multi-platform manifest pushed: $tag"
-            fi
-          done
-
-      - name: 'Verify published images'
-        shell: bash
-        run: |
-          echo "=== Verifying published multi-platform images ==="
-          # shellcheck disable=SC2043
-          readarray -t tags <<< "${{ steps.meta.outputs.tags }}"
-          for tag in "${tags[@]}"; do
-            echo "Inspecting manifest for: ${tag}"
-            docker manifest inspect "${tag}" || echo "Failed to inspect ${tag}"
-
-            # Test pulling and running the image
-            echo "Testing image: ${tag}"
-            if docker pull "${tag}" 2>/dev/null; then
-              docker run --rm "${tag}" sigul --version
-              echo "✅ Image verification passed for ${tag}"
-            else
-              echo "⚠️ Could not pull ${tag} for verification"
-            fi
-          done
 
   ### Functional Tests ###
   functional-tests:
