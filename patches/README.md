@@ -114,8 +114,90 @@ actually deletes.
   `scripts/run-signing-tests.sh` requires a Phase 0 reset that
   `rm -rf`'s the server gnupg-home before each run.
 - With this patch: `delete-key` removes the GPG material as
-  expected.  The Phase 0 reset becomes a no-op on a clean stack
-  and can drop in a follow-up cleanup.
+  expected.  The Phase 0 reset becomes a no-op on a clean stack;
+  a follow-up commit can remove it entirely.
+
+### 04-fix-optional-fedora-client-guard.patch
+
+**Status:** CRITICAL on Fedora 44+ - bridge will not start without it
+**Upstream Status:** Not yet submitted
+**Affects:** Bridge
+
+**Problem:**
+`bridge.py` imports `fedora.client` (provided by the
+`python3-fedora` package, used only for FAS authentication)
+behind a `try/except ImportError` and sets `have_fas` accordingly.
+Later, however, the privilege-drop block accesses
+`fedora.client.baseclient.SESSION_DIR` *unconditionally*.
+When the package is absent the unconditional access raises
+`NameError: name 'fedora' is not defined`, the surrounding
+exception handler logs a misleading
+`Error switching to user 1000: name 'fedora' is not defined`,
+and the bridge daemon exits before serving any request.
+
+The `python3-fedora` package was retired between Fedora 41 and
+Fedora 44; on F44 base images the bridge therefore fails to
+start out-of-the-box.
+
+**Fix:**
+Guards the FAS session-dir initialisation with `if have_fas:`,
+matching the `try/except` import guard at the top of the module.
+When FAS is unavailable the bridge skips the FAS-only setup and
+continues normal startup.
+
+**Impact:**
+
+- Without this patch on F44+: bridge crashes at startup; nothing
+  works.
+- With this patch: bridge runs normally with or without
+  `python3-fedora` installed.  We do not use FAS authentication,
+  so the only effect is that `python3-fedora` is no longer a
+  hard dependency of the bridge image.
+
+### 05-fix-optional-rpm-head-signing.patch
+
+**Status:** CRITICAL on Fedora 44+ - server will not start without it
+**Upstream Status:** Not yet submitted
+**Affects:** Server
+
+**Problem:**
+`server.py` imports `rpm_head_signing` at module top level.
+On Fedora 44 the stock `rpm-head-signing-1.7.4-12.fc44` package
+was last rebuilt against the older RPM 4.x ABI and references
+`rpmWriteSignature`, a symbol that RPM 6.0.1 (the librpm
+shipped on Fedora 44) no longer exports.  The C-extension
+therefore fails to load with:
+
+```text
+ImportError: insertlib.cpython-314-aarch64-linux-gnu.so:
+    undefined symbol: rpmWriteSignature
+```
+
+Because the import is at module top level, the whole server
+crashes on startup before any client request can be handled.
+
+`rpm_head_signing` is used solely by the optional
+`sign-rpms --head-signing` code path.  Standard `sign-rpm` and
+`sign-rpms` (without `--head-signing`) do not need it.
+
+**Fix:**
+Makes the `rpm_head_signing` imports tolerant of
+`ImportError`, captures the failure reason, and raises a
+helpful `RPMFileError` later, but solely on actual head-signing
+requests.  The error message points operators at the
+F44 ABI mismatch and tells them to either rebuild
+`rpm-head-signing` against the new librpm or use the standard
+(non-head-signing) code path.
+
+**Impact:**
+
+- Without this patch on F44+: server crashes at startup;
+  nothing works.
+- With this patch: server starts cleanly on a stock F44 host;
+  all standard signing operations (those that our test suite
+  exercises) work.  `--head-signing` remains unavailable on F44
+  until the upstream `rpm-head-signing` package gains support
+  for the RPM 6 ABI.
 
 ## Applying Patches
 
@@ -135,6 +217,9 @@ upstream, we can remove the patches and use official releases.
 **Submission Priority:**
 
 1. **HIGH:** Double-TLS handshake timing fix (this is critical for containers)
+2. **HIGH:** Fedora-client / rpm-head-signing optional-import
+   guards (patches 04 and 05) - these unbreak Sigul on Fedora
+   44+ base images and are not platform-specific to our stack.
 
 ## Testing
 

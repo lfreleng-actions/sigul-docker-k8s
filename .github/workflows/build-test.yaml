@@ -31,9 +31,9 @@ on:
         default: true
         required: false
 
+  pull_request:
+    branches: ['main']
 #  push:
-#    branches: ['main']
-#  pull_request:
 #    branches: ['main']
 
 concurrency:
@@ -428,7 +428,13 @@ jobs:
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
-    timeout-minutes: 5
+    # Functional tests bring up a fresh stack, run integration
+    # tests, and run the full signing suite.  Local arm64 takes
+    # ~90s but CI Linux runners need more headroom for the cold
+    # rpmbuild + sqlite rpmdb init + 64 MiB binary streaming
+    # test, plus per-step Docker pulls.  5 minutes was hitting
+    # the cap mid-suite and triggering 'operation was canceled'.
+    timeout-minutes: 15
     needs: build-containers
     strategy:
       fail-fast: false
