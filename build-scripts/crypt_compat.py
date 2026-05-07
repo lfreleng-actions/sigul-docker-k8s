@@ -18,13 +18,13 @@ if sys.version_info >= (3, 13):
     # Python 3.13+ - use passlib for crypt functionality
     try:
         from passlib.hash import sha512_crypt
-    except ImportError:
+    except ImportError as exc:
         raise ImportError(
-            "passlib is required for crypt module compatibility in Python 3.13+. "
-            "Install it with: pip install passlib"
-        )
+            "passlib is required for crypt module compatibility in "
+            + "Python 3.13+. Install it with: pip install passlib"
+        ) from exc
 
-    def crypt(word, salt):
+    def crypt(word: str | bytes, salt: str) -> str:
         """
         Hash a password using SHA-512 crypt.
 
@@ -93,5 +93,20 @@ if sys.version_info >= (3, 13):
         return sha512_crypt.using(rounds=rounds, salt=salt_value).hash(word)
 
 else:
-    # Python < 3.13 - use the standard library crypt module
-    from crypt import *  # noqa: F401,F403
+    # Python < 3.13 - re-export the standard library crypt module's API.
+    # We list names explicitly rather than `from crypt import *` to keep
+    # the public surface of this shim explicit and to satisfy
+    # basedpyright's reportWildcardImportFromLibrary.  This branch is
+    # unreachable at the pythonVersion the project type-checks against
+    # (3.14, matching the Fedora 44 image) but is preserved as a runtime
+    # fallback for older interpreters; suppress the resulting
+    # reportUnreachable on the import line.
+    from crypt import (  # pyright: ignore[reportUnreachable]  # noqa: F401
+        crypt,
+        mksalt,
+        methods,
+        METHOD_SHA512,
+        METHOD_SHA256,
+        METHOD_MD5,
+        METHOD_CRYPT,
+    )
