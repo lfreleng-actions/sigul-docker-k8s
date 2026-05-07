@@ -44,6 +44,79 @@ double-TLS communication.
 - Adds server certificate validation
 - Adds error handling for handshake failures
 
+### 02-verbose-auth-logging.patch
+
+**Status:** Optional - controlled by `SIGUL_DEBUG_AUTH` env var
+**Upstream Status:** Not yet submitted
+**Affects:** Bridge and server
+
+**Problem:**
+Upstream Sigul is intentionally tight-lipped about authentication
+failures (to avoid timing/oracle leaks).  In a containerised
+stack that produces silent end-to-end failures with no
+daemon-side trace to root-cause from.
+
+**Fix:**
+Adds a small `_adbg()` helper and call sites at every auth
+checkpoint on the bridge and server.  The `SIGUL_DEBUG_AUTH`
+environment variable controls output; when unset, behaviour is
+bit-for-bit identical to upstream.
+
+**Impact:**
+
+- With `SIGUL_DEBUG_AUTH=1`: every auth checkpoint emits a
+  human-readable `AUTHDBG/*` log line (peer cert CN, declared
+  user, password-field presence, sha512_password lookup result,
+  crypt(3) compare result).  Log lines carry metadata - no
+  secret values are ever printed.
+- With `SIGUL_DEBUG_AUTH` unset (the default): no logging,
+  no per-request peer-cert lookup, no extra `crypt(3)` calls.
+
+**Code Changes:**
+
+- `bridge.py`: log server/client TCP accepts and post-handshake
+  peer cert CN.
+- `server.py`: log handler dispatch, request fields, and the
+  per-step result of `authenticate_admin`'s password compare.
+- Renames a shadowed local variable (`user` -> `user_row`) in
+  `authenticate_admin` so the log lines are unambiguous.
+
+### 03-fix-delete-key-gpg-home-cleanup.patch
+
+**Status:** CRITICAL - Required for `sigul delete-key` /
+`sigul import-key` round-trip to work.
+**Upstream Status:** Not yet submitted
+**Affects:** Server
+
+**Problem:**
+`server_gpg.Context.delete()` uses the legacy
+`op_delete(key, allow_secret_bool)` API.  In `python-gpg >= 1.23`
+that call is a silent no-op: gpgme deprecated `gpgme_op_delete`,
+the python wrapper does not raise, and the secret/public key
+material stays in the gnupg-home.
+
+Result: `sigul delete-key` removes the row from the server's
+sqlite DB (so `sigul list-keys` no longer reports the key) but
+leaves the underlying GPG key material in place.  A follow-up
+`sigul import-key` for the same fingerprint fails with
+`Error: Invalid import file: Unexpected import file contents`
+because gpg reports the key as already-imported.
+
+**Fix:**
+Switch to `op_delete_ext(key, mode_flags)` with
+`DELETE_ALLOW_SECRET | DELETE_FORCE` flags, the modern API that
+actually deletes.
+
+**Impact:**
+
+- Without this patch: `delete-key` is a half-fix that breaks
+  every later `import-key` for the same fingerprint, and
+  `scripts/run-signing-tests.sh` requires a Phase 0 reset that
+  `rm -rf`'s the server gnupg-home before each run.
+- With this patch: `delete-key` removes the GPG material as
+  expected.  The Phase 0 reset becomes a no-op on a clean stack
+  and can drop in a follow-up cleanup.
+
 ## Applying Patches
 
 The Docker build process automatically applies these patches:

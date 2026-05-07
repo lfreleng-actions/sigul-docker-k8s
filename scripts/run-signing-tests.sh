@@ -1051,14 +1051,24 @@ fi
 # ----------------------------------------------------------------------
 testcase "4.4  Negative: ${TEST_USER} CANNOT yet sign with ${NEW_KEY_NAME}"
 
-note "Without grant-key-access the user has no key access record;"
-note "sign-text should be rejected at the auth layer."
+note "Without grant-key-access the user has no KeyAccess row in the"
+note "server DB.  sign-text should be rejected at the auth layer."
+note ""
+note "We deliberately feed SIGUL_TEST_PW_TESTUSER_KEY here - the"
+note "same passphrase test 4.7 will use successfully after the"
+note "grant.  Feeding the user's login password (TESTUSER) instead"
+note "would also fail this test, but for the wrong reason: the"
+note "server's authenticate_user code path checks the supplied"
+note "passphrase against access.encrypted_passphrase, so a wrong"
+note "passphrase always fails regardless of whether the access"
+note "row exists.  Using the right passphrase keeps the test"
+note "unambiguously attributable to the missing access record."
 
 showrun "echo 'pre-grant test message' \\
     > '$(hostpath /work/pre-grant.txt)'"
 
 NEG_OUT=$(
-    printf '%s\0' "$SIGUL_TEST_PW_TESTUSER" \
+    printf '%s\0' "$SIGUL_TEST_PW_TESTUSER_KEY" \
         | docker run --rm -i \
             --user 1000:1000 \
             --network "$NETWORK" \

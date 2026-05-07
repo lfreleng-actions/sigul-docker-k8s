@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+#
+# Fix: delete-key actually removes the key from the GnuPG home.
+#
+# Sigul wraps gpgme's delete operation in
+# ``server_gpg.Context.delete(key, delete_secret)``, which calls
+# the legacy ``op_delete(key, allow_secret_bool)`` interface.
+# In python-gpg >= 1.23 this legacy call is a silent no-op:
+# gpgme_op_delete is deprecated, the python wrapper does not raise,
+# and the secret/public key material stays in the gnupg-home.
+#
+# As a result, ``sigul delete-key`` removes the row from the
+# server's sqlite DB (so ``sigul list-keys`` no longer reports the
+# key) but leaves the underlying GPG key material in place.  A
+# subsequent ``sigul import-key`` for the same fingerprint then
+# fails with::
+#
+#     Error: Invalid import file: Unexpected import file contents
+#
+# because gpg reports the key as already-imported.
+#
+# Switch to the modern ``op_delete_ext(key, mode_flags)`` API which
+# actually deletes the key, with the flags
+# (DELETE_ALLOW_SECRET | DELETE_FORCE) we want for sigul's use case.
+#
+# Verified
+# --------
+# Tested standalone with python-gpg 1.23.2:
+#
+#     ctx.create_key(...)
+#     ctx.op_delete(key, True)        # returns; keylist unchanged
+#     ctx.op_delete_ext(key, 1 | 2)   # returns; keylist now empty
+#
+# After this patch, scripts/run-signing-tests.sh's Phase 0 reset
+# (which currently wipes the gnupg-home as a workaround for this
+# bug) becomes a no-op on a clean stack and could be removed in a
+# follow-up cleanup.
+#
+# Companion to patches 01 and 02; applied after both.
+
+diff --git a/src/server_gpg.py b/src/server_gpg.py
+--- a/src/server_gpg.py
++++ b/src/server_gpg.py
+@@ -55,7 +55,24 @@ try:
+             return self.engine_info.version[0] == "2"
+
+         def delete(self, key, delete_secret):
+-            return self.op_delete(key, delete_secret)
++            # python-gpg 1.23+ silently no-ops the legacy
++            # ``op_delete(key, allow_secret_bool)`` call.  The result
++            # is that sigul's gpg_delete_key() removes the row from
++            # its sqlite DB (so 'list-keys' no longer shows the key)
++            # but leaves the underlying GPG key material in the
++            # server's gnupg-home untouched.  A subsequent
++            # 'sigul import-key' for the same fingerprint then fails
++            # with 'Unexpected import file contents' because gpg
++            # reports the key as already-imported.
++            #
++            # Switch to the modern ``op_delete_ext(key, mode_flags)``
++            # API which actually deletes.  The flags are taken from
++            # the GPGME_DELETE_* enum:
++            #   ALLOW_SECRET = 1   permit deletion of secret keys
++            #   FORCE        = 2   do not prompt for confirmation
++            mode = gpg.constants.DELETE_ALLOW_SECRET if delete_secret else 0
++            mode |= gpg.constants.DELETE_FORCE
++            return self.op_delete_ext(key, mode)
+
+         def edit(self, key, func, sink):
+             def wrapper(*args, **kwargs):
