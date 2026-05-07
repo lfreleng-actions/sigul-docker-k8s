@@ -14,19 +14,16 @@ on:
         default: false
         required: false
       enable_auth_debug:
+        # Sets SIGUL_DEBUG_AUTH=1 for the integration test stack
+        # Surfaces AUTHDBG/* lines in container logs
         description: >-
           Enable verbose auth/handshake logging in bridge & server
-          (sets SIGUL_DEBUG_AUTH=1 for the integration test stack;
-          surfaces AUTHDBG/* lines in container logs)
         type: boolean
         default: false
         required: false
       publish_ghcr:
         description: >-
-          Publish the freshly-built images to the GitHub Container
-          Registry (ghcr.io).  Untick to skip publishing - useful
-          when iterating on the workflow itself or running a quick
-          test build that should not change the published images.
+          Publish images to the GitHub Container Registry
         type: boolean
         default: true
         required: false

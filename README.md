@@ -354,6 +354,7 @@ failing CI run as the source of truth.
 ### Reporting an issue
 
 Use [GitHub Issues](https://github.com/lfreleng-actions/sigul-docker/issues) to report problems and bugs.
+
 A good report includes the steps to reproduce, what you expected to
 happen versus what actually happened, the relevant container or
 workflow logs, and — for stack-level bugs — the diagnostic bundle
