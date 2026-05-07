@@ -59,7 +59,15 @@ jobs:
     permissions:
       contents: read
       actions: write  # Required for cache deletion when clear_cache is true
-    timeout-minutes: 6
+    # Cold builds (no buildx cache hit) compile a stack of dnf updates,
+    # ~180 packages from the Fedora repos and a Sigul source build, all
+    # of which are IO-bound on the runner.  6 minutes was just enough
+    # for warm-cache builds and started timing out reliably once the
+    # registry cache importer broke ("connection refused" on localhost).
+    # Cap generously - the job is bounded by external repo throughput
+    # rather than CPU, so a wider budget costs little but provides
+    # headroom against transient mirror slowdowns.
+    timeout-minutes: 15
     env:
       GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
     strategy:
