@@ -36,8 +36,6 @@ type `gha` ahead of the `uses:` line below.
       sign-type: 'sign-data'
       sign-object: ${{ github.workspace }}/artifacts/mypackage.tar.gz
       sigul-key-name: 'my-release-key'
-      sigul-ip: ${{ secrets.SIGUL_IP }}
-      sigul-uri: ${{ secrets.SIGUL_URI }}
       sigul-conf: ${{ secrets.SIGUL_CONF }}
       sigul-pass: ${{ secrets.SIGUL_PASS }}
       sigul-pki: ${{ secrets.SIGUL_PKI }}
@@ -60,8 +58,6 @@ type `gha` ahead of the `uses:` line below.
           artifacts/my-file.jar
           docs/signme.md
       sigul-key-name: 'my-release-key'
-      sigul-ip: ${{ secrets.SIGUL_IP }}
-      sigul-uri: ${{ secrets.SIGUL_URI }}
       sigul-conf: ${{ secrets.SIGUL_CONF }}
       sigul-pass: ${{ secrets.SIGUL_PASS }}
       sigul-pki: ${{ secrets.SIGUL_PKI }}
@@ -80,8 +76,6 @@ type `gha` ahead of the `uses:` line below.
       sigul-key-name: 'my-release-key'
       gh-user: automation-username
       gh-key: ${{ secrets.GITHUB_TOKEN }}
-      sigul-ip: ${{ secrets.SIGUL_IP }}
-      sigul-uri: ${{ secrets.SIGUL_URI }}
       sigul-conf: ${{ secrets.SIGUL_CONF }}
       sigul-pass: ${{ secrets.SIGUL_PASS }}
       sigul-pki: ${{ secrets.SIGUL_PKI }}
@@ -92,15 +86,13 @@ type `gha` ahead of the `uses:` line below.
 | Input | Required | Default | Description |
 | ----- | -------- | ------- | ----------- |
 | `sign-type` | no | `sign-data` | Either `sign-data` or `sign-git-tag`. |
-| `sign-object` | yes | — | File to sign (or newline-separated list of files), or the name of a git tag. |
+| `sign-object` | yes | — | File to sign (or newline-separated list of files), or the name of an annotated git tag. |
 | `sigul-key-name` | yes | — | Name of the key on the Sigul server to sign with. |
-| `sigul-ip` | yes | — | IP address of the Sigul server. Used together with `sigul-uri` to populate `/etc/hosts` inside the action's container. |
-| `sigul-uri` | yes | — | Hostname (URI) of the Sigul server. |
-| `sigul-conf` | yes | — | Sigul client configuration file contents. |
-| `sigul-pass` | yes | — | Passphrase for the Sigul key (key-specific). |
-| `sigul-pki` | yes | — | PKI material for the client, stored as a GPG-armoured file encrypted with `sigul-pass`. |
+| `sigul-conf` | yes | — | Body of the Sigul client configuration file (`client.conf`).  Written verbatim into the container at `client.conf` and used by every `sigul --batch -c client.conf …` invocation, so the bridge hostname / port / NSS settings the client needs all live here. |
+| `sigul-pass` | yes | — | Passphrase for the Sigul key.  Also used as the GPG passphrase to decrypt `sigul-pki`. |
+| `sigul-pki` | yes | — | Client PKI material: a `tar.xz` archive containing a `.sigul/` directory (NSS database, certificates, private key), GPG-encrypted with `sigul-pass`.  May be supplied raw or base64-encoded; the entrypoint auto-detects. |
 | `gh-user` | no | `github.actor` | GitHub user to push the signed tag as (`sign-git-tag` only). |
-| `gh-key` | no | — | GitHub API key for `gh-user`. **Required** for `sign-git-tag`; not used for `sign-data`. |
+| `gh-key` | no | — | GitHub API key for `gh-user`. **Required** for `sign-git-tag`; ignored for `sign-data`. |
 | `sigul-mock-mode` | no | `false` | When `true`, emit deterministic mock signatures locally without contacting a Sigul server. Useful for testing workflow plumbing. |
 
 ### Requirements
@@ -109,9 +101,13 @@ To use the action against a real signing server you need:
 
 - A reachable Sigul server with bridge.
 - A Sigul key whose passphrase matches `sigul-pass`.
-- PKI material (NSS database / certificates) packaged into `sigul-pki`,
-  encrypted using `sigul-pass`.
-- Network connectivity from the GitHub Actions runner to the Sigul bridge.
+- A `client.conf` body for `sigul-conf` that points the client at
+  the right bridge (typically `bridge-hostname` and the matching
+  bridge cert nickname in `[nss]`).
+- A `sigul-pki` archive whose certificates align with the keys and
+  hostnames the bridge expects.
+- Network connectivity from the GitHub Actions runner to the Sigul
+  bridge.
 
 ## Container architecture
 
@@ -239,15 +235,105 @@ docker compose -f docker-compose.sigul.yml down -v --remove-orphans
   outside CI.
 - [`OPERATIONS_GUIDE.md`](./OPERATIONS_GUIDE.md) — day-to-day operation,
   monitoring, health checks.
-- [`TESTING.md`](./TESTING.md) — test infrastructure overview and the local
-  ↔ CI parity guarantees the suites enforce.
+- [`TESTING.md`](./TESTING.md) — test infrastructure overview.
 - [`patches/README.md`](./patches/README.md) — what each downstream Sigul
   patch fixes and why.
-- [`docs/`](./docs) — deeper dives on individual subsystems (NSS, container
-  logging, network architecture).
+- [`docs/`](./docs) — deeper dives on individual topics.
 
 ## Contributing
 
-See the patches `README.md` for guidance on how the Sigul source patches are
-structured and applied. New CI changes should land via a pull request to
-`main`; the build/test workflow gates the merge.
+Contributions land through GitHub pull requests against `main`.  The
+`Sigul Build/Test 🐳` workflow is required to pass before a PR can
+merge — it builds all three images for both `linux/amd64` and
+`linux/arm64`, runs the integration test suite, and then runs the full
+end-to-end signing test suite against the resulting stack.  Treat a
+failing CI run as the source of truth.
+
+### Where to make which change
+
+- **Sigul behaviour fixes** — add a numbered patch to
+  [`patches/`](./patches/) (`NN-short-description.patch`).  The patch
+  applies on top of the bundled Sigul source during the image build.
+  Document every patch in [`patches/README.md`](./patches/README.md)
+  using the same `Status / Affects / Problem / Fix / Impact` structure
+  as the existing entries; if a patch is critical for the stack to
+  start at all, mark it as such.  Verify `git apply --check` works
+  against the bundled Sigul source tree before pushing.  Note that
+  upstream Sigul on Pagure has not had a commit in over a year and
+  Pagure itself is scheduled to be decommissioned around mid-2026, so
+  in practice these patches are a permanent local fork rather than
+  a staging area for upstream submission.
+- **Container build / packaging changes** — prefer
+  [`build-scripts/install-sigul.sh`](./build-scripts/install-sigul.sh)
+  over editing the Dockerfiles, so the install path stays uniform
+  across `linux/amd64` and `linux/arm64`.  When you do touch a
+  Dockerfile, change all three (`Dockerfile.{client,server,bridge}`)
+  consistently — they share a base image and most of their package
+  set.
+- **Test changes** — the two end-to-end suites are
+  [`scripts/run-integration-tests.sh`](./scripts/run-integration-tests.sh)
+  (control plane: list-users, list-keys, double-TLS handshake, etc.)
+  and
+  [`scripts/run-signing-tests.sh`](./scripts/run-signing-tests.sh)
+  (key lifecycle, sign-text/data/rpm/rpms, user and key-access
+  lifecycle, with each output independently verified by gpg or rpm).
+  New tests should fit into the existing `phase`/`testcase`/`pass`/
+  `fail` shape and remain idempotent against repeated runs.
+- **Workflow / CI changes** — [`build-test.yaml`](./.github/workflows/build-test.yaml)
+  is the only workflow that exercises the stack end-to-end; iterate
+  on it via `workflow_dispatch` with `publish_ghcr: false` until
+  it's green.
+- **Documentation changes** — keep the assertions in this README,
+  `DEPLOYMENT_GUIDE.md`, `OPERATIONS_GUIDE.md` and `TESTING.md`
+  consistent with what the scripts and Dockerfiles actually do.
+  When you delete a script or rename a file, run a `grep -rn` for
+  the old name across the repo and update or drop the dangling
+  references.
+
+### Local verification before pushing
+
+1. Build the three images for your host architecture (see
+   [Bringing up the stack locally](#bringing-up-the-stack-locally)).
+2. Bring the stack up with `scripts/deploy-sigul-infrastructure.sh`.
+3. Run `scripts/run-integration-tests.sh` and
+   `scripts/run-signing-tests.sh`; both should exit `0` with all tests
+   passing.
+4. If you changed the action surface, run a manual
+   `workflow_dispatch` of `Sigul Build/Test 🐳` with
+   `publish_ghcr: false` to confirm both `linux/amd64` and
+   `linux/arm64` legs stay green.
+
+### Commit and PR conventions
+
+- **Conventional Commits**, capitalised types: `Fix(scope):`,
+  `Feat(scope):`, `Docs(scope):`, `Refactor(scope):`,
+  `Test(scope):`, `Chore(scope):`, `CI(scope):`, `Build(scope):`,
+  `Perf(scope):`, `Style(scope):`, `Revert(scope):`.  See
+  [`.gitlint`](./.gitlint) for the enforced set.
+- **Subject ≤ 50 chars, body wrapped at 72** (URL lines exempt).
+- **DCO sign-off required** — every commit must end with
+  `Signed-off-by: Name <email>`; use `git commit -s`.
+- **Atomic commits** — one logical change per commit.  In particular,
+  do not mix code or doc changes with task-tracking updates.
+- **Pre-commit hooks** — the repository ships a
+  [`.pre-commit-config.yaml`](./.pre-commit-config.yaml) that runs
+  ruff, mypy, yamllint, actionlint, reuse (SPDX), codespell,
+  markdownlint, gitlint and a few project-specific validators.
+  Install with `pre-commit install`; never bypass with `--no-verify`.
+  If a hook auto-fixes files, stage the fixes and re-commit — do
+  not `git reset` after a failed commit.
+- **AI-assisted commits** — include a `Co-authored-by:` trailer for
+  the model used (e.g. `Co-authored-by: Claude <claude@anthropic.com>`)
+  immediately above the `Signed-off-by` line.
+- **SPDX headers** — every new source file needs SPDX
+  `Apache-2.0` and copyright headers.  See
+  [`REUSE.toml`](./REUSE.toml) for file-type-specific patterns; the
+  `reuse` pre-commit hook will flag misses.
+
+### Reporting an issue
+
+Use [GitHub Issues](https://github.com/lfreleng-actions/sigul-docker/issues).
+For TLS / NSS / handshake problems include the auth-debug capture
+produced by setting `enable_auth_debug: true` on the
+`workflow_dispatch` form, or by exporting `SIGUL_DEBUG_AUTH=1`
+before running the deploy script locally.
