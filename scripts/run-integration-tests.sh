@@ -469,13 +469,25 @@ test_header "Batch Mode Password Input (NUL-terminated)"
 # "auto_generated_ephemeral" which is the docker-compose default fallback;
 # any deployment that supplies a real password would always fail this
 # test even with a fully working stack.  Use $ADMIN_PASSWORD instead.
+#
+# We pass the password via -e ADMIN_PASSWORD rather than interpolating
+# it into the bash -c string.  Direct interpolation would break (and
+# could in principle become a shell-injection vector) if the password
+# ever contained special characters; the env-var approach is robust
+# to any byte sequence and the inner bash uses single-quoted command
+# text, which never expands $ADMIN_PASSWORD on the host.
+# shellcheck disable=SC2016
+# (the single-quoted bash -c body is intentional - we want
+# $ADMIN_PASSWORD to be expanded inside the container, not on the
+# host - so SC2016 is a false positive here.)
 OUTPUT=$(timeout 60 docker run --rm \
     --user 1000:1000 \
     --network "$NETWORK" \
     -v "${CLIENT_NSS_VOLUME}:/etc/pki/sigul/client:ro" \
     -v "${CLIENT_CONFIG_VOLUME}:/etc/sigul:ro" \
+    -e ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
     "$CLIENT_IMAGE" \
-    bash -c "printf '%s\0' '${ADMIN_PASSWORD}' | sigul --batch -c /etc/sigul/client.conf list-users 2>&1")
+    bash -c 'printf "%s\0" "$ADMIN_PASSWORD" | sigul --batch -c /etc/sigul/client.conf list-users 2>&1')
 
 if echo "$OUTPUT" | grep -q "admin"; then
     pass "Batch mode NUL-terminated password works correctly"

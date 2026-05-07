@@ -99,7 +99,7 @@ index 25d713d..09d3dcc 100644
                  BridgeConnection.handle_connection(config, client_sock,
                                                     server_sock)
 diff --git a/src/server.py b/src/server.py
-index bf73fcb..dd3a9a0 100644
+index bf73fcb..67bcfef 100644
 --- a/src/server.py
 +++ b/src/server.py
 @@ -58,6 +58,26 @@ import server_gpg as ourgpg
@@ -160,7 +160,7 @@ index bf73fcb..dd3a9a0 100644
          self.send_error(errors.AUTHENTICATION_FAILED, log_it=False)
 
      def _verify_username(self, outer_user):
-@@ -576,25 +610,39 @@ class ServersConnection(object):
+@@ -576,25 +610,45 @@ class ServersConnection(object):
          Raise RequestHandled (on permission denied), InvalidRequestError.
          '''
          user = self.safe_outer_field('user')
@@ -188,12 +188,19 @@ index bf73fcb..dd3a9a0 100644
              # Perform the encryption anyway to make timing attacks more
              # difficult.
              crypted_pw = 'xx'
+-        if (crypt.crypt(password, crypted_pw) != crypted_pw
 +            _adbg('authenticate_admin: NO stored sha512_password '
 +                  '(user_row=%s)', user_row is not None)
-+        compare_result = crypt.crypt(password, crypted_pw) == crypted_pw
++        # Compute crypt() once and reuse the result for both the
++        # diagnostic log line and the actual compare.  Computing it
++        # twice would change CPU/timing cost even when SIGUL_DEBUG_AUTH
++        # is unset (because the if-condition below also computes it),
++        # which contradicts the patch's no-behaviour-change guarantee.
++        crypt_result = crypt.crypt(password, crypted_pw)
 +        _adbg('authenticate_admin: crypt compare result=%s '
-+              '(user existed=%s)', compare_result, crypted_pw != 'xx')
-         if (crypt.crypt(password, crypted_pw) != crypted_pw
++              '(user existed=%s)',
++              crypt_result == crypted_pw, crypted_pw != 'xx')
++        if (crypt_result != crypted_pw
                  or crypted_pw == 'xx'):
              self.auth_fail('password does not match')
 -        if not user.admin:
@@ -204,14 +211,24 @@ index bf73fcb..dd3a9a0 100644
          # OK
 
      def __authenticate_admin_or_user(self, db):
-@@ -2812,6 +2860,10 @@ def request_handling_child(config):
+@@ -2812,6 +2866,20 @@ def request_handling_child(config):
          try:
              logging.debug('Waiting for a request')
              handler = conn.read_request()
-+            _adbg('request_handling_child: handler=%r peer_cn=%r',
-+                  type(handler).__name__,
-+                  conn.peer_subject().common_name
-+                  if hasattr(conn, 'peer_subject') else '?')
++            # Gate the peer_subject lookup behind the debug-enabled
++            # check.  Python evaluates function arguments eagerly, so
++            # without this guard the conn.peer_subject().common_name
++            # call would happen on every request even when
++            # SIGUL_DEBUG_AUTH is unset - and could change control
++            # flow if peer_subject() ever raised.  We want
++            # disabled-debug to be byte-for-byte identical to upstream.
++            if _auth_debug_enabled():
++                try:
++                    _peer_cn = conn.peer_subject().common_name
++                except Exception:
++                    _peer_cn = '?'
++                _adbg('request_handling_child: handler=%r peer_cn=%r',
++                      type(handler).__name__, _peer_cn)
              handler.handler(db, conn)
          finally:
              try:
