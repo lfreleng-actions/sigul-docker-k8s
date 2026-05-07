@@ -47,7 +47,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/sigul-sign-docker
+  IMAGE_NAME: ${{ github.repository }}/sigul-docker
   DOCKER_BUILDKIT: '1'
   BUILDKIT_PROGRESS: plain
 

@@ -4,7 +4,7 @@
 
 set -e
 
-# Simple verification script for sigul-sign-docker
+# Simple verification script for sigul-docker
 # This script verifies that the sigul binary is properly installed and accessible
 # Supports both AMD64 and ARM64 architectures
 
@@ -14,19 +14,19 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 # Default values
 DEFAULT_PLATFORM=""
 PLATFORM_ARG=""
-IMAGE_TAG="sigul-sign-docker:verify"
+IMAGE_TAG="sigul-docker:verify"
 
 # Function to display usage
 usage() {
     cat << EOF
 Usage: $0 [OPTIONS]
 
-Test the sigul-sign-docker container locally with multi-architecture support.
+Test the sigul-docker container locally with multi-architecture support.
 
 OPTIONS:
     -p, --platform PLATFORM    Specify platform (linux/amd64, linux/arm64, auto)
                                'auto' detects local architecture (default)
-    -t, --tag TAG              Docker image tag (default: sigul-sign-docker:verify)
+    -t, --tag TAG              Docker image tag (default: sigul-docker:verify)
     -h, --help                 Show this help message
 
 EXAMPLES:
@@ -285,7 +285,7 @@ echo "✅ Installation: $SIGUL_PACKAGE"
 echo "✅ Base: $BASE_IMAGE"
 echo "✅ All functionality tests passed"
 echo ""
-echo "The sigul-sign-docker container is ready for use on $DEFAULT_PLATFORM!"
+echo "The sigul-docker container is ready for use on $DEFAULT_PLATFORM!"
 echo ""
 echo "Next steps:"
 echo "  • For production use, ensure proper Sigul server configuration"

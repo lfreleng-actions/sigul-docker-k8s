@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
-# Comprehensive multi-architecture test script for sigul-sign-docker
+# Comprehensive multi-architecture test script for sigul-docker
 # Tests both AMD64 and ARM64 builds with detailed reporting
 
 set -e
@@ -49,7 +49,7 @@ usage() {
     cat << EOF
 Usage: $0 [OPTIONS]
 
-Test sigul-sign-docker container on all supported architectures.
+Test sigul-docker container on all supported architectures.
 
 OPTIONS:
     --platforms PLATFORMS      Comma-separated list of platforms to test
@@ -185,7 +185,7 @@ test_platform() {
     mkdir -p "/tmp/buildx-cache-$platform_name"
 
     # Run the test script with appropriate flags
-    local test_args=(--platform "$platform" --tag "sigul-sign-docker:test-$platform_name")
+    local test_args=(--platform "$platform" --tag "sigul-docker:test-$platform_name")
 
     if [[ "$VERBOSE" == "true" ]]; then
         if "$TEST_SCRIPT" "${test_args[@]}"; then
@@ -231,7 +231,7 @@ cleanup_images() {
     local cleaned=0
     for platform in "${PLATFORMS[@]}"; do
         local platform_name="${platform//\//-}"
-        local image_tag="sigul-sign-docker:test-$platform_name"
+        local image_tag="sigul-docker:test-$platform_name"
 
         if docker image inspect "$image_tag" >/dev/null 2>&1; then
             print_status "$BLUE" "Removing $image_tag..."
@@ -248,9 +248,9 @@ cleanup_images() {
     done
 
     # Also clean up the default verify tag
-    if docker image inspect "sigul-sign-docker:verify" >/dev/null 2>&1; then
-        print_status "$BLUE" "Removing sigul-sign-docker:verify..."
-        docker rmi "sigul-sign-docker:verify" >/dev/null 2>&1 || true
+    if docker image inspect "sigul-docker:verify" >/dev/null 2>&1; then
+        print_status "$BLUE" "Removing sigul-docker:verify..."
+        docker rmi "sigul-docker:verify" >/dev/null 2>&1 || true
         ((cleaned++))
     fi
 

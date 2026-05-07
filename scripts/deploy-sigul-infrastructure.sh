@@ -837,10 +837,10 @@ manage_volumes() {
 
     # Remove volumes
     local volumes_to_remove=(
-        "sigul-sign-docker_sigul_server_data"
-        "sigul-sign-docker_sigul_bridge_data"
-        "sigul-sign-docker_sigul_client_data"
-        "sigul-sign-docker_sigul_monitor_data"
+        "sigul-docker_sigul_server_data"
+        "sigul-docker_sigul_bridge_data"
+        "sigul-docker_sigul_client_data"
+        "sigul-docker_sigul_monitor_data"
     )
 
     for volume in "${volumes_to_remove[@]}"; do
@@ -1477,7 +1477,7 @@ verify_infrastructure() {
             debug "Container runtime information:"
             docker version --format '{{.Server.Version}}' 2>/dev/null || true
             debug "Network driver information:"
-            docker network inspect sigul-sign-docker_sigul-network --format '{{.Driver}}' 2>/dev/null || true
+            docker network inspect sigul-docker_sigul-network --format '{{.Driver}}' 2>/dev/null || true
             if is_github_actions; then
                 debug "GitHub Actions runner information:"
                 echo "Runner OS: ${RUNNER_OS:-unknown}"

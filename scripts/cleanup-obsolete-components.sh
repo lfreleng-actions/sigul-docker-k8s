@@ -99,7 +99,7 @@ parse_args() {
 # Function to check if we're in the right directory
 check_project_root() {
     if [[ ! -f "docker-compose.sigul.yml" ]] || [[ ! -d "pki" ]] || [[ ! -d "scripts" ]]; then
-        error "This script must be run from the sigul-sign-docker project root directory"
+        error "This script must be run from the sigul-docker project root directory"
         error "Expected files: docker-compose.sigul.yml, pki/, scripts/"
         return 1
     fi
