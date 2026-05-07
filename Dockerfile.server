@@ -7,7 +7,7 @@ FROM fedora:44
 LABEL maintainer="releng@linuxfoundation.org"
 LABEL org.opencontainers.image.title="Sigul Server"
 LABEL org.opencontainers.image.description="Simplified Linux Foundation signing infrastructure server"
-LABEL org.opencontainers.image.source="https://github.com/lfreleng-actions/sigul-sign-docker"
+LABEL org.opencontainers.image.source="https://github.com/modeseven-lfreleng-actions/sigul-docker"
 
 # Update package manager
 RUN dnf update -y && \
