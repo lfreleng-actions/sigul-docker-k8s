@@ -143,9 +143,11 @@ else
     # Mimic 'rsync --delete' semantics: remove regular files AND
     # dotfiles/dotdirs (e.g. .github, .pytest_cache).  Plain
     # 'rm -rf ${DEST:?}/*' does not match dotted entries so they
-    # would otherwise survive into the new tree.
+    # would otherwise survive into the new tree.  The '--' before
+    # '{}' prevents rm from treating any source path that begins
+    # with '-' as an option flag.
     find "${DEST}" -mindepth 1 -not -name '.gitkeep' \
-        -exec rm -rf {} +
+        -exec rm -rf -- {} +
     if [ -s "${keepfile}" ]; then
         cp "${keepfile}" "${DEST}/.gitkeep"
     fi
