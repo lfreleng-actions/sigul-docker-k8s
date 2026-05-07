@@ -82,7 +82,14 @@ jobs:
       contents: read
     timeout-minutes: 3
     outputs:
-      tag: ${{ steps.validate.outputs.tag }}
+      # lfreleng-actions/tag-validate-action emits the tag as
+      # `tag_name`, not `tag`.  An earlier draft of this workflow
+      # bound this output to steps.validate.outputs.tag, which
+      # silently evaluated to '' and caused docker push to fail
+      # with refs like `bridge:-amd64`.  Bind to the correct
+      # underlying output and downstream steps consume the tag
+      # via needs.tag-validate.outputs.tag.
+      tag: ${{ steps.validate.outputs.tag_name }}
     steps:
       # yamllint disable-line rule:line-length
       - uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
@@ -422,8 +429,21 @@ jobs:
           FULL_TAG: ${{ needs.tag-validate.outputs.tag }}
           # yamllint disable-line rule:line-length
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}/${{ matrix.component }}
+        # yamllint disable rule:line-length
         run: |
           set -euo pipefail
+          # Pre-flight: surface the inputs we are about to operate on
+          # so any future failure has the values in the log.
+          echo "FULL_TAG=${FULL_TAG}"
+          echo "IMAGE=${IMAGE}"
+          if [[ -z "${FULL_TAG}" ]]; then
+              echo "::error::FULL_TAG is empty - refusing to compute release tags" >&2
+              exit 1
+          fi
+          if [[ -z "${IMAGE}" ]]; then
+              echo "::error::IMAGE is empty - refusing to compute release tags" >&2
+              exit 1
+          fi
           # FULL_TAG looks like 'v1.2.3' or 'v1.2.3-rc1'. Strip the 'v'
           # for downstream tools that prefer raw versions, and derive
           # the major / minor tracks (only for non-prerelease tags).
@@ -485,6 +505,23 @@ jobs:
           # tag pointing at the two per-arch images.
           mapfile -t tags <<< "${{ steps.tags.outputs.tags }}"
 
+          # Pre-flight: refuse to push if no tags were computed, or
+          # if any computed tag ends with ':' (which would produce
+          # a malformed reference like '<image>:-amd64' once the
+          # per-arch suffix is appended).
+          if [[ ${#tags[@]} -eq 0 ]]; then
+              echo "::error::No release tags computed; refusing to push" >&2
+              exit 1
+          fi
+          for tag in "${tags[@]}"; do
+              [[ -n "${tag}" ]] || continue
+              if [[ "${tag}" == *: ]]; then
+                  echo "::error::Computed tag '${tag}' ends with ':' (empty version); refusing to push" >&2
+                  exit 1
+              fi
+              echo "will push: ${tag}"
+          done
+
           for tag in "${tags[@]}"; do
               [[ -n "${tag}" ]] || continue
 
@@ -504,6 +541,7 @@ jobs:
               docker manifest push "${tag}"
               echo "✅ Published multi-arch manifest: ${tag}"
           done
+      # yamllint enable rule:line-length
 
       - name: 'Verify pushed manifests'
         shell: bash
@@ -540,6 +578,12 @@ jobs:
         env:
           TAG: ${{ needs.tag-validate.outputs.tag }}
         run: |
+          set -euo pipefail
+          echo "TAG=${TAG}"
+          if [[ -z "${TAG}" ]]; then
+              echo "::error::TAG is empty - refusing to promote release" >&2
+              exit 1
+          fi
           base="${TAG#v}"
           case "${base}" in
               *-*) is_prerelease=true ;;
