@@ -473,9 +473,12 @@ test_header "Batch Mode Password Input (NUL-terminated)"
 # We pass the password via -e ADMIN_PASSWORD rather than interpolating
 # it into the bash -c string.  Direct interpolation would break (and
 # could in principle become a shell-injection vector) if the password
-# ever contained special characters; the env-var approach is robust
-# to any byte sequence and the inner bash uses single-quoted command
-# text, which never expands $ADMIN_PASSWORD on the host.
+# ever contained special shell characters; passing the value via
+# 'docker run -e' and dereferencing it inside a single-quoted
+# bash -c avoids interpolation on the host entirely.  Note that
+# environment variables (and Bash strings) cannot carry NUL bytes -
+# which is why the inner 'printf %s\0' adds the NUL terminator at
+# use time rather than embedding one in the password value.
 # shellcheck disable=SC2016
 # (the single-quoted bash -c body is intentional - we want
 # $ADMIN_PASSWORD to be expanded inside the container, not on the
