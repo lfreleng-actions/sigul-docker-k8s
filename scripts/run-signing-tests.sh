@@ -15,14 +15,28 @@
 #
 # Visibility
 # ----------
-# Every sigul invocation is printed verbatim *before* it runs, with
-# the actual command line that a human could copy-paste.  Every
-# command's stdout and stderr is streamed straight to this script's
-# stdout - nothing is captured, hidden, or selectively echoed.
-# Section banners delimit phases so the GitHub Actions log has a
-# navigable structure.  Passphrases are redacted to '[REDACTED]' in
-# the printed command line for tidiness, but the actual passphrase
-# is fed via stdin to the real command.
+# Every sigul invocation is printed before it runs (with redactions
+# and a deliberately abbreviated rendering; see the `_sigul_emit`
+# helper for the exact details).  Passphrase values are redacted
+# to '[REDACTED:<LABEL>]' placeholders for tidiness; the real
+# passphrase is fed via stdin to the actual command.  The printed
+# line shows only the *in-container* shell payload (what `bash -c`
+# runs inside the sigul-client image) - the constant `docker run`
+# wrapper is omitted from each line to keep the log readable.
+#
+# Printed lines are therefore not literally copy-pasteable into a
+# host shell.  To reproduce a failure, take the printed payload
+# and substitute it into the docker-run wrapper template that the
+# script's startup banner emits as a `[note]` block immediately
+# after the title banner.  That template carries the same volume
+# mounts, --user flag, --network value, and image tag that
+# `_sigul_emit` actually uses, so the wrapper is exact rather
+# than approximate.
+#
+# Every command's stdout and stderr is streamed straight to this
+# script's stdout - nothing is captured, hidden, or selectively
+# echoed.  Section banners delimit phases so the GitHub Actions
+# log has a navigable structure.
 #
 # Phases
 # ------
@@ -217,32 +231,32 @@ _sigul_emit() {
     unset IFS
 
     # Emit a single human-readable line describing what is about
-    # to run.  Two simplifications are deliberate:
+    # to run.  The line is a deliberately abbreviated rendering of
+    # the real exec, optimised for log readability rather than
+    # exact reproduction:
     #
-    #   * Passphrase values are replaced with [REDACTED:<LABEL>]
-    #     placeholders so the log never carries a secret value
-    #     even when the test fixture passphrases are public.
-    #   * Only the *in-container* shell command is shown - i.e.
-    #     what `bash -c` will execute inside the sigul-client
-    #     image.  The surrounding `docker run --rm -i --user
-    #     1000:1000 --network ... <volume mounts> ...` boilerplate
-    #     is constant across every invocation and would just
-    #     drown the actually-interesting payload in noise.
+    #   * Passphrase values are shown as [REDACTED:<LABEL>] so
+    #     the log never carries a secret value.
+    #   * Only the in-container shell payload is shown - the
+    #     constant `docker run --rm -i --user 1000:1000 --network
+    #     ... <volume mounts> ... <client-image> bash -c '...'`
+    #     wrapper is omitted because logging it on every line
+    #     would drown out the interesting Sigul commands.
+    #   * The trailing rc-capture / chmod-fixup / `exit \$rc`
+    #     housekeeping that the real exec uses is shown as
+    #     `chmod ... /work` rather than the literal find pipeline
+    #     - the housekeeping is a CI-permission workaround, not
+    #     part of what the sigul command is doing.
     #
-    # As a consequence the line is NOT directly copy-pasteable
-    # into a host shell - reproducing a failure means running the
-    # same `umask 0022; <cmd>; chmod -R a+rX /work` block inside
-    # `docker run --rm -i --user 1000:1000 --network <network>
-    # -v <client-nss>:/etc/pki/sigul/client:ro -v <client-config>:
-    # /etc/sigul:ro -v <workdir>:/work:rw -v <fixtures>:/fixtures
-    # :ro <client-image> bash -c '...'`.  See the wrapping
-    # `docker run` invocation immediately below for the exact
-    # form.  All of that wrapper context (network name, volume
-    # names, image tag, workdir) is logged separately at the top
-    # of the run by `phase` / `note` banners, which is enough to
-    # reconstruct the full invocation.
+    # To reproduce a printed line, take the in-container payload
+    # and substitute it into the docker-run wrapper template that
+    # the script's startup banner emits as a `[note]` block
+    # immediately after the title banner.  That template is
+    # generated from the same `CLIENT_IMAGE`, `NETWORK`, volume
+    # variables, and `--user 1000:1000` flag that this helper
+    # uses, so the wrapper matches the real exec exactly.
     printf '%b$ printf %q | %s%b\n' "${C_YELLOW}" \
-        "$printed_stdin" "umask 0022; ${cmd}; chmod -R a+rX /work" \
+        "$printed_stdin" "umask 0022; ${cmd}; chmod ... /work" \
         "${C_RESET}" >&2
 
     # shellcheck disable=SC2059
@@ -255,18 +269,36 @@ _sigul_emit() {
             -v "${HOST_WORKDIR}:/work:rw" \
             -v "${FIXTURES_DIR}:/fixtures:ro" \
             "$CLIENT_IMAGE" \
-            bash -c "umask 0022; ${cmd}; rc=\$?; chmod -R a+rX /work 2>/dev/null || true; exit \$rc"
+            bash -c "umask 0022; ${cmd}; rc=\$?; \
+                find /work -maxdepth 1 -mindepth 1 \
+                    -path /work/rpmbuild -prune -o \
+                    \( -type f -o -type d \) \
+                    -exec chmod a+rX {} + 2>/dev/null || true; \
+                find /work/batch-out -mindepth 1 -maxdepth 1 \
+                    -type f -exec chmod a+r {} + 2>/dev/null || true; \
+                exit \$rc"
     # ^ Two layers are needed to make sigul's output files
     # readable from the host shell on Linux CI runners:
     #
     #   1. umask 0022 in the container so any *new* files sigul
     #      creates via open(O_CREAT) end up mode 0644.
-    #   2. A post-command 'chmod -R a+rX /work' to fix up files
-    #      created via Python's tempfile.mkstemp() which hardcodes
-    #      mode 0600 and ignores the umask entirely.  Sigul's
+    #   2. A post-command chmod to fix up files created via
+    #      Python's tempfile.mkstemp(), which hardcodes mode 0600
+    #      and ignores the umask entirely.  Sigul's
     #      utils.write_new_file() goes through mkstemp() and then
     #      os.rename()s the temp file into place, so the final
     #      output stays mode 0600 unless we explicitly relax it.
+    #
+    # Scope of the chmod is deliberately narrow - top-level
+    # entries of /work plus the batch-out subdirectory created by
+    # Phase 3.4's sign-rpms test, with the rpmbuild tree pruned.
+    # Every sigul -o output we care about is written directly
+    # into /work/<name> (depth 1) or /work/batch-out/<name>
+    # (depth 2), so this catches everything we read back from the
+    # host while skipping the large, host-readable-already
+    # rpmbuild artefact tree (which rpmbuild itself creates with
+    # 0755 dirs and 0644 files).  Avoids an O(rpmbuild-tree)
+    # traversal on every sigul invocation in Phase 4.
     #
     # On macOS Docker (osxfs) host-side UID/perms are silently
     # mapped so the difference is invisible there; on Linux CI
@@ -324,7 +356,20 @@ note "Client image: ${CLIENT_IMAGE}"
 note "Docker network: ${NETWORK}"
 note "Host scratch dir: ${HOST_WORKDIR}"
 note "Fixtures dir: ${FIXTURES_DIR}"
+note "Client NSS volume: ${CLIENT_NSS_VOLUME}"
+note "Client config volume: ${CLIENT_CONFIG_VOLUME}"
 note "Admin password loaded from test-artifacts/admin-password"
+note ""
+note "Reproducer wrapper for printed sigul-client invocations:"
+note "  printf '<passphrase>\\0' | docker run --rm -i \\"
+note "    --user 1000:1000 \\"
+note "    --network ${NETWORK} \\"
+note "    -v ${CLIENT_NSS_VOLUME}:/etc/pki/sigul/client:ro \\"
+note "    -v ${CLIENT_CONFIG_VOLUME}:/etc/sigul:ro \\"
+note "    -v ${HOST_WORKDIR}:/work:rw \\"
+note "    -v ${FIXTURES_DIR}:/fixtures:ro \\"
+note "    ${CLIENT_IMAGE} \\"
+note "    bash -c '<paste in-container command here>'"
 
 # ----------------------------------------------------------------------
 # PHASE 0: Reset state for idempotent reruns
