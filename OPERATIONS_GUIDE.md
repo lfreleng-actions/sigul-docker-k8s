@@ -648,11 +648,14 @@ docker stats sigul-bridge sigul-server --format "table {{.Name}}\t{{.NetIO}}"
 
 For critical issues:
 
-1. **Check documentation**: All PHASE*.md files and NETWORK_ARCHITECTURE.md
+1. **Check documentation**: NETWORK_ARCHITECTURE.md, DEPLOYMENT_GUIDE.md,
+   OPERATIONS_GUIDE.md, TESTING.md
 2. **Run diagnostics**: `./scripts/collect-sigul-diagnostics.sh`
-3. **GitHub Issues**: <https://github.com/lf-releng/sigul-sign-docker/issues>
-4. **Review validation**: Run all `./scripts/validate-phase*.sh` scripts
+3. **GitHub Issues**: <https://github.com/modeseven-lfreleng-actions/sigul-docker/issues>
+4. **Run validation suites**: `./scripts/validate-certificates.sh`,
+   `./scripts/validate-configs.sh`, `./scripts/validate-nss.sh`,
+   `./scripts/validate-volumes.sh`
 
 ---
 
-*For deployment procedures, see DEPLOYMENT_PRODUCTION_ALIGNED.md*
+*For deployment procedures, see DEPLOYMENT_GUIDE.md.*

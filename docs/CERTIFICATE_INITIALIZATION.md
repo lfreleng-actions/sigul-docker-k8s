@@ -777,4 +777,3 @@ The certificate initialization system provides:
 For additional support, see:
 - [DEPLOYMENT_GUIDE.md](../DEPLOYMENT_GUIDE.md) - General deployment
 - [OPERATIONS_GUIDE.md](../OPERATIONS_GUIDE.md) - Day-to-day operations
-- [Phase Documentation](./PHASE8_COMPLETE.md) - Production alignment details

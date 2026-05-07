@@ -601,4 +601,3 @@ in CI.
 - [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) - Stack deployment instructions
 - [OPERATIONS_GUIDE.md](OPERATIONS_GUIDE.md) - Operational procedures
 - [README.md](README.md) - Project overview
-- [docs/historical/](docs/historical/) - Historical debugging documentation
