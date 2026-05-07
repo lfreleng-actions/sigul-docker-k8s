@@ -240,6 +240,27 @@ docker compose -f docker-compose.sigul.yml down -v --remove-orphans
   patch fixes and why.
 - [`docs/`](./docs) — deeper dives on individual topics.
 
+## Troubleshooting
+
+- **TLS / NSS / handshake errors** (`Unexpected EOF in NSPR`,
+  silent timeouts, opaque auth failures): set `SIGUL_DEBUG_AUTH=1`
+  locally, or `enable_auth_debug: true` on the
+  `workflow_dispatch` form in CI, to surface `AUTHDBG/*` lines in
+  the bridge / server logs (added by patch 02).  Then run
+  `./scripts/debug-tls-stack.sh --all --verbose`.  See
+  [`docs/TLS_DEBUGGING_GUIDE.md`](./docs/TLS_DEBUGGING_GUIDE.md)
+  and [`docs/DEBUGGING_QUICK_REFERENCE.md`](./docs/DEBUGGING_QUICK_REFERENCE.md)
+  for the full walk-through.
+- **Stack won't come up cleanly:** run the
+  `scripts/validate-{volumes,nss,certificates,configs}.sh`
+  helpers; each supports `--help` and is safe to run in any order.
+- **Capturing a bundle to attach to an issue:**
+  `./scripts/collect-sigul-diagnostics.sh --compress` produces a
+  redacted tarball under `diagnostics/`.
+- **Last resort:** stale volumes are the most common cause of
+  "impossible" stack bugs.  `docker compose -f docker-compose.sigul.yml
+  down -v --remove-orphans` and redeploy.
+
 ## Contributing
 
 Contributions land through GitHub pull requests against `main`.  The
@@ -332,8 +353,9 @@ failing CI run as the source of truth.
 
 ### Reporting an issue
 
-Use [GitHub Issues](https://github.com/lfreleng-actions/sigul-docker/issues).
-For TLS / NSS / handshake problems include the auth-debug capture
-produced by setting `enable_auth_debug: true` on the
-`workflow_dispatch` form, or by exporting `SIGUL_DEBUG_AUTH=1`
-before running the deploy script locally.
+Use [GitHub Issues](https://github.com/lfreleng-actions/sigul-docker/issues) to report problems and bugs.
+A good report includes the steps to reproduce, what you expected to
+happen versus what actually happened, the relevant container or
+workflow logs, and — for stack-level bugs — the diagnostic bundle
+from `scripts/collect-sigul-diagnostics.sh --compress` (see
+[Troubleshooting](#troubleshooting)).
