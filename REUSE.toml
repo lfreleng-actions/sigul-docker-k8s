@@ -10,6 +10,7 @@ path = [
     "samples/**",
     "test-packages-fixed.Dockerfile",
     "baseline-network.json",
+    "pyrightconfig.json",
     "pki/**/*.pem",
     "pki/**/*.crt",
     "pki/**/*.key",

@@ -1,0 +1,14 @@
+{
+  "pythonVersion": "3.14",
+  "include": [
+    "build-scripts"
+  ],
+  "reportUnknownMemberType": "none",
+  "reportUnknownVariableType": "none",
+  "reportUnknownArgumentType": "none",
+  "reportUnknownParameterType": "none",
+  "reportMissingTypeStubs": "none",
+  "reportMissingParameterType": "warning",
+  "reportMissingImports": "none",
+  "reportMissingModuleSource": "none"
+}
