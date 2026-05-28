@@ -5,6 +5,25 @@ SPDX-FileCopyrightText: 2025 The Linux Foundation
 
 # 🔏 Sigul Signing
 
+<!-- markdownlint-disable MD013 -->
+
+[![Linux Foundation](https://img.shields.io/badge/Linux-Foundation-blue)](https://linuxfoundation.org/)
+[![Source Code](https://img.shields.io/badge/GitHub-Source-blue?logo=github&logoColor=white)](https://github.com/lfreleng-actions/sigul-sign-docker)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![REUSE status](https://api.reuse.software/badge/github.com/lfreleng-actions/sigul-sign-docker)](https://api.reuse.software/info/github.com/lfreleng-actions/sigul-sign-docker)
+[![Latest Release](https://img.shields.io/github/v/release/lfreleng-actions/sigul-sign-docker?label=Release&include_prereleases&sort=semver)](https://github.com/lfreleng-actions/sigul-sign-docker/releases)
+
+[![Build & Test](https://github.com/lfreleng-actions/sigul-sign-docker/actions/workflows/build-test.yaml/badge.svg?branch=main)](https://github.com/lfreleng-actions/sigul-sign-docker/actions/workflows/build-test.yaml)
+[![pre-commit.ci status badge]][pre-commit.ci results page]
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/lfreleng-actions/sigul-sign-docker/badge)](https://scorecard.dev/viewer/?uri=github.com/lfreleng-actions/sigul-sign-docker)
+[![Zizmor Scan](https://github.com/lfreleng-actions/sigul-sign-docker/actions/workflows/zizmor.yaml/badge.svg?branch=main)](https://github.com/lfreleng-actions/sigul-sign-docker/actions/workflows/zizmor.yaml)
+
+[![Client Image](https://img.shields.io/badge/ghcr.io-client-blue?logo=docker&logoColor=white)](https://github.com/lfreleng-actions/sigul-sign-docker/pkgs/container/sigul-sign-docker%2Fclient)
+[![Server Image](https://img.shields.io/badge/ghcr.io-server-blue?logo=docker&logoColor=white)](https://github.com/lfreleng-actions/sigul-sign-docker/pkgs/container/sigul-sign-docker%2Fserver)
+[![Bridge Image](https://img.shields.io/badge/ghcr.io-bridge-blue?logo=docker&logoColor=white)](https://github.com/lfreleng-actions/sigul-sign-docker/pkgs/container/sigul-sign-docker%2Fbridge)
+
+<!-- markdownlint-enable MD013 -->
+
 A GitHub Action and supporting Docker stack for signing build artefacts and
 git tags using a [Sigul](https://pagure.io/sigul) signing server.  Two
 deliverables live in this repository:
@@ -35,7 +54,7 @@ to skip its own `docker build`.
 ### Sign a single file
 
 ```yaml
-- uses: lfreleng-actions/sigul-docker@v1
+- uses: lfreleng-actions/sigul-sign-docker@v1
   with:
       sign-type: 'sign-data'
       sign-object: ${{ github.workspace }}/artifacts/mypackage.tar.gz
@@ -54,7 +73,7 @@ to skip its own `docker build`.
 ### Sign multiple files in a single invocation
 
 ```yaml
-- uses: lfreleng-actions/sigul-docker@v1
+- uses: lfreleng-actions/sigul-sign-docker@v1
   with:
       sign-type: 'sign-data'
       sign-object: |
@@ -73,7 +92,7 @@ to skip its own `docker build`.
 ### Sign a git tag
 
 ```yaml
-- uses: lfreleng-actions/sigul-docker@v1
+- uses: lfreleng-actions/sigul-sign-docker@v1
   with:
       sign-type: 'sign-git-tag'
       sign-object: 'v1.1' # Existing unsigned annotated tag in the repo
@@ -87,17 +106,21 @@ to skip its own `docker build`.
 
 ## Action inputs
 
-| Input | Required | Default | Description |
-| ----- | -------- | ------- | ----------- |
-| `sign-type` | no | `sign-data` | Either `sign-data` or `sign-git-tag`. |
-| `sign-object` | yes | — | File to sign (or newline-separated list of files), or the name of an annotated git tag. |
-| `sigul-key-name` | yes | — | Name of the key on the Sigul server to sign with. |
-| `sigul-conf` | yes | — | Body of the Sigul client configuration file. The action's entrypoint writes it to `client.conf` inside the container's Sigul config directory (`/var/sigul/config`, falling back to `/etc/sigul` or `$HOME/.sigul-config`) and passes the resulting path to every `sigul --batch -c …` invocation. The bridge hostname / port / NSS settings the client needs all live here. |
-| `sigul-pass` | yes | — | Passphrase for the Sigul key.  Also used as the GPG passphrase to decrypt `sigul-pki`. |
-| `sigul-pki` | yes | — | Client PKI material: a `tar.xz` archive containing a `.sigul/` directory (NSS database, certificates, private key), GPG-encrypted with `sigul-pass`.  May be supplied raw or base64-encoded; the entrypoint auto-detects. |
-| `gh-user` | no | `github.actor` | GitHub user to push the signed tag as (`sign-git-tag` only). |
-| `gh-key` | no | — | GitHub API key for `gh-user`. **Required** for `sign-git-tag`; ignored for `sign-data`. |
-| `sigul-mock-mode` | no | `false` | When `true`, emit deterministic mock signatures locally without contacting a Sigul server. Useful for testing workflow plumbing. |
+<!-- markdownlint-disable MD013 -->
+
+| Input             | Required | Default        | Description                                                                                                                                                                                                                                                                                                                                                                  |
+| ----------------- | -------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sign-type`       | no       | `sign-data`    | Either `sign-data` or `sign-git-tag`.                                                                                                                                                                                                                                                                                                                                        |
+| `sign-object`     | yes      | —              | File to sign (or newline-separated list of files), or the name of an annotated git tag.                                                                                                                                                                                                                                                                                      |
+| `sigul-key-name`  | yes      | —              | Name of the key on the Sigul server to sign with.                                                                                                                                                                                                                                                                                                                            |
+| `sigul-conf`      | yes      | —              | Body of the Sigul client configuration file. The action's entrypoint writes it to `client.conf` inside the container's Sigul config directory (`/var/sigul/config`, falling back to `/etc/sigul` or `$HOME/.sigul-config`) and passes the resulting path to every `sigul --batch -c …` invocation. The bridge hostname / port / NSS settings the client needs all live here. |
+| `sigul-pass`      | yes      | —              | Passphrase for the Sigul key.  Also used as the GPG passphrase to decrypt `sigul-pki`.                                                                                                                                                                                                                                                                                       |
+| `sigul-pki`       | yes      | —              | Client PKI material: a `tar.xz` archive containing a `.sigul/` directory (NSS database, certificates, private key), GPG-encrypted with `sigul-pass`.  May be supplied raw or base64-encoded; the entrypoint auto-detects.                                                                                                                                                    |
+| `gh-user`         | no       | `github.actor` | GitHub user to push the signed tag as (`sign-git-tag` only).                                                                                                                                                                                                                                                                                                                 |
+| `gh-key`          | no       | —              | GitHub API key for `gh-user`. **Required** for `sign-git-tag`; ignored for `sign-data`.                                                                                                                                                                                                                                                                                      |
+| `sigul-mock-mode` | no       | `false`        | When `true`, emit deterministic mock signatures locally without contacting a Sigul server. Useful for testing workflow plumbing.                                                                                                                                                                                                                                             |
+
+<!-- markdownlint-enable MD013 -->
 
 ### Requirements
 
@@ -117,11 +140,15 @@ To use the action against a real signing server you need:
 
 This repository builds three containers, all from `fedora:44`:
 
-| Container | Dockerfile | Role |
-| --------- | ---------- | ---- |
-| Client | [`Dockerfile.client`](./Dockerfile.client) | Sigul client used by the action and the integration tests. |
-| Server | [`Dockerfile.server`](./Dockerfile.server) | Sigul server: holds the signing keys, runs SQLite-backed key/user database. |
-| Bridge | [`Dockerfile.bridge`](./Dockerfile.bridge) | Sigul bridge: brokers double-TLS connections between clients and the server. |
+<!-- markdownlint-disable MD013 -->
+
+| Container | Dockerfile                                 | Role                                                                         |
+| --------- | ------------------------------------------ | ---------------------------------------------------------------------------- |
+| Client    | [`Dockerfile.client`](./Dockerfile.client) | Sigul client used by the action and the integration tests.                   |
+| Server    | [`Dockerfile.server`](./Dockerfile.server) | Sigul server: holds the signing keys, runs SQLite-backed key/user database.  |
+| Bridge    | [`Dockerfile.bridge`](./Dockerfile.bridge) | Sigul bridge: brokers double-TLS connections between clients and the server. |
+
+<!-- markdownlint-enable MD013 -->
 
 ### How Sigul is built
 
@@ -169,11 +196,15 @@ with `publish_ghcr: true`) publishes the images to GHCR.
 Workflow trigger: `pull_request` to `main`, plus `workflow_dispatch` with the
 following inputs:
 
-| Input | Default | Purpose |
-| ----- | ------- | ------- |
-| `clear_cache` | `false` | Bypass GitHub Actions cache and rebuild images from scratch. |
-| `enable_auth_debug` | `false` | Set `SIGUL_DEBUG_AUTH=1` in the bridge and server, surfacing `AUTHDBG/*` lines in container logs. |
-| `publish_ghcr` | `true` | Publish freshly-built images to `ghcr.io/<org>/<repo>/sigul-docker`. Untick when iterating on the workflow itself. |
+<!-- markdownlint-disable MD013 -->
+
+| Input               | Default | Purpose                                                                                                            |
+| ------------------- | ------- | ------------------------------------------------------------------------------------------------------------------ |
+| `clear_cache`       | `false` | Bypass GitHub Actions cache and rebuild images from scratch.                                                       |
+| `enable_auth_debug` | `false` | Set `SIGUL_DEBUG_AUTH=1` in the bridge and server, surfacing `AUTHDBG/*` lines in container logs.                  |
+| `publish_ghcr`      | `true`  | Publish freshly-built images to `ghcr.io/<org>/<repo>/sigul-docker`. Untick when iterating on the workflow itself. |
+
+<!-- markdownlint-enable MD013 -->
 
 ## Local development
 
@@ -357,10 +388,14 @@ failing CI run as the source of truth.
 
 ### Reporting an issue
 
-Use [GitHub Issues](https://github.com/lfreleng-actions/sigul-docker/issues) to report problems and bugs.
+Use [GitHub Issues][gh-issues] to report problems and bugs.
 
 A good report includes the steps to reproduce, what you expected to
 happen versus what actually happened, the relevant container or
 workflow logs, and — for stack-level bugs — the diagnostic bundle
 from `scripts/collect-sigul-diagnostics.sh --compress` (see
 [Troubleshooting](#troubleshooting)).
+
+[pre-commit.ci results page]: https://results.pre-commit.ci/latest/github/lfreleng-actions/sigul-sign-docker/main
+[pre-commit.ci status badge]: https://results.pre-commit.ci/badge/github/lfreleng-actions/sigul-sign-docker/main.svg
+[gh-issues]: https://github.com/lfreleng-actions/sigul-sign-docker/issues

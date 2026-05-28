@@ -14,11 +14,15 @@ container) on a host with Docker. The same flow is used in CI by
 
 The stack is three containers built from `fedora:44`:
 
-| Component | Image | Listens on |
-| --------- | ----- | ---------- |
-| Server | `server-<platform>-image:test` | (no incoming TCP; connects out to the bridge on port 44333) |
-| Bridge | `bridge-<platform>-image:test` | TCP/44333 (server side), TCP/44334 (client side); always binds `0.0.0.0` |
-| Client | `client-<platform>-image:test` | (run on demand by the action and test scripts) |
+<!-- markdownlint-disable MD013 -->
+
+| Component | Image                          | Listens on                                                               |
+| --------- | ------------------------------ | ------------------------------------------------------------------------ |
+| Server    | `server-<platform>-image:test` | (no incoming TCP; connects out to the bridge on port 44333)              |
+| Bridge    | `bridge-<platform>-image:test` | TCP/44333 (server side), TCP/44334 (client side); always binds `0.0.0.0` |
+| Client    | `client-<platform>-image:test` | (run on demand by the action and test scripts)                           |
+
+<!-- markdownlint-enable MD013 -->
 
 `<platform>` is `linux-amd64` or `linux-arm64`. The CI workflow builds and
 publishes both. For local development you typically build only the platform
@@ -105,14 +109,18 @@ The repository ships several validation scripts under
 [`scripts/`](./scripts) that sanity-check different aspects of the
 deployment:
 
-| Script | What it checks |
-| ------ | -------------- |
-| `validate-nss.sh` | NSS database files exist, have the right ownership, and contain the expected certificate nicknames. |
-| `validate-certificates.sh` | Certificates are valid, not expired, and correctly chain to the CA. |
-| `validate-configs.sh` | Bridge / server / client configs parse and reference matching FQDNs. |
-| `validate-volumes.sh` | Required Docker volumes exist with the correct ownership. |
-| `verify-cert-hostname-alignment.sh` | Bridge / server certificate CNs match the hostnames the configs use. |
-| `verify-network.sh` / `verify-dns.sh` | Inter-container connectivity and name resolution. |
+<!-- markdownlint-disable MD013 -->
+
+| Script                                | What it checks                                                                                      |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `validate-nss.sh`                     | NSS database files exist, have the right ownership, and contain the expected certificate nicknames. |
+| `validate-certificates.sh`            | Certificates are valid, not expired, and correctly chain to the CA.                                 |
+| `validate-configs.sh`                 | Bridge / server / client configs parse and reference matching FQDNs.                                |
+| `validate-volumes.sh`                 | Required Docker volumes exist with the correct ownership.                                           |
+| `verify-cert-hostname-alignment.sh`   | Bridge / server certificate CNs match the hostnames the configs use.                                |
+| `verify-network.sh` / `verify-dns.sh` | Inter-container connectivity and name resolution.                                                   |
+
+<!-- markdownlint-enable MD013 -->
 
 Each script supports `--help`.
 
