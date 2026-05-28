@@ -78,6 +78,21 @@ repos:
     hooks:
       - id: shellcheck
 
+  # Dockerfile linter. AleksaC/hadolint-py vendors the hadolint binary
+  # via pip so the hook works on pre-commit.ci (no Docker required).
+  # Configuration lives in .hadolint.yaml at the repo root.
+  #
+  # Dockerfile.client is excluded for now: it uses a `<< 'EOF'` heredoc
+  # inside a RUN instruction that hadolint's parser does not yet
+  # accept (https://github.com/hadolint/hadolint/issues/923). Drop the
+  # exclude once upstream supports the heredoc form used there.
+  - repo: https://github.com/AleksaC/hadolint-py
+    rev: 458cb25edf664682e3e856a53a2f9af33e068297  # frozen: v2.14.0
+    hooks:
+      - id: hadolint
+        files: '(?i)(^|/)Dockerfile($|\.)'
+        exclude: '^Dockerfile\.client$'
+
   - repo: https://github.com/igorshubovych/markdownlint-cli
     rev: e72a3ca1632f0b11a07d171449fe447a7ff6795e  # frozen: v0.48.0
     hooks:
