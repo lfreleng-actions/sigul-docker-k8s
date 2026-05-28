@@ -111,7 +111,15 @@ jobs:
           token: "${{ secrets.GITHUB_TOKEN }}"
           require_type: 'semver'
           reject_development: true
-          require_signed: true
+          # Verify the tag's signing key is registered against the
+          # tagger's GitHub account, not just any valid SSH/GPG key.
+          require_github: true
+          # 'ssh,gpg-unverifiable' matches dependamerge: SSH signatures
+          # are fully verified; GPG signatures are accepted as signed
+          # even when the action lacks the signer's public key to
+          # cryptographically verify them (require_github above still
+          # binds the key to the GitHub account).
+          require_signed: 'ssh,gpg-unverifiable'
 
   ### Step 2: Build all three images for both architectures ###
   build-containers:
@@ -554,10 +562,432 @@ jobs:
               docker manifest inspect "${tag}"
           done
 
+  ### Step 4b: Sign, attest, SBOM, and vuln-scan each image ###
+  sign-attest-scan:
+    name: 'Sign+SBOM+Scan: ${{ matrix.component }}'
+    needs: [tag-validate, publish-ghcr]
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: read
+      packages: write
+      # cosign keyless signing + attestation predicates use OIDC.
+      id-token: write
+      # actions/attest-build-provenance + actions/attest-sbom write
+      # signed attestations and (with push-to-registry: true) attach
+      # them as OCI referrers on the manifest digest.
+      attestations: write
+      # github/codeql-action/upload-sarif publishes Grype findings
+      # to the repository's code-scanning alerts.
+      security-events: write
+    timeout-minutes: 20
+    strategy:
+      # Don't short-circuit other components if one's Grype scan
+      # finds CVEs at the configured threshold; we want SBOMs and
+      # SARIF for every component in a single release run.
+      fail-fast: false
+      matrix:
+        component: ['client', 'server', 'bridge']
+    env:
+      # 'low' is intentionally aggressive: the bridge and server
+      # both handle signing material and the client is consumed
+      # widely downstream, so any known-fixable CVE warrants
+      # release-time visibility. Set the NO_BLOCK_AUDIT_FAIL repo
+      # variable to 'true' to soft-fail (warn but still publish)
+      # when a transitive CVE is blocking an urgent release.
+      GRYPE_FAIL_ON: 'low'
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5  # v2.19.3
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Set up Docker Buildx'
+        # yamllint disable-line rule:line-length
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
+
+      - name: 'Log in to GitHub Container Registry'
+        # yamllint disable-line rule:line-length
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 'Resolve multi-arch manifest digest'
+        id: ref
+        shell: bash
+        env:
+          # yamllint disable-line rule:line-length
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}/${{ matrix.component }}
+          TAG: ${{ needs.tag-validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # The publish-ghcr job uploaded a multi-arch manifest list
+          # under <image>:<tag>. Resolve the manifest-list digest so
+          # cosign / attest / SBOM all bind to the immutable digest
+          # rather than the moving tag.
+          digest=$(docker buildx imagetools inspect \
+            "${IMAGE}:${TAG}" \
+            --format '{{json .Manifest}}' \
+            | jq -r '.digest')
+          if [[ -z "${digest}" || "${digest}" == "null" ]]; then
+            echo "::error::Could not resolve manifest digest" \
+              "for ${IMAGE}:${TAG}" >&2
+            exit 1
+          fi
+          echo "Resolved ${IMAGE}:${TAG} -> ${digest}"
+          {
+            echo "image=${IMAGE}"
+            echo "digest=${digest}"
+            echo "ref=${IMAGE}@${digest}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 'Install cosign'
+        # yamllint disable-line rule:line-length
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+
+      - name: 'Sign image (keyless OIDC)'
+        env:
+          IMAGE_REF: ${{ steps.ref.outputs.ref }}
+        run: cosign sign --yes "${IMAGE_REF}"
+
+      - name: 'Attest build provenance'
+        # yamllint disable-line rule:line-length
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
+        with:
+          subject-name: ${{ steps.ref.outputs.image }}
+          subject-digest: ${{ steps.ref.outputs.digest }}
+          push-to-registry: true
+
+      - name: 'Generate SPDX SBOM'
+        # yamllint disable-line rule:line-length
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
+        with:
+          image: ${{ steps.ref.outputs.ref }}
+          format: spdx-json
+          output-file: sbom-${{ matrix.component }}.spdx.json
+          # The SBOM action's own artifact upload duplicates our
+          # explicit upload-artifact step below; disabling it
+          # avoids 'name already exists' failures and keeps all
+          # release assets under one consistent naming pattern.
+          upload-artifact: false
+
+      - name: 'Attest SBOM'
+        # yamllint disable-line rule:line-length
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e  # v4.1.0
+        with:
+          subject-name: ${{ steps.ref.outputs.image }}
+          subject-digest: ${{ steps.ref.outputs.digest }}
+          sbom-path: sbom-${{ matrix.component }}.spdx.json
+          push-to-registry: true
+
+      - name: 'Install Grype'
+        id: grype
+        # yamllint disable-line rule:line-length
+        uses: anchore/scan-action/download-grype@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2  # v7.4.0
+        with:
+          cache-db: 'true'
+
+      - name: 'Grype scan SBOM'
+        id: grype-scan
+        env:
+          GRYPE_CMD: ${{ steps.grype.outputs.cmd }}
+          COMPONENT: ${{ matrix.component }}
+          FAIL_ON: ${{ env.GRYPE_FAIL_ON }}
+          NO_BLOCK_AUDIT_FAIL: >-
+            ${{ vars.NO_BLOCK_AUDIT_FAIL == 'true' }}
+        run: |
+          set +e
+          "${GRYPE_CMD}" \
+            -o "sarif=grype-${COMPONENT}.sarif" \
+            -o "json=grype-${COMPONENT}.json" \
+            -o "table=grype-${COMPONENT}.txt" \
+            --fail-on "${FAIL_ON}" \
+            "sbom:sbom-${COMPONENT}.spdx.json"
+          grype_exit=$?
+          set -e
+
+          echo "--- Grype scan results (${COMPONENT}) ---"
+          if [[ -f "grype-${COMPONENT}.txt" ]]; then
+            cat "grype-${COMPONENT}.txt"
+          else
+            echo "No table output produced"
+          fi
+
+          # Grype exits 2 when matches at/above --fail-on were
+          # found. Any other non-zero exit means grype itself
+          # failed and we must surface that.
+          if [[ "${grype_exit}" == "0" ]]; then
+            echo "No vulnerabilities at or above '${FAIL_ON}'"
+            exit 0
+          fi
+          if [[ "${grype_exit}" != "2" ]]; then
+            echo "::error::Grype exited with code ${grype_exit}"
+            exit "${grype_exit}"
+          fi
+
+          if [[ "${NO_BLOCK_AUDIT_FAIL}" == "true" ]]; then
+            echo "::warning::${COMPONENT}: Grype found findings" \
+              "at or above '${FAIL_ON}', but NO_BLOCK_AUDIT_FAIL" \
+              "is set so the release will proceed."
+            exit 0
+          fi
+          echo "::error::${COMPONENT}: Grype found vulnerabilities" \
+            "at or above '${FAIL_ON}'. See the table above."
+          exit 1
+
+      - name: 'Upload Grype SARIF to code scanning'
+        if: always()
+        # continue-on-error: a transient SARIF upload failure must
+        # not block the release; the SARIF file is also attached
+        # to the release as a downloadable asset.
+        continue-on-error: true
+        # yamllint disable-line rule:line-length
+        uses: github/codeql-action/upload-sarif@9e0d7b8d25671d64c341c19c0152d693099fb5ba  # v4.35.5
+        with:
+          sarif_file: grype-${{ matrix.component }}.sarif
+          category: grype-${{ matrix.component }}
+
+      - name: 'Upload SBOM and Grype reports as workflow artifact'
+        if: always()
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: sbom-and-scan-${{ matrix.component }}
+          path: |
+            sbom-${{ matrix.component }}.spdx.json
+            grype-${{ matrix.component }}.sarif
+            grype-${{ matrix.component }}.json
+            grype-${{ matrix.component }}.txt
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: 'Grype Markdown summary'
+        if: always()
+        env:
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          # Render a Markdown table of Grype matches into the job
+          # step summary. CVE data is sourced from the JSON output
+          # (jq-parsed so multi-word cells cannot break the table
+          # column layout).
+          json_file="grype-${COMPONENT}.json"
+          {
+            echo "## Grype scan: ${COMPONENT}"
+            echo ""
+            if [[ ! -f "${json_file}" ]]; then
+              echo "No scan results available."
+              exit 0
+            fi
+            match_count=$(jq '.matches | length' "${json_file}")
+            if [[ "${match_count}" == "0" ]]; then
+              echo "No vulnerabilities at or above the configured" \
+                "severity threshold."
+              exit 0
+            fi
+            echo "Found ${match_count} Grype record(s)."
+            echo ""
+            echo "| Package | Installed | Fixed In | Type |" \
+              "Vulnerability | Severity | EPSS | Risk |"
+            echo "| --- | --- | --- | --- | --- | --- | --- | --- |"
+            jq -r '
+              def esc: tostring | gsub("\\|"; "\\|");
+              def round2: (. * 100 | round) / 100;
+              def epss_pct:
+                ( .vulnerability.epss // [] ) as $e
+                | if ($e | length) == 0 then "-"
+                  else ( $e[0].epss // 0 ) as $p
+                    | if $p == 0 then "0%"
+                      elif ($p * 100) < 0.01 then "<0.01%"
+                      else ( ($p * 100) | round2 | tostring
+                             + "%" ) end
+                  end;
+              def risk_fmt:
+                .vulnerability.risk
+                | if . == null then "-"
+                  elif type == "number" then
+                    (round2 | tostring)
+                  else (. | tostring) end;
+              .matches[] |
+              [ (.artifact.name // "-" | esc),
+                (.artifact.version // "-" | esc),
+                ( ( .vulnerability.fix.versions // [] )
+                  | if length == 0 then "-"
+                    else join(", ") end | esc ),
+                (.artifact.type // "-" | esc),
+                (.vulnerability.id // "-" | esc),
+                (.vulnerability.severity // "-" | esc),
+                epss_pct,
+                risk_fmt
+              ] | "| " + join(" | ") + " |"
+            ' "${json_file}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  ### Step 4c: Attach SBOM + Grype reports to draft release ###
+  release-attach:
+    name: 'Attach Release Assets'
+    needs: [tag-validate, sign-attest-scan]
+    # Run even when sign-attest-scan fails: SBOM and Grype reports
+    # are most valuable on a failing release because they explain
+    # *why* it failed. The upload step below no-ops gracefully
+    # when no artifacts were produced, and promote-release still
+    # waits on sign-attest-scan, so a failed scan leaves the
+    # draft un-promoted regardless of release-attach's outcome.
+    if: >-
+      always() && needs.tag-validate.result == 'success'
+    runs-on: 'ubuntu-24.04'
+    permissions:
+      contents: write
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.tag-validate.outputs.tag }}
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5  # v2.19.3
+        with:
+          egress-policy: 'audit'
+
+      # No checkout step: this job only touches the GitHub Releases
+      # API and downloaded artifacts; nothing reads from the
+      # workspace, so a checkout would just waste runtime and
+      # broaden the credential-exposure surface for no benefit.
+
+      - name: 'Download SBOMs + Grype reports'
+        # Tolerate runs where no sbom-and-scan-* artifacts were
+        # produced (e.g. sign-attest-scan failed before the
+        # upload-artifact step in any matrix entry). The next step
+        # checks for and gracefully no-ops on an empty asset set,
+        # but only if this step is allowed to succeed without
+        # files.
+        continue-on-error: true
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          path: release-assets
+          pattern: sbom-and-scan-*
+          merge-multiple: true
+
+      - name: 'Upload SBOMs and Grype reports to release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Defensive: when the download step finds zero matching
+          # artifacts it may skip directory creation entirely, in
+          # which case `find` below would exit non-zero under
+          # `set -e`. Ensure the directory exists so `find` always
+          # has something to walk, then no-op cleanly on an empty
+          # asset set.
+          mkdir -p release-assets
+          mapfile -t assets < <(find release-assets -type f)
+          if [[ "${#assets[@]}" -eq 0 ]]; then
+            echo "::warning::No release assets found to upload"
+            exit 0
+          fi
+          gh release upload "${TAG}" "${assets[@]}" --clobber
+
+      - name: 'Append verification footer to release notes'
+        # Only stamp the footer (with its cosign verify / gh
+        # attestation verify guidance) when sign-attest-scan
+        # actually ran. If publish-ghcr failed and the scan job
+        # was skipped, no signatures or attestations exist and
+        # the footer's claims would be false. A scan that ran
+        # and failed still produced some signatures/attestations
+        # for some matrix entries, so partial-failure runs are
+        # treated as 'footer-worthy' — verification just won't
+        # succeed for the missing components.
+        if: needs.sign-attest-scan.result != 'skipped'
+        shell: bash
+        env:
+          REPO: ${{ github.repository }}
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_BASE: ${{ env.IMAGE_BASE }}
+        run: |
+          set -euo pipefail
+          # Sentinel makes the footer idempotent across re-runs:
+          # any prior footer is stripped and rewritten in-place.
+          sentinel='<!-- sigul release verification footer -->'
+          existing=$(gh release view "${TAG}" --json body --jq .body)
+          # SC2295: quote the inner expansion so the sentinel is
+          # treated literally rather than as a glob pattern.
+          head_body="${existing%%"${sentinel}"*}"
+
+          imgbase="${REGISTRY}/${IMAGE_BASE}"
+
+          footer=$(cat <<EOF
+          ${sentinel}
+
+          ---
+
+          ## Container images
+
+          Three multi-arch (linux/amd64 + linux/arm64) images are
+          published to GHCR for this release:
+
+          - \`${imgbase}/client:${TAG}\`
+          - \`${imgbase}/server:${TAG}\`
+          - \`${imgbase}/bridge:${TAG}\`
+
+          Each image is cosign-signed (keyless via GitHub OIDC) and
+          ships with a SLSA build-provenance attestation and an
+          SPDX SBOM attestation, all attached to the image
+          manifest via the OCI referrers API.
+
+          ## Verify the signatures
+
+          The signing identity is bound to this exact workflow file
+          and the release tag. Pin both so any other workflow on
+          this repository (or a future workflow file rename) cannot
+          satisfy the verification.
+
+          \`\`\`sh
+          ident="https://github.com/${REPO}/.github/workflows/release.yaml@refs/tags/${TAG}"
+          for c in client server bridge; do
+            cosign verify "${imgbase}/\${c}:${TAG}" \\
+              --certificate-identity "\${ident}" \\
+              --certificate-oidc-issuer \\
+                https://token.actions.githubusercontent.com
+          done
+          \`\`\`
+
+          ## Verify the build provenance
+
+          \`\`\`sh
+          for c in client server bridge; do
+            gh attestation verify \\
+              "oci://${imgbase}/\${c}:${TAG}" \\
+              --repo ${REPO}
+          done
+          \`\`\`
+
+          ## Inspect the SBOM
+
+          \`\`\`sh
+          gh attestation verify \\
+            "oci://${imgbase}/client:${TAG}" \\
+            --repo ${REPO} \\
+            --predicate-type https://spdx.dev/Document
+          cosign download attestation \\
+            "${imgbase}/client:${TAG}" \\
+            --predicate-type https://spdx.dev/Document \\
+            | jq -r '.payload | @base64d | fromjson | .predicate' \\
+            > sbom-client.spdx.json
+          \`\`\`
+
+          The raw SPDX SBOMs and Grype scan reports for all three
+          components are attached to this release as assets, and
+          the SARIF results have been uploaded to the repository's
+          code-scanning alerts.
+          EOF
+          )
+
+          printf '%s\n%s\n' "${head_body}" "${footer}" \
+            | gh release edit "${TAG}" --notes-file -
+
   ### Step 5: Promote draft release ###
   promote-release:
     name: 'Promote Draft Release'
-    needs: [tag-validate, publish-ghcr]
+    needs: [tag-validate, publish-ghcr, sign-attest-scan, release-attach]
     runs-on: 'ubuntu-24.04'
     permissions:
       contents: write
@@ -615,6 +1045,8 @@ jobs:
       - build-containers
       - functional-tests
       - publish-ghcr
+      - sign-attest-scan
+      - release-attach
       - promote-release
     runs-on: 'ubuntu-latest'
     if: always()
@@ -625,17 +1057,26 @@ jobs:
         env:
           TAG: ${{ needs.tag-validate.outputs.tag }}
           STATUS: ${{ needs.promote-release.result }}
+          R_TAG: ${{ needs.tag-validate.result }}
+          R_BUILD: ${{ needs.build-containers.result }}
+          R_TESTS: ${{ needs.functional-tests.result }}
+          R_PUBLISH: ${{ needs.publish-ghcr.result }}
+          R_SCAN: ${{ needs.sign-attest-scan.result }}
+          R_ATTACH: ${{ needs.release-attach.result }}
+          R_PROMOTE: ${{ needs.promote-release.result }}
         run: |
           {
               echo "# Release ${TAG}"
               echo ""
               echo "| Stage | Result |"
               echo "| ----- | ------ |"
-              echo "| Tag validation | ${{ needs.tag-validate.result }} |"
-              echo "| Image builds | ${{ needs.build-containers.result }} |"
-              echo "| Functional tests | ${{ needs.functional-tests.result }} |"
-              echo "| GHCR publish | ${{ needs.publish-ghcr.result }} |"
-              echo "| Release promote | ${{ needs.promote-release.result }} |"
+              echo "| Tag validation | ${R_TAG} |"
+              echo "| Image builds | ${R_BUILD} |"
+              echo "| Functional tests | ${R_TESTS} |"
+              echo "| GHCR publish | ${R_PUBLISH} |"
+              echo "| Sign + SBOM + Grype | ${R_SCAN} |"
+              echo "| Release assets | ${R_ATTACH} |"
+              echo "| Release promote | ${R_PROMOTE} |"
               echo ""
               if [[ "${STATUS}" == "success" ]]; then
                   echo "## ✅ Release published"

@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# actionlint configuration.
+#
+# `ubuntu-24.04-arm` is a real GitHub-hosted ARM64 runner label, but
+# actionlint's bundled label list does not (yet) include it.
+# Declaring it here silences the spurious `runner-label` warnings
+# emitted for the matrix entries in build-test.yaml and release.yaml
+# that target native ARM64 build hardware.
+#
+# Reference: GitHub blog (16 Jan 2025) announcing free public ARM64
+# hosted runners for public repositories.
+---
+self-hosted-runner:
+  labels:
+    - ubuntu-24.04-arm
