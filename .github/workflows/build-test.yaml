@@ -104,25 +104,39 @@ jobs:
         # Use ubuntu-latest for AMD64 builds (x86_64 runners)
         # Use ubuntu-24.04-arm for ARM64 builds (native ARM64 runners)
         # This avoids QEMU emulation which can cause timeouts and failures
+        # yamllint disable rule:line-length
         include:
           - component: 'client'
+            title: 'Sigul Client'
+            description: 'Unified Linux Foundation signing infrastructure client'
             platform: 'linux/amd64'
             runner: ubuntu-24.04
           - component: 'client'
+            title: 'Sigul Client'
+            description: 'Unified Linux Foundation signing infrastructure client'
             platform: 'linux/arm64'
             runner: ubuntu-24.04-arm
           - component: 'server'
+            title: 'Sigul Server'
+            description: 'Simplified Linux Foundation signing infrastructure server'
             platform: 'linux/amd64'
             runner: ubuntu-24.04
           - component: 'server'
+            title: 'Sigul Server'
+            description: 'Simplified Linux Foundation signing infrastructure server'
             platform: 'linux/arm64'
             runner: ubuntu-24.04-arm
           - component: 'bridge'
+            title: 'Sigul Bridge'
+            description: 'Simplified Linux Foundation signing infrastructure bridge'
             platform: 'linux/amd64'
             runner: ubuntu-24.04
           - component: 'bridge'
+            title: 'Sigul Bridge'
+            description: 'Simplified Linux Foundation signing infrastructure bridge'
             platform: 'linux/arm64'
             runner: ubuntu-24.04-arm
+        # yamllint enable rule:line-length
     outputs:
       client-amd64-digest: ${{ steps.build-client-amd64.outputs.digest }}
       client-arm64-digest: ${{ steps.build-client-arm64.outputs.digest }}
@@ -178,6 +192,27 @@ jobs:
           echo "id=${platform_id}" >> "$GITHUB_OUTPUT"
           echo "Platform ID: ${platform_id}"
 
+      # Generate the full standard OCI label set from the workflow
+      # context (org/repo, commit SHA, build time, repo licence, etc).
+      # Per-component title and description come from the matrix.
+      # The resulting labels are baked into the image at build time
+      # and survive the tar export/load cycle that publish-ghcr uses.
+      - name: 'Compute OCI image metadata'
+        id: meta
+        # yamllint disable-line rule:line-length
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6.1.0
+        with:
+          images: ghcr.io/${{ github.repository }}/${{ matrix.component }}
+          # Pin image.version explicitly to the tag the publish-ghcr
+          # job below will use (manual-<sha>). Without this override,
+          # docker/metadata-action would derive image.version from the
+          # ref (branch name on workflow_dispatch / push), which would
+          # not match the actual published tag.
+          labels: |
+            org.opencontainers.image.title=${{ matrix.title }}
+            org.opencontainers.image.description=${{ matrix.description }}
+            org.opencontainers.image.version=manual-${{ github.sha }}
+
       # yamllint disable rule:line-length
       - name: "Build ${{ matrix.component }} container for ${{ matrix.platform }}"
         # yamllint disable-line rule:line-length
@@ -192,15 +227,7 @@ jobs:
           # publishing.
           tags: |
             ${{ matrix.component }}:${{ steps.platform.outputs.id }}
-          # OCI labels derived from the workflow context so they stay
-          # correct regardless of which org/repo this is published
-          # from (survives the planned move to lfreleng-actions and
-          # any forks). Static component-specific labels (image.title
-          # / image.description) remain in the Dockerfiles.
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.url=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
           outputs: |
             type=docker,dest=/tmp/${{ matrix.component }}-${{ steps.platform.outputs.id }}.tar
           push: false
