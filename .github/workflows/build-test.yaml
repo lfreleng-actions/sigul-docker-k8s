@@ -192,6 +192,15 @@ jobs:
           # publishing.
           tags: |
             ${{ matrix.component }}:${{ steps.platform.outputs.id }}
+          # OCI labels derived from the workflow context so they stay
+          # correct regardless of which org/repo this is published
+          # from (survives the planned move to lfreleng-actions and
+          # any forks). Static component-specific labels (image.title
+          # / image.description) remain in the Dockerfiles.
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.url=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
           outputs: |
             type=docker,dest=/tmp/${{ matrix.component }}-${{ steps.platform.outputs.id }}.tar
           push: false
