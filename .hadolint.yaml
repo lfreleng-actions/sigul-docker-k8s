@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# hadolint configuration for the sigul-sign-docker images.
+
+# Globally ignored rules with justification:
+#
+#   DL3041 — Specify version with `dnf install -y <package>-<version>`.
+#     The Fedora base image provides a large rolling package set; pinning
+#     every system package would churn Dockerfiles on every weekly base
+#     image refresh and provide little real-world reproducibility.
+#
+#   DL3042 — Avoid use of cache directory with pip.
+#     The build runs one pip invocation in a single layer that is later
+#     squashed; --no-cache-dir would shave a few MB from intermediate
+#     layers only, not from the final image.
+#
+#   DL3013 — Pin versions in pip.
+#     The pip installs here are for build-time tooling pulled in alongside
+#     a rolling Fedora base image; pinning would not give meaningful
+#     reproducibility without also pinning the base.
+#
+#   DL3002 — Last USER should not be root.
+#     The container intentionally starts as root so the entrypoint can
+#     fix volume permissions; it then drops to UID 1000 (sigul). The
+#     Dockerfiles document this in inline comments above the final USER
+#     instruction.
+ignored:
+  - DL3041
+  - DL3042
+  - DL3013
+  - DL3002
+
+# Treat warnings as warnings, not errors; hadolint runs advisory in
+# pre-commit and findings should be visible without blocking the hook.
+failure-threshold: error
