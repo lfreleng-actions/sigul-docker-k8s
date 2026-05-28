@@ -658,6 +658,18 @@ jobs:
           subject-name: ${{ steps.ref.outputs.image }}
           subject-digest: ${{ steps.ref.outputs.digest }}
           push-to-registry: true
+          # Storage records are a newer GitHub artifact-metadata
+          # feature that mirrors attestations into the
+          # workflow-artifact catalogue. We persist attestations
+          # as OCI referrers on the image manifest and via the
+          # GitHub attestations API, which is what `gh attestation
+          # verify oci://...` (documented in the release notes
+          # footer) actually consumes. Disabling storage records
+          # avoids `Failed to persist storage record: no artifacts
+          # found` warnings and the corresponding
+          # `artifact-metadata: write` permission requirement
+          # without losing any verification path.
+          create-storage-record: false
 
       - name: 'Generate SPDX SBOM'
         # yamllint disable-line rule:line-length
@@ -673,13 +685,25 @@ jobs:
           upload-artifact: false
 
       - name: 'Attest SBOM'
+        # `actions/attest-sbom` was deprecated in favour of the
+        # combined `actions/attest` action, which supports SBOM
+        # mode automatically when `sbom-path:` is provided. The
+        # produced attestation predicate (SPDX) is identical, so
+        # this is a drop-in replacement that silences the
+        # deprecation warning emitted by attest-sbom.
         # yamllint disable-line rule:line-length
-        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e  # v4.1.0
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26  # v4.1.0
         with:
           subject-name: ${{ steps.ref.outputs.image }}
           subject-digest: ${{ steps.ref.outputs.digest }}
           sbom-path: sbom-${{ matrix.component }}.spdx.json
           push-to-registry: true
+          # See the rationale on the build-provenance step above:
+          # storage records add no verification path that we use
+          # and require an additional `artifact-metadata: write`
+          # permission; disable them to keep this job's token
+          # scopes minimal.
+          create-storage-record: false
 
       - name: 'Install Grype'
         id: grype
@@ -842,6 +866,11 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ needs.tag-validate.outputs.tag }}
+      # gh CLI commands in this job need an explicit `--repo`
+      # because we intentionally skip `actions/checkout` (see
+      # comment below). Hoist the repository slug into env so
+      # every step uses the same value.
+      REPO: ${{ github.repository }}
     steps:
       # yamllint disable-line rule:line-length
       - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
@@ -852,6 +881,10 @@ jobs:
       # API and downloaded artifacts; nothing reads from the
       # workspace, so a checkout would just waste runtime and
       # broaden the credential-exposure surface for no benefit.
+      # Without a checkout, however, the `gh` CLI cannot infer
+      # the repository from a local git remote, so every `gh
+      # release ...` invocation below passes `--repo "${REPO}"`
+      # explicitly.
 
       - name: 'Download SBOMs + Grype reports'
         # Tolerate runs where no sbom-and-scan-* artifacts were
@@ -884,7 +917,8 @@ jobs:
             echo "::warning::No release assets found to upload"
             exit 0
           fi
-          gh release upload "${TAG}" "${assets[@]}" --clobber
+          gh release upload "${TAG}" "${assets[@]}" \
+            --repo "${REPO}" --clobber
 
       - name: 'Append verification footer to release notes'
         # Only stamp the footer (with its cosign verify / gh
@@ -907,7 +941,8 @@ jobs:
           # Sentinel makes the footer idempotent across re-runs:
           # any prior footer is stripped and rewritten in-place.
           sentinel='<!-- sigul release verification footer -->'
-          existing=$(gh release view "${TAG}" --json body --jq .body)
+          existing=$(gh release view "${TAG}" \
+            --repo "${REPO}" --json body --jq .body)
           # SC2295: quote the inner expansion so the sentinel is
           # treated literally rather than as a glob pattern.
           head_body="${existing%%"${sentinel}"*}"
@@ -982,7 +1017,8 @@ jobs:
           )
 
           printf '%s\n%s\n' "${head_body}" "${footer}" \
-            | gh release edit "${TAG}" --notes-file -
+            | gh release edit "${TAG}" \
+                --repo "${REPO}" --notes-file -
 
   ### Step 5: Promote draft release ###
   promote-release:
