@@ -651,7 +651,7 @@ For critical issues:
 1. **Check documentation**: NETWORK_ARCHITECTURE.md, DEPLOYMENT_GUIDE.md,
    OPERATIONS_GUIDE.md, TESTING.md
 2. **Run diagnostics**: `./scripts/collect-sigul-diagnostics.sh`
-3. **GitHub Issues**: <https://github.com/lfreleng-actions/sigul-docker/issues>
+3. **GitHub Issues**: <https://github.com/lfreleng-actions/sigul-sign-docker/issues>
 4. **Run validation suites**: `./scripts/validate-certificates.sh`,
    `./scripts/validate-configs.sh`, `./scripts/validate-nss.sh`,
    `./scripts/validate-volumes.sh`
