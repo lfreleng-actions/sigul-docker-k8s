@@ -460,136 +460,125 @@ jobs:
           name: ${{ matrix.component }}-linux-arm64-image
           path: /tmp
 
-      - name: 'Compute release tags'
-        id: tags
-        shell: bash
-        env:
-          FULL_TAG: ${{ needs.tag-validate.outputs.tag }}
+      - name: 'Compute release tags and labels'
+        # Replaces the previous hand-rolled bash that derived major /
+        # minor / latest tracks from FULL_TAG. metadata-action's
+        # default `flavor: latest=auto` skips the `latest` tag for
+        # prerelease tags (e.g. v1.2.3-rc1) just like the previous
+        # bash did. The OCI labels that this action also outputs are
+        # unused here: the build job already baked the full label
+        # set into each per-arch image via metadata-action and those
+        # labels survive the tar export/load cycle.
+        #
+        # Each semver pattern carries
+        # `value=${{ needs.tag-validate.outputs.tag }}` so the tag
+        # set is derived from the validated tag emitted by the
+        # tag-validate job rather than from `github.ref_name`. In
+        # practice those are the same string today, but pinning
+        # value= here guarantees publish and validation cannot
+        # diverge if tag-validate ever canonicalises or rewrites
+        # the tag before downstream consumption.
+        id: meta
+        # yamllint disable-line rule:line-length
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6.1.0
+        with:
           # yamllint disable-line rule:line-length
-          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}/${{ matrix.component }}
-        # yamllint disable rule:line-length
-        run: |
-          set -euo pipefail
-          # Pre-flight: surface the inputs we are about to operate on
-          # so any future failure has the values in the log.
-          echo "FULL_TAG=${FULL_TAG}"
-          echo "IMAGE=${IMAGE}"
-          if [[ -z "${FULL_TAG}" ]]; then
-              echo "::error::FULL_TAG is empty - refusing to compute release tags" >&2
-              exit 1
-          fi
-          if [[ -z "${IMAGE}" ]]; then
-              echo "::error::IMAGE is empty - refusing to compute release tags" >&2
-              exit 1
-          fi
-          # FULL_TAG looks like 'v1.2.3' or 'v1.2.3-rc1'. Strip the 'v'
-          # for downstream tools that prefer raw versions, and derive
-          # the major / minor tracks (only for non-prerelease tags).
-          base="${FULL_TAG#v}"
-          major="${base%%.*}"
-          minor_rest="${base#"${major}".}"
-          minor="${minor_rest%%.*}"
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}/${{ matrix.component }}
+          # yamllint disable rule:line-length
+          tags: |
+            type=semver,pattern=v{{version}},value=${{ needs.tag-validate.outputs.tag }}
+            type=semver,pattern=v{{major}}.{{minor}},value=${{ needs.tag-validate.outputs.tag }}
+            type=semver,pattern=v{{major}},value=${{ needs.tag-validate.outputs.tag }}
+          # yamllint enable rule:line-length
 
-          # Always tag with the exact version.
-          tags=( "${IMAGE}:${FULL_TAG}" )
-
-          # Pre-release tags (anything containing a '-' after the
-          # patch number) get only the exact-version tag. We do not
-          # move 'latest' / 'vX' / 'vX.Y' on pre-releases.
-          case "${base}" in
-              *-*)
-                  echo "Pre-release tag: only ${FULL_TAG} will be applied"
-                  ;;
-              *)
-                  tags+=(
-                      "${IMAGE}:v${major}"
-                      "${IMAGE}:v${major}.${minor}"
-                      "${IMAGE}:latest"
-                  )
-                  ;;
-          esac
-
-          {
-              printf 'tags<<EOF\n'
-              printf '%s\n' "${tags[@]}"
-              printf 'EOF\n'
-          } >> "$GITHUB_OUTPUT"
-
-          comp="${{ matrix.component }}"
-          echo "Will publish ${comp} with tags:"
-          printf '  %s\n' "${tags[@]}"
-
-      - name: 'Load and tag platform images'
+      - name: 'Load platform images from tar artifacts'
         shell: bash
-        env:
-          # yamllint disable-line rule:line-length
-          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}/${{ matrix.component }}
         run: |
           set -euo pipefail
           docker load --input /tmp/${{ matrix.component }}-linux-amd64.tar
           docker load --input /tmp/${{ matrix.component }}-linux-arm64.tar
           docker images | grep '^${{ matrix.component }} ' || true
 
-      - name: 'Push platform images and create multi-arch manifests'
+      - name: 'Push per-arch images and assemble multi-arch index'
+        # Push each platform image exactly once under a stable
+        # per-arch reference, then use `docker buildx imagetools
+        # create` to assemble a single OCI image index per release
+        # tag pointing at those two per-arch images. imagetools
+        # reads each source image's config to derive its platform
+        # entry in the index, so the explicit `manifest annotate`
+        # calls the previous implementation needed are no longer
+        # required.
+        #
+        # Per release, this produces (for stable tags v1.2.3):
+        #
+        #     v1.2.3-amd64, v1.2.3-arm64    (per-arch sources)
+        #     v1.2.3, v1.2, v1, latest      (multi-arch indexes)
+        #
+        # i.e. 2 per-arch images + 4 indexes = 6 registry entries
+        # per release per component, vs 12 with the previous
+        # per-tag-per-arch push loop.
         shell: bash
         env:
           # yamllint disable-line rule:line-length
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}/${{ matrix.component }}
+          FULL_TAG: ${{ needs.tag-validate.outputs.tag }}
+        # yamllint disable rule:line-length
         run: |
           set -euo pipefail
 
-          # Push each platform image once with a per-arch suffix on
-          # every release tag. Then create one manifest per release
-          # tag pointing at the two per-arch images.
-          mapfile -t tags <<< "${{ steps.tags.outputs.tags }}"
-
-          # Pre-flight: refuse to push if no tags were computed, or
-          # if any computed tag ends with ':' (which would produce
-          # a malformed reference like '<image>:-amd64' once the
-          # per-arch suffix is appended).
-          if [[ ${#tags[@]} -eq 0 ]]; then
-              echo "::error::No release tags computed; refusing to push" >&2
-              exit 1
-          fi
-          for tag in "${tags[@]}"; do
-              [[ -n "${tag}" ]] || continue
-              if [[ "${tag}" == *: ]]; then
-                  echo "::error::Computed tag '${tag}' ends with ':' (empty version); refusing to push" >&2
+          # Pre-flight: refuse to push if metadata-action produced
+          # no tags, or if any computed tag is malformed (ends with
+          # ':' which would mean an empty version).
+          mapfile -t tags <<< "${{ steps.meta.outputs.tags }}"
+          nonempty=()
+          for t in "${tags[@]}"; do
+              [[ -n "${t}" ]] || continue
+              if [[ "${t}" == *: ]]; then
+                  echo "::error::Computed tag '${t}' ends with ':' (empty version); refusing to push" >&2
                   exit 1
               fi
-              echo "will push: ${tag}"
+              nonempty+=( "${t}" )
           done
+          if [[ ${#nonempty[@]} -eq 0 ]]; then
+              echo "::error::No release tags produced by docker/metadata-action; refusing to push" >&2
+              exit 1
+          fi
+          echo "Will publish multi-arch indexes under tags:"
+          printf '  %s\n' "${nonempty[@]}"
 
-          for tag in "${tags[@]}"; do
-              [[ -n "${tag}" ]] || continue
+          # Push per-arch images under stable per-arch tags derived
+          # from FULL_TAG. These remain in the registry as direct
+          # per-arch references and serve as the imagetools inputs.
+          amd64_src="${IMAGE}:${FULL_TAG}-amd64"
+          arm64_src="${IMAGE}:${FULL_TAG}-arm64"
+          docker tag "${{ matrix.component }}:linux-amd64" "${amd64_src}"
+          docker tag "${{ matrix.component }}:linux-arm64" "${arm64_src}"
+          docker push "${amd64_src}"
+          docker push "${arm64_src}"
 
-              # Per-arch images
-              docker tag "${{ matrix.component }}:linux-amd64" "${tag}-amd64"
-              docker tag "${{ matrix.component }}:linux-arm64" "${tag}-arm64"
-              docker push "${tag}-amd64"
-              docker push "${tag}-arm64"
-
-              # Multi-arch manifest
-              docker manifest create "${tag}" \
-                  "${tag}-amd64" "${tag}-arm64"
-              docker manifest annotate "${tag}" "${tag}-amd64" \
-                  --arch amd64 --os linux
-              docker manifest annotate "${tag}" "${tag}-arm64" \
-                  --arch arm64 --os linux
-              docker manifest push "${tag}"
-              echo "✅ Published multi-arch manifest: ${tag}"
+          # Assemble all public release tags into one multi-arch
+          # index per tag, in a single imagetools call. Atomic per
+          # tag; the index manifest digest binds both architectures
+          # under each public reference.
+          tag_args=()
+          for t in "${nonempty[@]}"; do
+              tag_args+=( --tag "${t}" )
           done
-      # yamllint enable rule:line-length
+          docker buildx imagetools create \
+              "${tag_args[@]}" \
+              "${amd64_src}" "${arm64_src}"
+          echo "✅ Published multi-arch indexes for ${{ matrix.component }}"
+        # yamllint enable rule:line-length
 
       - name: 'Verify pushed manifests'
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t tags <<< "${{ steps.tags.outputs.tags }}"
+          mapfile -t tags <<< "${{ steps.meta.outputs.tags }}"
           for tag in "${tags[@]}"; do
               [[ -n "${tag}" ]] || continue
               echo "=== ${tag} ==="
-              docker manifest inspect "${tag}"
+              docker buildx imagetools inspect "${tag}"
           done
 
   ### Step 4b: Sign, attest, SBOM, and vuln-scan each image ###
