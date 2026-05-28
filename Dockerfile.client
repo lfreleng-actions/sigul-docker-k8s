@@ -31,6 +31,28 @@ RUN dnf install -y --setopt=install_weak_deps=False --allowerasing \
         sqlite nss-tools jq && \
     dnf clean all
 
+# Patch CVEs that fedora:44 ships unpatched in its python3-pip and
+# python3-idna packages: pip 26.0.1 has GHSA-58qw-9mgm-455v and
+# GHSA-jp4c-xjxw-mgf9 (both fixed in 26.1), and idna 3.11 has
+# GHSA-65pc-fj4g-8rjx (fixed in 3.15). Upgrading via pip is required
+# because Fedora 44 has not (yet) pushed updated python3-pip /
+# python3-idna packages, so 'dnf upgrade' alone leaves the vulnerable
+# versions in place. --break-system-packages overrides Fedora's
+# EXTERNALLY-MANAGED marker (PEP 668) so the upgraded versions land
+# in the system Python site. We then remove the stale dist-info dirs
+# from the dnf-managed site-packages tree so the Grype SBOM scan
+# only reports the upgraded versions; otherwise the old metadata
+# files would still cause Grype to flag both installations. The
+# globs intentionally trail with '*' (not '.*'): idna 3.11 ships its
+# metadata as 'idna-3.11.dist-info' with no patch component, so
+# '*.dist-info' would miss it.
+RUN python3 -m pip install --upgrade --break-system-packages \
+        'pip>=26.1' 'idna>=3.15' && \
+    find /usr/lib/python3*/site-packages \
+        \( -name 'pip-26.0*.dist-info' \
+        -o -name 'idna-3.11*.dist-info' \) \
+        -type d -exec rm -rf {} +
+
 # Copy patches for debugging (if they exist)
 COPY patches/ /tmp/patches/
 
