@@ -2,12 +2,12 @@
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
 # Unified Dockerfile for sigul client using the new cert-init approach
-FROM fedora:41
+FROM fedora:44
 
 LABEL maintainer="releng@linuxfoundation.org"
 LABEL org.opencontainers.image.title="Sigul Client"
 LABEL org.opencontainers.image.description="Unified Linux Foundation signing infrastructure client"
-LABEL org.opencontainers.image.source="https://github.com/lfreleng-actions/sigul-sign-docker"
+LABEL org.opencontainers.image.source="https://github.com/lfreleng-actions/sigul-docker"
 
 # Update package manager
 RUN dnf update -y && \
@@ -15,11 +15,13 @@ RUN dnf update -y && \
 
 # Install base dependencies for all architectures
 # Note: nss-devel and nspr-devel removed - python-nss-ng installed from PyPI (pre-built)
+# Note: gnupg2 is preinstalled in fedora:44, so it's not in the install list.
 RUN dnf install -y --setopt=install_weak_deps=False --allowerasing \
         git which curl tar gzip xz patch \
         python3-devel python3-pip python3-koji python3-requests \
         python3-rpm python3-setuptools python3-cryptography python3-pexpect python3-gpg \
-        gnupg2 koji-utils expect \
+        koji-utils expect \
+        rpm-build \
         make gcc autoconf automake libtool \
         procps-ng util-linux bind-utils \
         strace lsof \
@@ -35,9 +37,9 @@ COPY patches/ /tmp/patches/
 # Copy local sigul source for debugging builds
 COPY .build-context/sigul /build-context/sigul/
 
-# Install python-nss-ng v1.0.4 from PyPI (Fedora 41 has Python 3.13 which is compatible)
+# Install python-nss-ng v1.0.5 from PyPI (Fedora 44 has Python 3.14 which is compatible)
 ENV INSTALL_SOURCE=pypi
-ENV PYTHON_NSS_NG_VERSION=1.0.4
+ENV PYTHON_NSS_NG_VERSION=1.0.5
 COPY build-scripts/install-python-nss.sh /tmp/install-python-nss.sh
 RUN chmod +x /tmp/install-python-nss.sh && \
     /tmp/install-python-nss.sh --verify && \

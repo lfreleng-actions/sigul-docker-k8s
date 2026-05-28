@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+#
+# Treat the encoded test fixture as opaque binary so diff doesn't
+# show its structure on every change and merge tools don't try to
+# do anything clever with it.
+test/fixtures/sigul-import-test-key.b64 binary

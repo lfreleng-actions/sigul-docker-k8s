@@ -1,1 +1,0 @@
-/Users/mwatkins/.config/claude/CLAUDE.md

@@ -63,19 +63,22 @@ install_from_source() {
         cp -r /build-context/sigul ./sigul
         log_info "Copied local sigul source"
     else
-        # CI/Production: Always use official public Sigul repository
+        # CI/Production: Always use official public Sigul repository.
+        # Pinned to the SIGUL_VERSION release tag because the patches
+        # in patches/ are written against that tree (see
+        # patches/README.md).
         log_info "Cloning sigul from official upstream repository (Pagure)"
 
         local sigul_repo="https://pagure.io/sigul.git"
-        local sigul_branch="master"
+        local sigul_branch="v${SIGUL_VERSION}"
 
         log_info "Repository: $sigul_repo"
-        log_info "Branch: $sigul_branch"
+        log_info "Branch / tag: $sigul_branch"
 
         if ! git clone --depth 1 --branch "$sigul_branch" "$sigul_repo" sigul; then
             log_error "Failed to clone sigul from official upstream repository"
             log_error "Repository: $sigul_repo"
-            log_error "Branch: $sigul_branch"
+            log_error "Branch / tag: $sigul_branch"
             return 1
         fi
 
@@ -107,7 +110,7 @@ install_from_source() {
                         echo "╚════════════════════════════════════════════════════════════════╝"
                         echo ""
                         log_info "✓ Patch applied successfully: $(basename "$patch_file")"
-                        
+
                         # Output to GitHub Actions summary if available
                         if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
                             echo "✅ **Patch Applied Successfully**: \`$(basename "$patch_file")\`" >> "$GITHUB_STEP_SUMMARY"
@@ -116,14 +119,16 @@ install_from_source() {
                         log_error "✗ FATAL: Failed to apply patch: $(basename "$patch_file")"
                         log_error "Patches are REQUIRED for correct operation"
                         log_error "Cannot continue without patches - container would be non-functional"
-                        
+
                         # Output to GitHub Actions summary if available
                         if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-                            echo "❌ **Patch Application FAILED**: \`$(basename "$patch_file")\`" >> "$GITHUB_STEP_SUMMARY"
-                            echo "" >> "$GITHUB_STEP_SUMMARY"
-                            echo "⚠️ **Build cannot continue** - patches are required for proper operation" >> "$GITHUB_STEP_SUMMARY"
+                            {
+                                echo "❌ **Patch Application FAILED**: \`$(basename "$patch_file")\`"
+                                echo ""
+                                echo "⚠️ **Build cannot continue** - patches are required for proper operation"
+                            } >> "$GITHUB_STEP_SUMMARY"
                         fi
-                        
+
                         return 1
                     fi
                 fi

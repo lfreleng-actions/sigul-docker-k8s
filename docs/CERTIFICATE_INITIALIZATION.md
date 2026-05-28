@@ -470,30 +470,34 @@ docker exec sigul-bridge certutil -L -d sql:/etc/pki/sigul/bridge \
 
 ### Environment Variables
 
-| Variable | Default | Description | Required |
-|----------|---------|-------------|----------|
-| `CERT_INIT_MODE` | `auto` | Initialization mode: auto, force, skip | No |
-| `NSS_PASSWORD` | (generated) | NSS database password | Yes |
-| `BRIDGE_FQDN` | `sigul-bridge.example.org` | Bridge FQDN for certificate CN | No |
-| `SERVER_FQDN` | `sigul-server.example.org` | Server FQDN for certificate CN | No |
-| `CA_VALIDITY_MONTHS` | `120` | CA certificate validity in months | No |
-| `CERT_VALIDITY_MONTHS` | `120` | Component certificate validity in months | No |
-| `DEBUG` | `false` | Enable debug output | No |
+<!-- markdownlint-disable MD013 -->
+
+| Variable               | Default                    | Description                              | Required |
+| ---------------------- | -------------------------- | ---------------------------------------- | -------- |
+| `CERT_INIT_MODE`       | `auto`                     | Initialization mode: auto, force, skip   | No       |
+| `NSS_PASSWORD`         | (generated)                | NSS database password                    | Yes      |
+| `BRIDGE_FQDN`          | `sigul-bridge.example.org` | Bridge FQDN for certificate CN           | No       |
+| `SERVER_FQDN`          | `sigul-server.example.org` | Server FQDN for certificate CN           | No       |
+| `CA_VALIDITY_MONTHS`   | `120`                      | CA certificate validity in months        | No       |
+| `CERT_VALIDITY_MONTHS` | `120`                      | Component certificate validity in months | No       |
+| `DEBUG`                | `false`                    | Enable debug output                      | No       |
+
+<!-- markdownlint-enable MD013 -->
 
 ### Certificate Nicknames (Standardized)
 
-| Component | Certificate Nickname | Usage |
-|-----------|---------------------|-------|
-| CA | `sigul-ca` | Root CA for trust chain |
-| Bridge | `sigul-bridge-cert` | Bridge TLS certificate |
-| Server | `sigul-server-cert` | Server TLS certificate |
+| Component | Certificate Nickname | Usage                   |
+| --------- | -------------------- | ----------------------- |
+| CA        | `sigul-ca`           | Root CA for trust chain |
+| Bridge    | `sigul-bridge-cert`  | Bridge TLS certificate  |
+| Server    | `sigul-server-cert`  | Server TLS certificate  |
 
 ### File Paths (FHS-Compliant)
 
-| Component | NSS Database | Configuration |
-|-----------|--------------|---------------|
-| Bridge | `/etc/pki/sigul/bridge/` | `/etc/sigul/bridge.conf` |
-| Server | `/etc/pki/sigul/server/` | `/etc/sigul/server.conf` |
+| Component | NSS Database             | Configuration            |
+| --------- | ------------------------ | ------------------------ |
+| Bridge    | `/etc/pki/sigul/bridge/` | `/etc/sigul/bridge.conf` |
+| Server    | `/etc/pki/sigul/server/` | `/etc/sigul/server.conf` |
 
 ---
 
@@ -758,15 +762,18 @@ The certificate initialization system provides:
 
 **Quick Reference:**
 
-| Scenario | Mode | Command |
-|----------|------|---------|
-| CI Testing | `auto` | `docker compose up -d` |
-| Production First Deploy | `auto` | `docker compose up -d` |
-| Production Restart | `auto` | `docker compose restart` |
-| After Volume Restore | `skip` | `CERT_INIT_MODE=skip docker compose up -d` |
-| Disaster Recovery | `force` | `CERT_INIT_MODE=force docker compose up -d` |
+<!-- markdownlint-disable MD013 -->
+
+| Scenario                | Mode    | Command                                     |
+| ----------------------- | ------- | ------------------------------------------- |
+| CI Testing              | `auto`  | `docker compose up -d`                      |
+| Production First Deploy | `auto`  | `docker compose up -d`                      |
+| Production Restart      | `auto`  | `docker compose restart`                    |
+| After Volume Restore    | `skip`  | `CERT_INIT_MODE=skip docker compose up -d`  |
+| Disaster Recovery       | `force` | `CERT_INIT_MODE=force docker compose up -d` |
+
+<!-- markdownlint-enable MD013 -->
 
 For additional support, see:
 - [DEPLOYMENT_GUIDE.md](../DEPLOYMENT_GUIDE.md) - General deployment
 - [OPERATIONS_GUIDE.md](../OPERATIONS_GUIDE.md) - Day-to-day operations
-- [Phase Documentation](./PHASE8_COMPLETE.md) - Production alignment details

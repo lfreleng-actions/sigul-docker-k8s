@@ -2,12 +2,12 @@
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
 # Simplified Dockerfile for sigul server using dedicated build scripts
-FROM fedora:41
+FROM fedora:44
 
 LABEL maintainer="releng@linuxfoundation.org"
 LABEL org.opencontainers.image.title="Sigul Server"
 LABEL org.opencontainers.image.description="Simplified Linux Foundation signing infrastructure server"
-LABEL org.opencontainers.image.source="https://github.com/lfreleng-actions/sigul-sign-docker"
+LABEL org.opencontainers.image.source="https://github.com/lfreleng-actions/sigul-docker"
 
 # Update package manager
 RUN dnf update -y && \
@@ -31,15 +31,19 @@ RUN dnf update -y && \
 
 # Install EPEL-dependent packages and Python packages via pip
 # Note: nss-devel and nspr-devel removed - python-nss-ng installed from PyPI (pre-built)
-# Note: Python 3.13 removed the crypt module - install passlib for compatibility
+# Note: Python 3.13/3.14 removed the crypt module - install passlib for compatibility
 # Note: python3-gpg required for GPG operations
+# Note: python3-fedora was dropped between Fedora 41 and 44; sigul's bridge
+#       imports it conditionally (try/except ImportError) only when FAS
+#       authentication is enabled, which we do not use, so we don't need it.
+# Note: gnupg2 is preinstalled in fedora:44, so it's not in the install list.
 RUN dnf install -y --setopt=install_weak_deps=False \
-        rpm-head-signing gnupg2 jq python3-fedora python3-gpg && \
+        rpm-head-signing rpm-sign jq python3-gpg && \
     pip3 install SQLAlchemy==1.3.24 passlib && \
     dnf clean all
 
-# Install crypt module compatibility shim for Python 3.13
-COPY build-scripts/crypt_compat.py /usr/lib/python3.13/site-packages/crypt.py
+# Install crypt module compatibility shim for Python 3.14
+COPY build-scripts/crypt_compat.py /usr/lib/python3.14/site-packages/crypt.py
 
 # Copy patches for debugging (if they exist)
 COPY patches/ /tmp/patches/
@@ -47,9 +51,9 @@ COPY patches/ /tmp/patches/
 # Copy local sigul source for debugging builds
 COPY .build-context/sigul /build-context/sigul/
 
-# Install python-nss-ng v1.0.4 from PyPI (Fedora 41 has Python 3.13 which is compatible)
+# Install python-nss-ng v1.0.5 from PyPI (Fedora 44 has Python 3.14 which is compatible)
 ENV INSTALL_SOURCE=pypi
-ENV PYTHON_NSS_NG_VERSION=1.0.4
+ENV PYTHON_NSS_NG_VERSION=1.0.5
 COPY build-scripts/install-python-nss.sh /tmp/install-python-nss.sh
 RUN chmod +x /tmp/install-python-nss.sh && \
     /tmp/install-python-nss.sh --verify && \

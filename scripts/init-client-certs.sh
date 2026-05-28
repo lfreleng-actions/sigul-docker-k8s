@@ -364,6 +364,33 @@ display_certificate_info() {
 }
 
 #######################################
+# Ownership finalisation
+#######################################
+
+finalize_ownership() {
+    # When the script runs as root (e.g. inside a container that drops
+    # privileges later) hand the resulting NSS DB to the sigul user so
+    # the daemon can read it after setreuid().  Otherwise the daemon
+    # opens NSS as UID 1000 and gets the misleading
+    #     "does not contain a valid NSS database"
+    # error from upstream.  No-op when the script is already running
+    # as the target user.
+    if [[ "$(id -u)" -eq 0 ]]; then
+        # Resolve target UID/GID dynamically from the sigul account
+        # in the running image to stay in lock-step with the
+        # entrypoints (which also use id -u sigul / id -g sigul).
+        # Hard-coding 1000 here would re-introduce the same drift
+        # the entrypoints fixed.
+        local target_uid target_gid
+        target_uid="$(id -u sigul 2>/dev/null || echo 1000)"
+        target_gid="$(id -g sigul 2>/dev/null || echo 1000)"
+        log "Running as root - chowning $CLIENT_NSS_DIR to ${target_uid}:${target_gid}"
+        chown -R "${target_uid}:${target_gid}" "$CLIENT_NSS_DIR" \
+            || warn "Failed to chown $CLIENT_NSS_DIR"
+    fi
+}
+
+#######################################
 # Main Execution
 #######################################
 
@@ -389,6 +416,9 @@ main() {
     # Verify everything
     verify_certificates
     display_certificate_info
+
+    # Hand outputs to the sigul user if we ran as root.
+    finalize_ownership
 
     success "Client certificate import completed successfully"
     echo ""

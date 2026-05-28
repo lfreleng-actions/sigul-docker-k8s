@@ -246,6 +246,4 @@ Docker Network: sigul-network (172.20.0.0/16)
 
 - Source code: `/usr/share/sigul/bridge.py` - Bridge bind logic
 - Source code: `/usr/share/sigul/server.py` - Server connection logic
-- ALIGNMENT_PLAN.md - Phase 6: Network & DNS Configuration
-- PHASE6_COMPLETE.md - Network topology diagram
 - README.md - Network Architecture section

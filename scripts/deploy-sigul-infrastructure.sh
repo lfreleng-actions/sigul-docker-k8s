@@ -195,43 +195,6 @@ EOF
     debug "Bridge readiness tracking initialized: $readiness_file"
 }
 
-# Check bridge port and internal socket connectivity with structured output
-# shellcheck disable=SC2317  # Function may be called indirectly or in future usage
-check_bridge_connectivity() {
-    local check_result
-    check_result='{
-        "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
-        "external_port_ok": false,
-        "internal_socket_ok": false,
-        "container_running": false,
-        "details": {}
-    }'
-
-    # Check if container is running
-    local container_status
-    container_status=$(docker container inspect sigul-bridge --format '{{.State.Status}}' 2>/dev/null || echo "not found")
-
-    if [[ "$container_status" == "running" ]]; then
-        check_result=$(echo "$check_result" | jq '.container_running = true')
-
-        # Check external port connectivity
-        if nc -z localhost 44334 2>/dev/null; then
-            check_result=$(echo "$check_result" | jq '.external_port_ok = true')
-        fi
-
-        # Check internal socket connectivity using ss inside container
-        local internal_check
-        if internal_check=$(docker exec sigul-bridge ss -tlnp | grep ":44334" 2>/dev/null); then
-            check_result=$(echo "$check_result" | jq '.internal_socket_ok = true')
-            check_result=$(echo "$check_result" | jq --arg details "$internal_check" '.details.socket_info = $details')
-        fi
-    else
-        check_result=$(echo "$check_result" | jq --arg status "$container_status" '.details.container_status = $status')
-    fi
-
-    echo "$check_result"
-}
-
 # Simple bridge readiness check with early diagnostic collection
 perform_simple_bridge_readiness_check() {
     local artifacts_dir="${PROJECT_ROOT}/test-artifacts"
@@ -874,10 +837,10 @@ manage_volumes() {
 
     # Remove volumes
     local volumes_to_remove=(
-        "sigul-sign-docker_sigul_server_data"
-        "sigul-sign-docker_sigul_bridge_data"
-        "sigul-sign-docker_sigul_client_data"
-        "sigul-sign-docker_sigul_monitor_data"
+        "sigul-docker_sigul_server_data"
+        "sigul-docker_sigul_bridge_data"
+        "sigul-docker_sigul_client_data"
+        "sigul-docker_sigul_monitor_data"
     )
 
     for volume in "${volumes_to_remove[@]}"; do
@@ -1227,69 +1190,6 @@ deploy_sigul_services() {
     success "All Sigul services deployed successfully"
 }
 
-# Fix SSL certificate issue by importing client certificate to bridge
-# This resolves the "Unexpected EOF in NSPR" error in SSL client authentication
-# shellcheck disable=SC2317  # Function may be called indirectly or in future usage
-import_client_cert_to_bridge() {
-    local client_container="$1"
-    local bridge_container="sigul-bridge"
-
-    log "Importing client certificate to bridge for SSL authentication..."
-
-    # Wait for client container to be fully initialized with NSS database
-    local max_wait=30
-    local wait_count=0
-    while [[ $wait_count -lt $max_wait ]]; do
-        if docker exec "$client_container" test -f /var/sigul/nss/client/cert9.db 2>/dev/null; then
-            break
-        fi
-        sleep 1
-        ((wait_count++))
-    done
-
-    if [[ $wait_count -ge $max_wait ]]; then
-        error "Client NSS database not ready after ${max_wait}s"
-        return 1
-    fi
-
-    # Remove any existing/stale client certificate from bridge
-    docker exec "$bridge_container" certutil -D -d /var/sigul/nss/bridge -n sigul-client-cert 2>/dev/null || true
-
-    # Export current client certificate from client container
-    if ! docker exec "$client_container" certutil -L -d /var/sigul/nss/client -n sigul-client-cert -a > /tmp/current-client-cert.pem 2>/dev/null; then
-        error "Failed to export client certificate from client container"
-        return 1
-    fi
-
-    # Import to bridge with proper trust flags for SSL client authentication
-    docker cp /tmp/current-client-cert.pem "$bridge_container":/tmp/
-
-    if docker exec "$bridge_container" certutil -A -d /var/sigul/nss/bridge \
-        -n sigul-client-cert \
-        -t "P,," \
-        -a -i /tmp/current-client-cert.pem \
-        -f /var/sigul/secrets/nss-password 2>/dev/null; then
-
-        success "Client certificate imported to bridge NSS database"
-
-        # Verify the import
-        if docker exec "$bridge_container" certutil -L -d /var/sigul/nss/bridge -n sigul-client-cert >/dev/null 2>&1; then
-            verbose "SSL certificate fix verified: client cert now in bridge NSS database"
-        else
-            warn "SSL certificate import verification failed"
-        fi
-    else
-        error "Failed to import client certificate to bridge"
-        return 1
-    fi
-
-    # Cleanup temporary files
-    rm -f /tmp/current-client-cert.pem
-    docker exec "$bridge_container" rm -f /tmp/current-client-cert.pem 2>/dev/null || true
-
-    return 0
-}
-
 # Comprehensive infrastructure health verification
 verify_infrastructure() {
     log "Performing comprehensive infrastructure health verification..."
@@ -1577,7 +1477,7 @@ verify_infrastructure() {
             debug "Container runtime information:"
             docker version --format '{{.Server.Version}}' 2>/dev/null || true
             debug "Network driver information:"
-            docker network inspect sigul-sign-docker_sigul-network --format '{{.Driver}}' 2>/dev/null || true
+            docker network inspect sigul-docker_sigul-network --format '{{.Driver}}' 2>/dev/null || true
             if is_github_actions; then
                 debug "GitHub Actions runner information:"
                 echo "Runner OS: ${RUNNER_OS:-unknown}"

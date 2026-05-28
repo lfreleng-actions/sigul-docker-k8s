@@ -261,12 +261,12 @@ The CI workflow integrates the client test suite at
 
 ### CI Environment Variables
 
-| Variable | Source | Description |
-|----------|--------|-------------|
-| `SIGUL_CLIENT_IMAGE` | Workflow | Client image name |
-| `SIGUL_ADMIN_PASSWORD` | test-artifacts | Admin password |
-| `SIGUL_NETWORK_NAME` | Auto-detected | Docker network name |
-| `CI` | GitHub Actions | Set to `"true"` in CI |
+| Variable               | Source         | Description           |
+| ---------------------- | -------------- | --------------------- |
+| `SIGUL_CLIENT_IMAGE`   | Workflow       | Client image name     |
+| `SIGUL_ADMIN_PASSWORD` | test-artifacts | Admin password        |
+| `SIGUL_NETWORK_NAME`   | Auto-detected  | Docker network name   |
+| `CI`                   | GitHub Actions | Set to `"true"` in CI |
 
 ---
 
@@ -601,4 +601,3 @@ in CI.
 - [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) - Stack deployment instructions
 - [OPERATIONS_GUIDE.md](OPERATIONS_GUIDE.md) - Operational procedures
 - [README.md](README.md) - Project overview
-- [docs/historical/](docs/historical/) - Historical debugging documentation

@@ -10,6 +10,7 @@ path = [
     "samples/**",
     "test-packages-fixed.Dockerfile",
     "baseline-network.json",
+    "pyrightconfig.json",
     "pki/**/*.pem",
     "pki/**/*.crt",
     "pki/**/*.key",
@@ -22,6 +23,16 @@ path = [
     "pki/*.srl",
     "pki/*.conf.template",
     "pki/*.asc"
+]
+SPDX-License-Identifier = "Apache-2.0"
+SPDX-FileCopyrightText = "2025 The Linux Foundation"
+
+[[annotations]]
+path = [
+    "test/fixtures/sigul-import-test-key.b64",
+    "test/fixtures/sigul-import-test-key.fingerprint",
+    "test/fixtures/sigul-import-test-key.passphrase",
+    "test/fixtures/sigul-import-test.passphrase"
 ]
 SPDX-License-Identifier = "Apache-2.0"
 SPDX-FileCopyrightText = "2025 The Linux Foundation"

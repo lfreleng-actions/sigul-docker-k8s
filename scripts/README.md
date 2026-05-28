@@ -6,7 +6,7 @@ SPDX-FileCopyrightText: 2025 The Linux Foundation
 # Scripts Directory
 
 This directory contains scripts for building, testing, and managing the
-sigul-sign-docker containers after the comprehensive refactoring that
+sigul-docker containers after the comprehensive refactoring that
 unified the initialization system.
 
 ## 🚀 Quick Start
@@ -32,32 +32,32 @@ For most users, these are the scripts you'll need:
 ### 🏗️ Core Infrastructure
 
 <!-- markdownlint-disable MD013 -->
-| Script | Purpose | When to Use |
-|--------|---------|-------------|
-| `sigul-init.sh` | **Unified initialization script** | Container startup (all roles) |
-| `generate-complete-pki.sh` | Complete PKI infrastructure generation | Setting up test certificates |
-| `generate-test-pki.sh` | Test PKI generation wrapper | Development and testing |
+| Script                     | Purpose                                | When to Use                   |
+| -------------------------- | -------------------------------------- | ----------------------------- |
+| `sigul-init.sh`            | **Unified initialization script**      | Container startup (all roles) |
+| `generate-complete-pki.sh` | Complete PKI infrastructure generation | Setting up test certificates  |
+| `generate-test-pki.sh`     | Test PKI generation wrapper            | Development and testing       |
 <!-- markdownlint-enable MD013 -->
 
 ### 🧪 Testing & Validation
 
 <!-- markdownlint-disable MD013 -->
-| Script | Purpose | When to Use |
-|--------|---------|-------------|
-| `test-local.sh` | Local platform testing | Quick validation |
-| `test-all-architectures.sh` | Multi-architecture testing | Cross-platform validation |
-| `test-mock-signing.sh` | Mock signing functionality testing | Development testing |
-| `test-docker-build.sh` | Docker build testing | Build validation |
+| Script                      | Purpose                            | When to Use               |
+| --------------------------- | ---------------------------------- | ------------------------- |
+| `test-local.sh`             | Local platform testing             | Quick validation          |
+| `test-all-architectures.sh` | Multi-architecture testing         | Cross-platform validation |
+| `test-mock-signing.sh`      | Mock signing functionality testing | Development testing       |
+| `test-docker-build.sh`      | Docker build testing               | Build validation          |
 <!-- markdownlint-enable MD013 -->
 
 ### 🏗️ Infrastructure & Deployment
 
 <!-- markdownlint-disable MD013 -->
-| Script | Purpose | When to Use |
-|--------|---------|-------------|
-| `deploy-sigul-infrastructure.sh` | Deploy infrastructure stack | Test/dev environments |
-| `run-integration-tests.sh` | End-to-end integration testing | CI/CD pipelines |
-| `test-infrastructure.sh` | Infrastructure validation | Infrastructure testing |
+| Script                           | Purpose                        | When to Use            |
+| -------------------------------- | ------------------------------ | ---------------------- |
+| `deploy-sigul-infrastructure.sh` | Deploy infrastructure stack    | Test/dev environments  |
+| `run-integration-tests.sh`       | End-to-end integration testing | CI/CD pipelines        |
+| `test-infrastructure.sh`         | Infrastructure validation      | Infrastructure testing |
 <!-- markdownlint-enable MD013 -->
 
 ## 🔧 Core Infrastructure Scripts

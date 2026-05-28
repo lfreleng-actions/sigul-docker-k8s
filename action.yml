@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
-name: "sigul-sign-docker"
+name: "sigul-docker"
 description: "Sign artifacts with Sigul"
 
 inputs:
@@ -13,23 +13,21 @@ inputs:
   sign-object:
     description: "File or git tag to sign"
     required: true
-  sigul-ip:
-    description: "IP address of sigul server"
-    required: true
-  sigul-uri:
-    description: "URI of sigul server"
-    required: true
   sigul-conf:
-    description: "Config file for sigul connection"
+    description: >-
+      Body of the Sigul client configuration file (client.conf)
     required: true
   sigul-key-name:
     description: "The key name on the server to utilize"
     required: true
   sigul-pass:
-    description: "Password for sigul connection"
+    description: "Passphrase for the Sigul key (also used to decrypt sigul-pki)"
     required: true
   sigul-pki:
-    description: "PKI info for sigul connection"
+    description: >-
+      Client PKI material: a tar.xz archive containing the .sigul/
+      directory, GPG-encrypted with sigul-pass.  May be supplied raw or
+      base64-encoded; the entrypoint auto-detects.
     required: true
   gh-user:
     description: "GitHub user for pushing signed tags"
@@ -107,8 +105,6 @@ runs:
         docker run --rm --platform "${PLATFORM}" \
           -e "SIGN_TYPE=${{ inputs.sign-type }}" \
           -e "SIGN_OBJECT=${{ inputs.sign-object }}" \
-          -e "SIGUL_IP=${{ inputs.sigul-ip }}" \
-          -e "SIGUL_URI=${{ inputs.sigul-uri }}" \
           -e "SIGUL_CONF=${{ inputs.sigul-conf }}" \
           -e "SIGUL_KEY_NAME=${{ inputs.sigul-key-name }}" \
           -e "SIGUL_PASS=${{ inputs.sigul-pass }}" \

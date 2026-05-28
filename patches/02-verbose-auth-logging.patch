@@ -1,0 +1,234 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+#
+# Verbose authentication / handshake logging.
+#
+# Sigul's upstream code is silent about most authentication failures
+# (deliberately, to avoid leaking timing/oracle information).  In a
+# containerised setup that makes silent end-to-end failures very hard
+# to diagnose.
+#
+# This patch adds a *gated* logger that fires at every auth checkpoint
+# on bridge and server.  The logger is enabled only when the
+# environment variable SIGUL_DEBUG_AUTH is set to a truthy value
+# (e.g. "1") at process start.  When the flag is unset the behaviour
+# is bit-for-bit identical to upstream.
+#
+# Targeted call sites:
+#   bridge.py:bridge_one_request
+#     * Log server-side TCP accept + peer certificate CN
+#     * Log client-side TCP accept
+#   server.py:request_handling_child
+#     * Log handler type and peer CN at handler entry
+#   server.py:ServersConnection.read_request
+#     * Log declared payload size and outer field key set
+#   server.py:ServersConnection.auth_fail
+#     * Log peer CN, declared user, op alongside the upstream warning
+#   server.py:ServersConnection.authenticate_admin
+#     * Log presence of password field, whether user row found,
+#       whether sha512_password is set, and whether crypt(3) compare
+#       matched.  Values are *never* logged, only booleans/lengths.
+#
+# Also renames the local ``user`` variable in authenticate_admin to
+# ``user_row`` to avoid shadowing the outer field name; this makes
+# the diagnostic log lines unambiguous.
+#
+# Companion to 01-fix-double-tls-handshake-timing.patch; both must be
+# applied for a correct build.
+
+diff --git a/src/bridge.py b/src/bridge.py
+index 25d713d..09d3dcc 100644
+--- a/src/bridge.py
++++ b/src/bridge.py
+@@ -46,6 +46,24 @@ import double_tls
+ import settings
+ import utils
+
++
++def _auth_debug_enabled():
++    '''Return True if SIGUL_DEBUG_AUTH is set to a truthy value.'''
++    val = os.environ.get('SIGUL_DEBUG_AUTH', '')
++    return val.lower() in ('1', 'true', 'yes', 'on')
++
++
++def _adbg(fmt, *args):
++    '''Emit a gated auth-debug log line on the bridge.
++
++    Logged at INFO level so it surfaces with -v as well as -vv.
++    Disabled entirely when SIGUL_DEBUG_AUTH is unset, so behaviour
++    is unchanged vs upstream in normal operation.
++    '''
++    if _auth_debug_enabled():
++        logging.info('AUTHDBG/bridge: ' + fmt, *args)
++
++
+ koji = utils.lazy_load("koji")
+ rpm = utils.lazy_load("rpm")
+
+@@ -1413,7 +1431,8 @@ def bridge_one_request(config, server_listen_sock, client_listen_sock):
+     try:
+         client_sock = None
+         logging.debug('Waiting for the server to connect')
+-        (server_sock, _) = server_listen_sock.accept()
++        (server_sock, server_addr) = server_listen_sock.accept()
++        _adbg('Server-side TCP accept from %r', server_addr)
+
+         # CRITICAL FIX: Complete server TLS handshake immediately after accept.
+         # Without this, the handshake is delayed until a client connects, which
+@@ -1425,17 +1444,21 @@ def bridge_one_request(config, server_listen_sock, client_listen_sock):
+             logging.debug('Server TLS handshake completed')
+         except Exception as e:
+             logging.error('Server TLS handshake failed: %s', e)
++            _adbg('Server TLS handshake EXCEPTION: %r', e)
+             raise
+
+         # Authenticate server certificate
+         server_cert = server_sock.get_peer_certificate()
+         if server_cert is None:
++            _adbg('Server presented no certificate after handshake')
+             raise ForwardingError('No server certificate')
+         logging.debug('Server authenticated: %s', server_cert.subject_common_name)
++        _adbg('Server peer cert CN=%r', server_cert.subject_common_name)
+
+         try:
+             logging.debug('Waiting for the client to connect')
+-            (client_sock, _) = client_listen_sock.accept()
++            (client_sock, client_addr) = client_listen_sock.accept()
++            _adbg('Client-side TCP accept from %r', client_addr)
+             try:
+                 BridgeConnection.handle_connection(config, client_sock,
+                                                    server_sock)
+diff --git a/src/server.py b/src/server.py
+index bf73fcb..67bcfef 100644
+--- a/src/server.py
++++ b/src/server.py
+@@ -58,6 +58,26 @@ import server_gpg as ourgpg
+ import settings
+ import utils
+
++
++def _auth_debug_enabled():
++    '''Return True if SIGUL_DEBUG_AUTH is set to a truthy value.'''
++    val = os.environ.get('SIGUL_DEBUG_AUTH', '')
++    return val.lower() in ('1', 'true', 'yes', 'on')
++
++
++def _adbg(fmt, *args):
++    '''Emit a gated auth-debug log line on the server.
++
++    Logged at INFO level so it surfaces with -v as well as -vv.
++    Disabled entirely when SIGUL_DEBUG_AUTH is unset, so behaviour
++    is unchanged vs upstream in normal operation.  We never log
++    secret values; only metadata like field presence, lengths, and
++    boolean comparison results.
++    '''
++    if _auth_debug_enabled():
++        logging.info('AUTHDBG/server: ' + fmt, *args)
++
++
+ import ctypes
+ libc = ctypes.CDLL('libc.so.6')
+
+@@ -310,9 +330,12 @@ class ServersConnection(object):
+         except utils.InvalidFieldsError as e:
+             raise InvalidRequestError(str(e))
+         logging.info('Request: %s', utils.readable_fields(self.__outer_fields))
++        _adbg('read_request: outer fields keys=%r',
++              sorted(self.__outer_fields.keys()))
+         header_data = proxy.stored_data()
+         buf = self.__client.outer_read(utils.u64_size)
+         payload_size = utils.u64_unpack(buf)
++        _adbg('read_request: declared payload_size=%d', payload_size)
+
+         request_op = self.safe_outer_field('op', required=True)
+         if request_op not in request_handlers:
+@@ -557,6 +580,17 @@ class ServersConnection(object):
+
+         '''
+         logging.warning('Request authentication failed: %s', reason)
++        try:
++            peer_cn = self.peer_subject().common_name
++        except Exception:
++            peer_cn = '?'
++        try:
++            outer_user = self._ServersConnection__outer_fields.get('user')
++            outer_op = self._ServersConnection__outer_fields.get('op')
++        except Exception:
++            outer_user = outer_op = None
++        _adbg('auth_fail reason=%r peer_cn=%r outer_user=%r op=%r',
++              reason, peer_cn, outer_user, outer_op)
+         self.send_error(errors.AUTHENTICATION_FAILED, log_it=False)
+
+     def _verify_username(self, outer_user):
+@@ -576,25 +610,45 @@ class ServersConnection(object):
+         Raise RequestHandled (on permission denied), InvalidRequestError.
+         '''
+         user = self.safe_outer_field('user')
++        _adbg('authenticate_admin: outer user=%r', user)
+         if user is None:
+             self.auth_fail('user field missing')
+         self._verify_username(user)
+         password = self.inner_field('password')
++        _adbg('authenticate_admin: password field present=%s len=%d',
++              password is not None, len(password) if password else 0)
+         if password is None:
+             self.auth_fail('password field missing')
+         password = password.decode('utf-8')
+-        user = db.query(User).filter_by(name=user).first()
+-        if user is not None and user.sha512_password is not None:
+-            crypted_pw = user.sha512_password.decode('utf-8')
++        user_row = db.query(User).filter_by(name=user).first()
++        _adbg('authenticate_admin: db user lookup name=%r found=%s',
++              user, user_row is not None)
++        if user_row is not None and user_row.sha512_password is not None:
++            crypted_pw = user_row.sha512_password.decode('utf-8')
++            _adbg('authenticate_admin: stored sha512_password set, '
++                  'crypt prefix=%r', crypted_pw[:4])
+         else:
+             # Perform the encryption anyway to make timing attacks more
+             # difficult.
+             crypted_pw = 'xx'
+-        if (crypt.crypt(password, crypted_pw) != crypted_pw
++            _adbg('authenticate_admin: NO stored sha512_password '
++                  '(user_row=%s)', user_row is not None)
++        # Compute crypt() once and reuse the result for both the
++        # diagnostic log line and the actual compare.  Computing it
++        # twice would change CPU/timing cost even when SIGUL_DEBUG_AUTH
++        # is unset (because the if-condition below also computes it),
++        # which contradicts the patch's no-behaviour-change guarantee.
++        crypt_result = crypt.crypt(password, crypted_pw)
++        _adbg('authenticate_admin: crypt compare result=%s '
++              '(user existed=%s)',
++              crypt_result == crypted_pw, crypted_pw != 'xx')
++        if (crypt_result != crypted_pw
+                 or crypted_pw == 'xx'):
+             self.auth_fail('password does not match')
+-        if not user.admin:
++        if not user_row.admin:
++            _adbg('authenticate_admin: user %r is not flagged admin', user)
+             self.auth_fail('user is not a server administrator')
++        _adbg('authenticate_admin: OK for user=%r', user)
+         # OK
+
+     def __authenticate_admin_or_user(self, db):
+@@ -2812,6 +2866,20 @@ def request_handling_child(config):
+         try:
+             logging.debug('Waiting for a request')
+             handler = conn.read_request()
++            # Gate the peer_subject lookup behind the debug-enabled
++            # check.  Python evaluates function arguments eagerly, so
++            # without this guard the conn.peer_subject().common_name
++            # call would happen on every request even when
++            # SIGUL_DEBUG_AUTH is unset - and could change control
++            # flow if peer_subject() ever raised.  We want
++            # disabled-debug to be byte-for-byte identical to upstream.
++            if _auth_debug_enabled():
++                try:
++                    _peer_cn = conn.peer_subject().common_name
++                except Exception:
++                    _peer_cn = '?'
++                _adbg('request_handling_child: handler=%r peer_cn=%r',
++                      type(handler).__name__, _peer_cn)
+             handler.handler(db, conn)
+         finally:
+             try:

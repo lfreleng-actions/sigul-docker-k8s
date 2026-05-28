@@ -84,10 +84,10 @@ run_client() {
     verbose "Executing: sigul --batch -c /etc/sigul/client.conf ${cmd}"
     verbose "Network: $NETWORK"
     verbose "Client image: $CLIENT_IMAGE"
-    
+
     local output
     local exit_code
-    
+
     output=$(timeout 60 docker run --rm \
         --user 1000:1000 \
         --network "$NETWORK" \
@@ -96,13 +96,13 @@ run_client() {
         "$CLIENT_IMAGE" \
         bash -c "printf '${password}\0' | sigul --batch -c /etc/sigul/client.conf ${cmd} 2>&1")
     exit_code=$?
-    
+
     # Check if command timed out
     if [[ $exit_code -eq 124 ]]; then
         echo "ERROR: Command timed out after 60 seconds"
         return 124
     fi
-    
+
     echo "$output"
     return $exit_code
 }
@@ -166,12 +166,12 @@ if docker run --rm \
         "$CLIENT_IMAGE" \
         grep "nss-password:" /etc/sigul/client.conf | sed 's/.*nss-password: *//')
     echo -e "${BLUE}[DEBUG]${NC} NSS password in client.conf: ${NSS_PASS}"
-    
+
     # Verify NSS password matches the one from test artifacts
     if [[ -f "${PROJECT_ROOT}/test-artifacts/nss-password" ]]; then
         NSS_PASS_ARTIFACT=$(cat "${PROJECT_ROOT}/test-artifacts/nss-password")
         echo -e "${BLUE}[DEBUG]${NC} NSS password from artifacts: ${NSS_PASS_ARTIFACT}"
-        
+
         if [[ "$NSS_PASS" == "$NSS_PASS_ARTIFACT" ]]; then
             echo -e "${GREEN}✓ NSS passwords match${NC}"
         else
@@ -213,7 +213,7 @@ while [[ $WAIT_COUNT -lt $MAX_WAIT ]]; do
         BRIDGE_READY=true
         break
     fi
-    
+
     echo -e "${BLUE}  Waiting for bridge... (${WAIT_COUNT}/${MAX_WAIT})${NC}"
     sleep 2
     WAIT_COUNT=$((WAIT_COUNT + 2))
@@ -223,7 +223,7 @@ if [[ "$BRIDGE_READY" == "true" ]]; then
     echo -e "${GREEN}✓ Bridge is ready and accepting connections${NC}"
     echo -e "${YELLOW}Waiting 5 seconds for TLS handshake to stabilize...${NC}"
     sleep 5
-    
+
     # Check bridge logs for any errors
     echo -e "${BLUE}Checking bridge logs for errors...${NC}"
     if docker logs sigul-bridge --tail 20 2>&1 | grep -i "error\|exception\|failed"; then
@@ -231,7 +231,7 @@ if [[ "$BRIDGE_READY" == "true" ]]; then
     else
         echo -e "${GREEN}✓ No errors in recent bridge logs${NC}"
     fi
-    
+
     # Verify patch is actually in the running bridge container
     echo -e "${BLUE}Verifying patch in running bridge container...${NC}"
     if docker exec sigul-bridge grep -q "force_handshake" /usr/share/sigul/bridge.py; then
@@ -241,7 +241,7 @@ if [[ "$BRIDGE_READY" == "true" ]]; then
         echo -e "${YELLOW}This means the patch was not applied or wrong image is running${NC}"
         exit 1
     fi
-    
+
     echo ""
 else
     echo -e "${RED}ERROR: Bridge did not become ready within ${MAX_WAIT} seconds${NC}"
@@ -264,7 +264,7 @@ if echo "$OUTPUT" | grep -q "admin"; then
 else
     fail "Failed to list users"
     verbose "  Output: $OUTPUT"
-    
+
     # Dump bridge logs on first test failure for diagnosis
     echo -e "${YELLOW}Bridge logs (last 50 lines):${NC}"
     docker logs sigul-bridge --tail 50 2>&1 | sed 's/^/  /'
@@ -272,7 +272,7 @@ else
     echo -e "${YELLOW}Server logs (last 50 lines):${NC}"
     docker logs sigul-server --tail 50 2>&1 | sed 's/^/  /'
     echo ""
-    
+
     # Check if containers are actually still running
     echo -e "${YELLOW}Container status check:${NC}"
     if docker ps --format '{{.Names}}\t{{.Status}}' | grep -E 'sigul-(server|bridge)'; then
@@ -284,12 +284,12 @@ else
         docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}' | grep sigul
     fi
     echo ""
-    
+
     # Check if server container is actually still running
     echo -e "${YELLOW}Checking if server container is running:${NC}"
     if docker ps --format '{{.Names}}\t{{.Status}}' | grep -q "^sigul-server"; then
         echo -e "${GREEN}✓ Server container is running${NC}"
-        
+
         # Check server process inside container
         echo -e "${YELLOW}Checking if server process is running inside container:${NC}"
         if docker exec sigul-server pgrep -f sigul_server >/dev/null 2>&1; then
@@ -301,7 +301,7 @@ else
     else
         echo -e "${RED}❌ Server container has STOPPED!${NC}"
         echo ""
-        
+
         # Get detailed container inspection
         echo -e "${YELLOW}Server container state:${NC}"
         docker inspect sigul-server --format='Status: {{.State.Status}}' | sed 's/^/  /'
@@ -310,17 +310,17 @@ else
         docker inspect sigul-server --format='Started At: {{.State.StartedAt}}' | sed 's/^/  /'
         docker inspect sigul-server --format='Finished At: {{.State.FinishedAt}}' | sed 's/^/  /'
         echo ""
-        
+
         # Check mounts to see if tmpfs is working
         echo -e "${YELLOW}Checking container mounts:${NC}"
         docker inspect sigul-server --format='{{range .Mounts}}{{.Type}}: {{.Source}} -> {{.Destination}} ({{.Mode}}){{"\n"}}{{end}}' | sed 's/^/  /'
         echo ""
-        
+
         # Check if tmpfs mounts are present
         echo -e "${YELLOW}Checking for tmpfs mounts:${NC}"
         docker inspect sigul-server --format='{{range .HostConfig.Tmpfs}}{{.}}{{"\n"}}{{end}}' | sed 's/^/  /' || echo "  No tmpfs configuration found"
         echo ""
-        
+
         # Try to get the last few lines before exit
         echo -e "${YELLOW}Last 20 lines of server output:${NC}"
         docker logs sigul-server --tail 20 2>&1 | sed 's/^/  /'
@@ -464,14 +464,33 @@ fi
 # TEST 10: Batch Mode Input Handling
 # ============================================================================
 test_header "Batch Mode Password Input (NUL-terminated)"
-# Test with explicit NUL terminator
+# Test with explicit NUL terminator using the loaded admin password.
+# Historically this test hard-coded the literal string
+# "auto_generated_ephemeral" which is the docker-compose default fallback;
+# any deployment that supplies a real password would always fail this
+# test even with a fully working stack.  Use $ADMIN_PASSWORD instead.
+#
+# We pass the password via -e ADMIN_PASSWORD rather than interpolating
+# it into the bash -c string.  Direct interpolation would break (and
+# could in principle become a shell-injection vector) if the password
+# ever contained special shell characters; passing the value via
+# 'docker run -e' and dereferencing it inside a single-quoted
+# bash -c avoids interpolation on the host entirely.  Note that
+# environment variables (and Bash strings) cannot carry NUL bytes -
+# which is why the inner 'printf %s\0' adds the NUL terminator at
+# use time rather than embedding one in the password value.
+# shellcheck disable=SC2016
+# (the single-quoted bash -c body is intentional - we want
+# $ADMIN_PASSWORD to be expanded inside the container, not on the
+# host - so SC2016 is a false positive here.)
 OUTPUT=$(timeout 60 docker run --rm \
     --user 1000:1000 \
     --network "$NETWORK" \
     -v "${CLIENT_NSS_VOLUME}:/etc/pki/sigul/client:ro" \
     -v "${CLIENT_CONFIG_VOLUME}:/etc/sigul:ro" \
+    -e ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
     "$CLIENT_IMAGE" \
-    bash -c 'printf "auto_generated_ephemeral\0" | sigul --batch -c /etc/sigul/client.conf list-users 2>&1')
+    bash -c 'printf "%s\0" "$ADMIN_PASSWORD" | sigul --batch -c /etc/sigul/client.conf list-users 2>&1')
 
 if echo "$OUTPUT" | grep -q "admin"; then
     pass "Batch mode NUL-terminated password works correctly"
