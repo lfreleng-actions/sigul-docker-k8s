@@ -180,7 +180,7 @@ jobs:
 
       - name: 'Set up Docker Buildx'
         # yamllint disable-line rule:line-length
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
 
       - name: 'Compute platform identifier'
         id: platform
@@ -261,7 +261,7 @@ jobs:
 
       - name: 'Set up Docker Buildx'
         # yamllint disable-line rule:line-length
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
 
       - name: 'Compute platform identifier'
         id: platform
@@ -436,7 +436,7 @@ jobs:
 
       - name: 'Set up Docker Buildx'
         # yamllint disable-line rule:line-length
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
 
       - name: 'Log in to GitHub Container Registry'
         # yamllint disable-line rule:line-length
@@ -622,7 +622,7 @@ jobs:
 
       - name: 'Set up Docker Buildx'
         # yamllint disable-line rule:line-length
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
 
       - name: 'Log in to GitHub Container Registry'
         # yamllint disable-line rule:line-length
