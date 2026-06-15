@@ -50,11 +50,17 @@ runs:
         INPUT_GH_USER: ${{ inputs.gh-user }}
         DEFAULT_GH_USER: ${{ github.actor }}
       run: |
-        if [[ -z "${INPUT_GH_USER}" ]]; then
-          echo "user=${DEFAULT_GH_USER}" >> "$GITHUB_OUTPUT"
-        else
-          echo "user=${INPUT_GH_USER}" >> "$GITHUB_OUTPUT"
-        fi
+        GH_USER="${INPUT_GH_USER:-$DEFAULT_GH_USER}"
+        # Emit the value using the documented multiline output syntax with
+        # an unpredictable delimiter. The name=value form would let a value
+        # containing newlines inject additional step outputs; the heredoc
+        # delimiter encodes arbitrary input safely.
+        delimiter="ghadelimiter_${RANDOM}${RANDOM}${RANDOM}"
+        {
+          printf 'user<<%s\n' "${delimiter}"
+          printf '%s\n' "${GH_USER}"
+          printf '%s\n' "${delimiter}"
+        } >> "$GITHUB_OUTPUT"
 
     - name: "Detect platform architecture"
       id: platform
@@ -77,14 +83,14 @@ runs:
             ;;
         esac
         echo "platform=$PLATFORM" >> "$GITHUB_OUTPUT"
-        echo "platform-id=$PLATFORM_ID" >> "$GITHUB_OUTPUT"
+        echo "platform_id=$PLATFORM_ID" >> "$GITHUB_OUTPUT"
         echo "Detected platform: $PLATFORM ($PLATFORM_ID)"
 
     - name: "Build sigul signing container"
       shell: bash
       env:
         PLATFORM: ${{ steps.platform.outputs.platform }}
-        PLATFORM_ID: ${{ steps.platform.outputs.platform-id }}
+        PLATFORM_ID: ${{ steps.platform.outputs.platform_id }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         CLIENT_IMAGE="client-${PLATFORM_ID}-image"
@@ -112,7 +118,7 @@ runs:
       shell: bash
       env:
         PLATFORM: ${{ steps.platform.outputs.platform }}
-        PLATFORM_ID: ${{ steps.platform.outputs.platform-id }}
+        PLATFORM_ID: ${{ steps.platform.outputs.platform_id }}
         GH_USER: ${{ steps.gh-user.outputs.user }}
         SIGN_TYPE: ${{ inputs.sign-type }}
         SIGN_OBJECT: ${{ inputs.sign-object }}
