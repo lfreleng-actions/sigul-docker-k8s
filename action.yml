@@ -44,15 +44,20 @@ runs:
   using: "composite"
   steps:
     - name: "Set GitHub user default"
+      id: gh-user
       shell: bash
+      env:
+        INPUT_GH_USER: ${{ inputs.gh-user }}
+        DEFAULT_GH_USER: ${{ github.actor }}
       run: |
-        if [[ -z "${{ inputs.gh-user }}" ]]; then
-          echo "GH_USER=${{ github.actor }}" >> $GITHUB_ENV
+        if [[ -z "${INPUT_GH_USER}" ]]; then
+          echo "user=${DEFAULT_GH_USER}" >> "$GITHUB_OUTPUT"
         else
-          echo "GH_USER=${{ inputs.gh-user }}" >> $GITHUB_ENV
+          echo "user=${INPUT_GH_USER}" >> "$GITHUB_OUTPUT"
         fi
 
     - name: "Detect platform architecture"
+      id: platform
       shell: bash
       run: |
         # Detect the current platform architecture
@@ -71,12 +76,16 @@ runs:
             exit 1
             ;;
         esac
-        echo "PLATFORM=$PLATFORM" >> $GITHUB_ENV
-        echo "PLATFORM_ID=$PLATFORM_ID" >> $GITHUB_ENV
+        echo "platform=$PLATFORM" >> "$GITHUB_OUTPUT"
+        echo "platform-id=$PLATFORM_ID" >> "$GITHUB_OUTPUT"
         echo "Detected platform: $PLATFORM ($PLATFORM_ID)"
 
     - name: "Build sigul signing container"
       shell: bash
+      env:
+        PLATFORM: ${{ steps.platform.outputs.platform }}
+        PLATFORM_ID: ${{ steps.platform.outputs.platform-id }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
         CLIENT_IMAGE="client-${PLATFORM_ID}-image"
         CLIENT_TAG="client-${PLATFORM_ID}-image:${PLATFORM_ID}"
@@ -95,23 +104,35 @@ runs:
         else
           echo "Docker image not found, building new image for ${PLATFORM}"
           docker build --platform "${PLATFORM}" \
-            -f "${{ github.action_path }}/Dockerfile.client" \
-            -t "${CLIENT_ACTION_TAG}" "${{ github.action_path }}"
+            -f "${ACTION_PATH}/Dockerfile.client" \
+            -t "${CLIENT_ACTION_TAG}" "${ACTION_PATH}"
         fi
 
     - name: "Run sigul signing container"
       shell: bash
+      env:
+        PLATFORM: ${{ steps.platform.outputs.platform }}
+        PLATFORM_ID: ${{ steps.platform.outputs.platform-id }}
+        GH_USER: ${{ steps.gh-user.outputs.user }}
+        SIGN_TYPE: ${{ inputs.sign-type }}
+        SIGN_OBJECT: ${{ inputs.sign-object }}
+        SIGUL_CONF: ${{ inputs.sigul-conf }}
+        SIGUL_KEY_NAME: ${{ inputs.sigul-key-name }}
+        SIGUL_PASS: ${{ inputs.sigul-pass }}
+        SIGUL_PKI: ${{ inputs.sigul-pki }}
+        GH_KEY: ${{ inputs.gh-key }}
+        SIGUL_MOCK_MODE: ${{ inputs.sigul-mock-mode }}
       run: |
         docker run --rm --platform "${PLATFORM}" \
-          -e "SIGN_TYPE=${{ inputs.sign-type }}" \
-          -e "SIGN_OBJECT=${{ inputs.sign-object }}" \
-          -e "SIGUL_CONF=${{ inputs.sigul-conf }}" \
-          -e "SIGUL_KEY_NAME=${{ inputs.sigul-key-name }}" \
-          -e "SIGUL_PASS=${{ inputs.sigul-pass }}" \
-          -e "SIGUL_PKI=${{ inputs.sigul-pki }}" \
+          -e "SIGN_TYPE=${SIGN_TYPE}" \
+          -e "SIGN_OBJECT=${SIGN_OBJECT}" \
+          -e "SIGUL_CONF=${SIGUL_CONF}" \
+          -e "SIGUL_KEY_NAME=${SIGUL_KEY_NAME}" \
+          -e "SIGUL_PASS=${SIGUL_PASS}" \
+          -e "SIGUL_PKI=${SIGUL_PKI}" \
           -e "GH_USER=${GH_USER}" \
-          -e "GH_KEY=${{ inputs.gh-key }}" \
-          -e "SIGUL_MOCK_MODE=${{ inputs.sigul-mock-mode }}" \
+          -e "GH_KEY=${GH_KEY}" \
+          -e "SIGUL_MOCK_MODE=${SIGUL_MOCK_MODE}" \
           -e "GITHUB_WORKSPACE=${GITHUB_WORKSPACE}" \
           -e "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}" \
           -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" \

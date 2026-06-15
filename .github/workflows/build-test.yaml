@@ -40,8 +40,6 @@ concurrency:
 
 permissions:
   contents: read
-  packages: write
-  actions: write  # Required for cache deletion when clear_cache is true
 
 env:
   REGISTRY: ghcr.io
@@ -161,11 +159,13 @@ jobs:
 
       - name: 'Debug cache-clearing input'
         shell: bash
+        env:
+          CLEAR_CACHE: ${{ github.event.inputs.clear_cache }}
         # yamllint disable rule:line-length
         run: |
           echo "🔍 Debugging cache-clearing configuration..."
-          echo "clear_cache input: '${{ github.event.inputs.clear_cache }}'"
-          echo "clear_cache type: $(echo '${{ github.event.inputs.clear_cache }}' | wc -c) chars"
+          echo "clear_cache input: '${CLEAR_CACHE}'"
+          echo "clear_cache type: $(printf '%s' "${CLEAR_CACHE}" | wc -c) chars"
           echo "Condition evaluation: ${{ github.event.inputs.clear_cache == true }}"
           echo "Condition (string): ${{ github.event.inputs.clear_cache == 'true' }}"
         # yamllint enable rule:line-length
