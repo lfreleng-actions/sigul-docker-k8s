@@ -2,7 +2,10 @@
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
 # Unified Dockerfile for sigul client using the new cert-init approach
-FROM fedora:44
+# Base image pinned by digest for supply-chain integrity (Scorecard
+# Pinned-Dependencies). Dependabot maintains the digest via the docker
+# ecosystem entry in .github/dependabot.yml.
+FROM fedora:44@sha256:6c75d5bf57cb0fa5aa4b92c6a83c86c791644496d9ac230de7711f5b8ec3b898
 
 LABEL maintainer="releng@linuxfoundation.org"
 # Standard OCI metadata labels (image.title, image.description,
