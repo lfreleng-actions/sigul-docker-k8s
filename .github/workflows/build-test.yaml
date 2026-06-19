@@ -56,10 +56,22 @@ jobs:
       pull-requests: read
     timeout-minutes: 5
     steps:
+      # Load the egress allow-list out-of-band from the
+      # organisation's .github repository and publish it as
+      # $CONNECTION_ALLOW_LIST for the harden-runner step below.
       # yamllint disable-line rule:line-length
-      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+      - uses: lfreleng-actions/harden-runner-block-action@42663a22f7abe31521cbc6120901353a4b2849bc  # v0.2.0
         with:
-          egress-policy: 'audit'
+          config: '@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
+
+      # Harden the runner with the just-loaded allow-list.
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
 
       - name: 'Checkout repository'
         # yamllint disable-line rule:line-length
@@ -143,9 +155,12 @@ jobs:
       bridge-amd64-digest: ${{ steps.build-bridge-amd64.outputs.digest }}
       bridge-arm64-digest: ${{ steps.build-bridge-arm64.outputs.digest }}
     steps:
-      # Harden the runner used by this workflow
+      # Audit (not block): the image build pulls from Fedora
+      # mirrors, PyPI, base-image registries and koji, whose
+      # endpoints are too broad/dynamic for the central egress
+      # allow-list. The lighter jobs enforce block mode.
       # yamllint disable-line rule:line-length
-      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
         with:
           egress-policy: 'audit'
 
@@ -301,11 +316,22 @@ jobs:
       matrix:
         component: ['client', 'server', 'bridge']
     steps:
-      # Harden the runner used by this workflow
+      # Load the egress allow-list out-of-band from the
+      # organisation's .github repository and publish it as
+      # $CONNECTION_ALLOW_LIST for the harden-runner step below.
       # yamllint disable-line rule:line-length
-      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+      - uses: lfreleng-actions/harden-runner-block-action@42663a22f7abe31521cbc6120901353a4b2849bc  # v0.2.0
         with:
-          egress-policy: 'audit'
+          config: '@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
+
+      # Harden the runner with the just-loaded allow-list.
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
 
       - name: 'Checkout repository'
         # yamllint disable-line rule:line-length
@@ -378,52 +404,45 @@ jobs:
         run: docker manifest inspect "${IMAGE}:${TAG}"
       # yamllint enable rule:line-length
 
-  ### PR SBOM + vulnerability scan ###
+  ### PR SBOM generation ###
   #
-  # Mirrors release.yaml's sign-attest-scan job for PR / dispatch
-  # runs, stripped of the registry-bound supply-chain steps (cosign
-  # signing, attest-build-provenance, attest-sbom). The remaining
-  # steps -- SBOM generation, Grype scan, SARIF upload, artifact
-  # upload -- operate purely against the locally-loaded image and
-  # need no registry credentials. AMD64 only: Anchore's SBOM action
-  # against a multi-arch manifest scans the host-platform variant,
-  # so the release workflow effectively scans amd64 too. Scanning
-  # both arches on PR would double runtime for marginal additional
-  # CVE coverage (CVEs at the OS-package layer are nearly always
-  # arch-agnostic).
-  pr-sbom-scan:
-    name: 'SBOM + Scan: ${{ matrix.component }}'
+  # Generates the SPDX SBOM from the locally-loaded amd64 image and
+  # uploads it as an artifact. Split from the Grype audit (pr-grype)
+  # so SBOM generation and the vulnerability policy gate fail
+  # independently, mirroring release.yaml. AMD64 only: Anchore's
+  # SBOM action against a multi-arch manifest scans the host-platform
+  # variant, so the release workflow effectively scans amd64 too.
+  # Scanning both arches on PR would double runtime for marginal
+  # additional CVE coverage (CVEs at the OS-package layer are nearly
+  # always arch-agnostic).
+  pr-sbom:
+    name: 'SBOM: ${{ matrix.component }}'
     needs: [build-containers]
     runs-on: 'ubuntu-latest'
     permissions:
       contents: read
-      # github/codeql-action/upload-sarif publishes Grype findings
-      # to the repository's code-scanning alerts. On PRs from forks
-      # this scope is silently downgraded to read; the upload step
-      # is wrapped in continue-on-error so the scan still produces
-      # the downloadable SARIF artifact in that case.
-      security-events: write
     timeout-minutes: 15
     strategy:
-      # Don't short-circuit other components if one's Grype scan
-      # finds CVEs at the configured threshold; we want SBOMs and
-      # SARIF for every component in a single PR run.
       fail-fast: false
       matrix:
         component: ['client', 'server', 'bridge']
-    env:
-      # 'low' matches release.yaml so PR feedback and release
-      # gating use the same severity bar. Set the
-      # NO_BLOCK_AUDIT_FAIL repository variable to 'true' to
-      # soft-fail when a transitive CVE in a third-party
-      # dependency is unavoidable; the SARIF and step-summary
-      # report still publishes.
-      GRYPE_FAIL_ON: 'low'
     steps:
+      # Load the egress allow-list out-of-band from the
+      # organisation's .github repository and publish it as
+      # $CONNECTION_ALLOW_LIST for the harden-runner step below.
       # yamllint disable-line rule:line-length
-      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+      - uses: lfreleng-actions/harden-runner-block-action@42663a22f7abe31521cbc6120901353a4b2849bc  # v0.2.0
         with:
-          egress-policy: 'audit'
+          config: '@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
+
+      # Harden the runner with the just-loaded allow-list.
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
 
       - name: 'Download AMD64 image artifact'
         # yamllint disable-line rule:line-length
@@ -452,6 +471,105 @@ jobs:
           # explicit upload-artifact step below; disabling it
           # keeps all assets under one consistent naming pattern.
           upload-artifact: false
+
+      - name: 'Upload SBOM artifact'
+        # Consumed by the pr-grype job below as the single source of
+        # truth for the scan.
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: pr-sbom-${{ matrix.component }}
+          path: sbom-${{ matrix.component }}.spdx.json
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: 'SBOM summary'
+        shell: bash
+        env:
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          set -euo pipefail
+          sbom_file="sbom-${COMPONENT}.spdx.json"
+          {
+            echo "## SBOM: ${COMPONENT}"
+            echo ""
+            if [[ ! -f "${sbom_file}" ]]; then
+              echo "No SBOM produced."
+              exit 0
+            fi
+            pkg_count=$(jq '[.packages[]?] | length' "${sbom_file}")
+            echo "SPDX package count: ${pkg_count}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  ### PR vulnerability scan (Grype) ###
+  #
+  # Audits the SBOM produced by pr-sbom. Kept separate from SBOM
+  # generation so the vulnerability policy gate fails independently,
+  # mirroring release.yaml. Set the NO_BLOCK_AUDIT_FAIL repository
+  # variable to 'true' to soft-fail when a transitive CVE in a
+  # third-party dependency is unavoidable; the SARIF and
+  # step-summary report still publishes.
+  pr-grype:
+    name: 'Grype: ${{ matrix.component }}'
+    needs: [pr-sbom]
+    # pr-sbom is a matrix job: a single failed component leg marks
+    # the whole pr-sbom job 'failure', which would otherwise skip
+    # pr-grype entirely and deny SARIF/reports for the components
+    # whose SBOMs built fine. Run whenever pr-sbom actually executed
+    # (not skipped / cancelled). The per-component download-artifact
+    # step still fails the leg for any missing SBOM, so a real SBOM
+    # failure keeps pr-grype's overall result 'failure'.
+    if: >-
+      !cancelled() && needs.pr-sbom.result != 'skipped'
+      && needs.pr-sbom.result != 'cancelled'
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: read
+      # github/codeql-action/upload-sarif publishes Grype findings
+      # to the repository's code-scanning alerts. On PRs from forks
+      # this scope is silently downgraded to read; the upload step
+      # is wrapped in continue-on-error so the scan still produces
+      # the downloadable SARIF artifact in that case.
+      security-events: write
+    timeout-minutes: 15
+    strategy:
+      # Don't short-circuit other components if one's Grype scan
+      # finds CVEs at the configured threshold; we want SARIF for
+      # every component in a single PR run.
+      fail-fast: false
+      matrix:
+        component: ['client', 'server', 'bridge']
+    env:
+      # 'low' matches release.yaml so PR feedback and release
+      # gating use the same severity bar. Set the
+      # NO_BLOCK_AUDIT_FAIL repository variable to 'true' to
+      # soft-fail when a transitive CVE in a third-party
+      # dependency is unavoidable; the SARIF and step-summary
+      # report still publishes.
+      GRYPE_FAIL_ON: 'low'
+    steps:
+      # Load the egress allow-list out-of-band from the
+      # organisation's .github repository and publish it as
+      # $CONNECTION_ALLOW_LIST for the harden-runner step below.
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@42663a22f7abe31521cbc6120901353a4b2849bc  # v0.2.0
+        with:
+          config: '@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
+
+      # Harden the runner with the just-loaded allow-list.
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: 'Download SBOM artifact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: pr-sbom-${{ matrix.component }}
 
       - name: 'Install Grype'
         id: grype
@@ -627,9 +745,12 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
     steps:
-      # Harden the runner used by this workflow
+      # Audit (not block): this job deploys the Sigul stack and
+      # pulls container images at runtime, whose endpoints are too
+      # broad/dynamic for the central egress allow-list. The
+      # lighter jobs enforce block mode.
       # yamllint disable-line rule:line-length
-      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
         with:
           egress-policy: 'audit'
 
@@ -1089,11 +1210,22 @@ jobs:
     needs: [functional-tests]
     if: always()
     steps:
-      # Harden the runner used by this workflow
+      # Load the egress allow-list out-of-band from the
+      # organisation's .github repository and publish it as
+      # $CONNECTION_ALLOW_LIST for the harden-runner step below.
       # yamllint disable-line rule:line-length
-      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+      - uses: lfreleng-actions/harden-runner-block-action@42663a22f7abe31521cbc6120901353a4b2849bc  # v0.2.0
         with:
-          egress-policy: 'audit'
+          config: '@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
+
+      # Harden the runner with the just-loaded allow-list.
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
 
       - name: 'Cleanup any remaining containers'
         shell: bash
@@ -1128,7 +1260,8 @@ jobs:
     needs: [
       build-containers,
       publish-ghcr,
-      pr-sbom-scan,
+      pr-sbom,
+      pr-grype,
       functional-tests
     ]
     if: always()
@@ -1147,8 +1280,10 @@ jobs:
             echo "|-----|--------|"
             echo "| Build (matrix: amd64 + arm64) |" \
               " ${{ needs.build-containers.result }} |"
-            echo "| SBOM + Grype (matrix: 3 components) |" \
-              " ${{ needs.pr-sbom-scan.result }} |"
+            echo "| SBOM (matrix: 3 components) |" \
+              " ${{ needs.pr-sbom.result }} |"
+            echo "| Grype (matrix: 3 components) |" \
+              " ${{ needs.pr-grype.result }} |"
             echo "| Functional Tests (matrix: amd64 + arm64) |" \
               " ${{ needs.functional-tests.result }} |"
             echo ""
@@ -1166,7 +1301,8 @@ jobs:
             echo ""
 
             echo "### Supply-chain scan"
-            echo "- **Status**: ${{ needs.pr-sbom-scan.result }}"
+            echo "- **SBOM status**: ${{ needs.pr-sbom.result }}"
+            echo "- **Grype status**: ${{ needs.pr-grype.result }}"
             echo "- **Includes**: SPDX SBOM (anchore/sbom-action)" \
               "and Grype vulnerability scan per component image"
             echo "- **Artifacts**: pr-sbom-and-scan-COMPONENT per" \
