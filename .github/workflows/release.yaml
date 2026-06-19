@@ -14,12 +14,24 @@
 #    `linux/amd64` and `linux/arm64`, mirroring the matrix used by
 #    build-test.yaml.
 # 2. Runs the integration and signing test suites against the
-#    freshly-built stack on each architecture. No unverified
-#    image ever reaches GHCR.
-# 3. Publishes all six images to GHCR as three multi-arch
+#    freshly-built stack on each architecture.
+# 3. Generates an SPDX SBOM per component (`sbom` job) and audits
+#    it with Grype (`grype` job). Both run on the built image
+#    tarballs *before* anything is published, so a vulnerable or
+#    failing image never reaches GHCR. SBOM generation and the
+#    Grype audit are deliberately separate jobs (mirroring the
+#    canonical lfreleng-actions/python-workflows split) so the
+#    artefact-producing step and the policy gate fail
+#    independently and surface distinct results.
+# 4. Publishes all six images to GHCR as three multi-arch
 #    manifests, tagged with the full tag and the major / minor
-#    tracks plus `latest`.
-# 4. Promotes the matching draft release (created by
+#    tracks plus `latest`. This is gated on the Grype audit
+#    passing, so no unverified or vulnerable image reaches GHCR.
+# 5. Signs each published image (cosign keyless) and attaches
+#    build-provenance + SBOM attestations. Signing and
+#    attestation are necessarily post-publish: they bind to the
+#    pushed manifest digest via the OCI referrers API.
+# 6. Promotes the matching draft release (created by
 #    release-drafter on main pushes) to a published release.
 
 name: 'Release on Tag Push 🚀'
@@ -411,10 +423,289 @@ jobs:
           docker compose -f docker-compose.sigul.yml \
               down -v --remove-orphans || true
 
-  ### Step 4: Publish to GHCR ###
+  ### Step 4: Generate SBOM from the built image (pre-publish) ###
+  sbom:
+    name: 'SBOM: ${{ matrix.component }}'
+    # Runs off the build artefacts, in parallel with functional-tests.
+    # Producing the SBOM here (before publish) lets the Grype gate
+    # block a vulnerable image from ever reaching GHCR.
+    needs: [tag-validate, build-containers]
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        component: ['client', 'server', 'bridge']
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Download ${{ matrix.component }} amd64 image artifact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: ${{ matrix.component }}-linux-amd64-image
+          path: /tmp
+
+      - name: 'Load image from tar artifact'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker load --input /tmp/${{ matrix.component }}-linux-amd64.tar
+          docker images | grep "^${{ matrix.component }} " || true
+
+      - name: 'Generate SPDX SBOM'
+        # The SBOM is generated from the amd64 leg only and used as
+        # the single representative SBOM for the multi-arch image.
+        # This matches the prior behaviour (the old combined job
+        # scanned the manifest-list ref from an amd64 runner, which
+        # syft resolved to the amd64 image) and is sound here
+        # because both arches share an identical dependency closure:
+        # the same Fedora dnf packages and the same pip-installed
+        # Python wheels at the same versions. Vulnerability identity
+        # is version-based, so the arm64 leg yields the same
+        # findings.
+        # yamllint disable-line rule:line-length
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
+        with:
+          image: ${{ matrix.component }}:linux-amd64
+          format: spdx-json
+          output-file: sbom-${{ matrix.component }}.spdx.json
+          # The SBOM action's own artifact upload duplicates our
+          # explicit upload-artifact step below; disabling it
+          # avoids 'name already exists' failures and keeps all
+          # release assets under one consistent naming pattern.
+          upload-artifact: false
+
+      - name: 'Upload SBOM artifact'
+        # Consumed by the grype job (audit) and the sign-attest job
+        # (SBOM attestation), so this is the single source of truth
+        # for the SBOM across the rest of the pipeline.
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: sbom-${{ matrix.component }}
+          path: sbom-${{ matrix.component }}.spdx.json
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: 'SBOM summary'
+        shell: bash
+        env:
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          set -euo pipefail
+          sbom_file="sbom-${COMPONENT}.spdx.json"
+          {
+            echo "## SBOM: ${COMPONENT}"
+            echo ""
+            if [[ ! -f "${sbom_file}" ]]; then
+              echo "No SBOM produced."
+              exit 0
+            fi
+            pkg_count=$(jq '[.packages[]?] | length' "${sbom_file}")
+            echo "SPDX package count: ${pkg_count}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  ### Step 4b: Audit the SBOM with Grype (pre-publish gate) ###
+  grype:
+    name: 'Grype: ${{ matrix.component }}'
+    # Hard gate before publish-ghcr: a failing audit blocks the
+    # image from ever being pushed to GHCR. Kept separate from the
+    # sbom job so SBOM generation and the vulnerability policy gate
+    # fail independently and report distinct results.
+    needs: [tag-validate, sbom]
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: read
+      # github/codeql-action/upload-sarif publishes Grype findings
+      # to the repository's code-scanning alerts.
+      security-events: write
+    timeout-minutes: 15
+    strategy:
+      # Don't short-circuit other components if one's Grype audit
+      # finds CVEs at the configured threshold; we want SARIF and
+      # reports for every component in a single release run.
+      fail-fast: false
+      matrix:
+        component: ['client', 'server', 'bridge']
+    env:
+      # 'low' is intentionally aggressive: the bridge and server
+      # both handle signing material and the client is consumed
+      # widely downstream, so any known-fixable CVE warrants
+      # release-time visibility. Set the NO_BLOCK_AUDIT_FAIL repo
+      # variable to 'true' to soft-fail (warn but still publish)
+      # when a transitive CVE is blocking an urgent release.
+      GRYPE_FAIL_ON: 'low'
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Download SBOM artifact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: sbom-${{ matrix.component }}
+
+      - name: 'Install Grype'
+        id: grype
+        # yamllint disable-line rule:line-length
+        uses: anchore/scan-action/download-grype@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2  # v7.4.0
+        with:
+          cache-db: 'true'
+
+      - name: 'Grype audit SBOM'
+        id: grype-audit
+        env:
+          GRYPE_CMD: ${{ steps.grype.outputs.cmd }}
+          COMPONENT: ${{ matrix.component }}
+          FAIL_ON: ${{ env.GRYPE_FAIL_ON }}
+          NO_BLOCK_AUDIT_FAIL: >-
+            ${{ vars.NO_BLOCK_AUDIT_FAIL == 'true' }}
+        run: |
+          set +e
+          "${GRYPE_CMD}" \
+            -o "sarif=grype-${COMPONENT}.sarif" \
+            -o "json=grype-${COMPONENT}.json" \
+            -o "table=grype-${COMPONENT}.txt" \
+            --fail-on "${FAIL_ON}" \
+            "sbom:sbom-${COMPONENT}.spdx.json"
+          grype_exit=$?
+          set -e
+
+          echo "--- Grype scan results (${COMPONENT}) ---"
+          if [[ -f "grype-${COMPONENT}.txt" ]]; then
+            cat "grype-${COMPONENT}.txt"
+          else
+            echo "No table output produced"
+          fi
+
+          # Grype exits 2 when matches at/above --fail-on were
+          # found. Any other non-zero exit means grype itself
+          # failed and we must surface that.
+          if [[ "${grype_exit}" == "0" ]]; then
+            echo "No vulnerabilities at or above '${FAIL_ON}'"
+            exit 0
+          fi
+          if [[ "${grype_exit}" != "2" ]]; then
+            echo "::error::Grype exited with code ${grype_exit}"
+            exit "${grype_exit}"
+          fi
+
+          if [[ "${NO_BLOCK_AUDIT_FAIL}" == "true" ]]; then
+            echo "::warning::${COMPONENT}: Grype found findings" \
+              "at or above '${FAIL_ON}', but NO_BLOCK_AUDIT_FAIL" \
+              "is set so the release will proceed."
+            exit 0
+          fi
+          echo "::error::${COMPONENT}: Grype found vulnerabilities" \
+            "at or above '${FAIL_ON}'. See the table above."
+          exit 1
+
+      - name: 'Upload Grype SARIF to code scanning'
+        if: always()
+        # continue-on-error: a transient SARIF upload failure must
+        # not block the release; the SARIF file is also attached
+        # to the release as a downloadable asset.
+        continue-on-error: true
+        # yamllint disable-line rule:line-length
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e  # v4.36.2
+        with:
+          sarif_file: grype-${{ matrix.component }}.sarif
+          category: grype-${{ matrix.component }}
+
+      - name: 'Bundle SBOM and Grype reports as workflow artifact'
+        if: always()
+        # Re-bundles the SBOM with the Grype reports under the
+        # sbom-and-scan-<component> name that release-attach
+        # consumes, preserving that job's existing contract.
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: sbom-and-scan-${{ matrix.component }}
+          path: |
+            sbom-${{ matrix.component }}.spdx.json
+            grype-${{ matrix.component }}.sarif
+            grype-${{ matrix.component }}.json
+            grype-${{ matrix.component }}.txt
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: 'Grype Markdown summary'
+        if: always()
+        env:
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          # Render a Markdown table of Grype matches into the job
+          # step summary. CVE data is sourced from the JSON output
+          # (jq-parsed so multi-word cells cannot break the table
+          # column layout).
+          json_file="grype-${COMPONENT}.json"
+          {
+            echo "## Grype scan: ${COMPONENT}"
+            echo ""
+            if [[ ! -f "${json_file}" ]]; then
+              echo "No scan results available."
+              exit 0
+            fi
+            match_count=$(jq '.matches | length' "${json_file}")
+            if [[ "${match_count}" == "0" ]]; then
+              echo "No vulnerabilities at or above the configured" \
+                "severity threshold."
+              exit 0
+            fi
+            echo "Found ${match_count} Grype record(s)."
+            echo ""
+            echo "| Package | Installed | Fixed In | Type |" \
+              "Vulnerability | Severity | EPSS | Risk |"
+            echo "| --- | --- | --- | --- | --- | --- | --- | --- |"
+            jq -r '
+              def esc: tostring | gsub("\\|"; "\\|");
+              def round2: (. * 100 | round) / 100;
+              def epss_pct:
+                ( .vulnerability.epss // [] ) as $e
+                | if ($e | length) == 0 then "-"
+                  else ( $e[0].epss // 0 ) as $p
+                    | if $p == 0 then "0%"
+                      elif ($p * 100) < 0.01 then "<0.01%"
+                      else ( ($p * 100) | round2 | tostring
+                             + "%" ) end
+                  end;
+              def risk_fmt:
+                .vulnerability.risk
+                | if . == null then "-"
+                  elif type == "number" then
+                    (round2 | tostring)
+                  else (. | tostring) end;
+              .matches[] |
+              [ (.artifact.name // "-" | esc),
+                (.artifact.version // "-" | esc),
+                ( ( .vulnerability.fix.versions // [] )
+                  | if length == 0 then "-"
+                    else join(", ") end | esc ),
+                (.artifact.type // "-" | esc),
+                (.vulnerability.id // "-" | esc),
+                (.vulnerability.severity // "-" | esc),
+                epss_pct,
+                risk_fmt
+              ] | "| " + join(" | ") + " |"
+            ' "${json_file}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  ### Step 5: Publish to GHCR (gated on the Grype audit) ###
   publish-ghcr:
     name: 'Publish: ${{ matrix.component }}'
-    needs: [tag-validate, functional-tests]
+    # Gated on grype: the vulnerability audit must pass before any
+    # image is pushed to GHCR, so a vulnerable image never reaches
+    # a public tag. functional-tests is retained as an independent
+    # gate (it runs in parallel with sbom/grype off build).
+    needs: [tag-validate, functional-tests, grype]
     runs-on: 'ubuntu-latest'
     permissions:
       contents: read
@@ -581,39 +872,34 @@ jobs:
               docker buildx imagetools inspect "${tag}"
           done
 
-  ### Step 4b: Sign, attest, SBOM, and vuln-scan each image ###
-  sign-attest-scan:
-    name: 'Sign+SBOM+Scan: ${{ matrix.component }}'
-    needs: [tag-validate, publish-ghcr]
+  ### Step 5b: Sign and attest each published image ###
+  sign-attest:
+    name: 'Sign+Attest: ${{ matrix.component }}'
+    # Necessarily post-publish: cosign signatures and the
+    # provenance/SBOM attestations bind to the pushed manifest
+    # digest and are stored as OCI referrers in the registry, so
+    # the image must already exist in GHCR. The vulnerability gate
+    # ran earlier (grype job) against the same SBOM, so reaching
+    # this job means the image already passed the audit.
+    needs: [tag-validate, publish-ghcr, sbom]
     runs-on: 'ubuntu-latest'
     permissions:
       contents: read
       packages: write
       # cosign keyless signing + attestation predicates use OIDC.
       id-token: write
-      # actions/attest-build-provenance + actions/attest-sbom write
+      # actions/attest-build-provenance + actions/attest write
       # signed attestations and (with push-to-registry: true) attach
       # them as OCI referrers on the manifest digest.
       attestations: write
-      # github/codeql-action/upload-sarif publishes Grype findings
-      # to the repository's code-scanning alerts.
-      security-events: write
     timeout-minutes: 20
     strategy:
-      # Don't short-circuit other components if one's Grype scan
-      # finds CVEs at the configured threshold; we want SBOMs and
-      # SARIF for every component in a single release run.
+      # Don't short-circuit other components if one fails; we want
+      # signatures and attestations for every component in a single
+      # release run.
       fail-fast: false
       matrix:
         component: ['client', 'server', 'bridge']
-    env:
-      # 'low' is intentionally aggressive: the bridge and server
-      # both handle signing material and the client is consumed
-      # widely downstream, so any known-fixable CVE warrants
-      # release-time visibility. Set the NO_BLOCK_AUDIT_FAIL repo
-      # variable to 'true' to soft-fail (warn but still publish)
-      # when a transitive CVE is blocking an urgent release.
-      GRYPE_FAIL_ON: 'low'
     steps:
       # yamllint disable-line rule:line-length
       - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
@@ -690,18 +976,16 @@ jobs:
           # without losing any verification path.
           create-storage-record: false
 
-      - name: 'Generate SPDX SBOM'
+      - name: 'Download SBOM artifact'
+        # Reuse the SBOM produced by the sbom job (and already
+        # audited by grype) as the single source of truth, rather
+        # than regenerating it here. Attesting the exact bytes that
+        # were scanned keeps the published attestation and the
+        # vulnerability gate in lock-step.
         # yamllint disable-line rule:line-length
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          image: ${{ steps.ref.outputs.ref }}
-          format: spdx-json
-          output-file: sbom-${{ matrix.component }}.spdx.json
-          # The SBOM action's own artifact upload duplicates our
-          # explicit upload-artifact step below; disabling it
-          # avoids 'name already exists' failures and keeps all
-          # release assets under one consistent naming pattern.
-          upload-artifact: false
+          name: sbom-${{ matrix.component }}
 
       - name: 'Attest SBOM'
         # `actions/attest-sbom` was deprecated in favour of the
@@ -724,158 +1008,19 @@ jobs:
           # scopes minimal.
           create-storage-record: false
 
-      - name: 'Install Grype'
-        id: grype
-        # yamllint disable-line rule:line-length
-        uses: anchore/scan-action/download-grype@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2  # v7.4.0
-        with:
-          cache-db: 'true'
-
-      - name: 'Grype scan SBOM'
-        id: grype-scan
-        env:
-          GRYPE_CMD: ${{ steps.grype.outputs.cmd }}
-          COMPONENT: ${{ matrix.component }}
-          FAIL_ON: ${{ env.GRYPE_FAIL_ON }}
-          NO_BLOCK_AUDIT_FAIL: >-
-            ${{ vars.NO_BLOCK_AUDIT_FAIL == 'true' }}
-        run: |
-          set +e
-          "${GRYPE_CMD}" \
-            -o "sarif=grype-${COMPONENT}.sarif" \
-            -o "json=grype-${COMPONENT}.json" \
-            -o "table=grype-${COMPONENT}.txt" \
-            --fail-on "${FAIL_ON}" \
-            "sbom:sbom-${COMPONENT}.spdx.json"
-          grype_exit=$?
-          set -e
-
-          echo "--- Grype scan results (${COMPONENT}) ---"
-          if [[ -f "grype-${COMPONENT}.txt" ]]; then
-            cat "grype-${COMPONENT}.txt"
-          else
-            echo "No table output produced"
-          fi
-
-          # Grype exits 2 when matches at/above --fail-on were
-          # found. Any other non-zero exit means grype itself
-          # failed and we must surface that.
-          if [[ "${grype_exit}" == "0" ]]; then
-            echo "No vulnerabilities at or above '${FAIL_ON}'"
-            exit 0
-          fi
-          if [[ "${grype_exit}" != "2" ]]; then
-            echo "::error::Grype exited with code ${grype_exit}"
-            exit "${grype_exit}"
-          fi
-
-          if [[ "${NO_BLOCK_AUDIT_FAIL}" == "true" ]]; then
-            echo "::warning::${COMPONENT}: Grype found findings" \
-              "at or above '${FAIL_ON}', but NO_BLOCK_AUDIT_FAIL" \
-              "is set so the release will proceed."
-            exit 0
-          fi
-          echo "::error::${COMPONENT}: Grype found vulnerabilities" \
-            "at or above '${FAIL_ON}'. See the table above."
-          exit 1
-
-      - name: 'Upload Grype SARIF to code scanning'
-        if: always()
-        # continue-on-error: a transient SARIF upload failure must
-        # not block the release; the SARIF file is also attached
-        # to the release as a downloadable asset.
-        continue-on-error: true
-        # yamllint disable-line rule:line-length
-        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e  # v4.36.2
-        with:
-          sarif_file: grype-${{ matrix.component }}.sarif
-          category: grype-${{ matrix.component }}
-
-      - name: 'Upload SBOM and Grype reports as workflow artifact'
-        if: always()
-        # yamllint disable-line rule:line-length
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: sbom-and-scan-${{ matrix.component }}
-          path: |
-            sbom-${{ matrix.component }}.spdx.json
-            grype-${{ matrix.component }}.sarif
-            grype-${{ matrix.component }}.json
-            grype-${{ matrix.component }}.txt
-          retention-days: 90
-          if-no-files-found: warn
-
-      - name: 'Grype Markdown summary'
-        if: always()
-        env:
-          COMPONENT: ${{ matrix.component }}
-        run: |
-          # Render a Markdown table of Grype matches into the job
-          # step summary. CVE data is sourced from the JSON output
-          # (jq-parsed so multi-word cells cannot break the table
-          # column layout).
-          json_file="grype-${COMPONENT}.json"
-          {
-            echo "## Grype scan: ${COMPONENT}"
-            echo ""
-            if [[ ! -f "${json_file}" ]]; then
-              echo "No scan results available."
-              exit 0
-            fi
-            match_count=$(jq '.matches | length' "${json_file}")
-            if [[ "${match_count}" == "0" ]]; then
-              echo "No vulnerabilities at or above the configured" \
-                "severity threshold."
-              exit 0
-            fi
-            echo "Found ${match_count} Grype record(s)."
-            echo ""
-            echo "| Package | Installed | Fixed In | Type |" \
-              "Vulnerability | Severity | EPSS | Risk |"
-            echo "| --- | --- | --- | --- | --- | --- | --- | --- |"
-            jq -r '
-              def esc: tostring | gsub("\\|"; "\\|");
-              def round2: (. * 100 | round) / 100;
-              def epss_pct:
-                ( .vulnerability.epss // [] ) as $e
-                | if ($e | length) == 0 then "-"
-                  else ( $e[0].epss // 0 ) as $p
-                    | if $p == 0 then "0%"
-                      elif ($p * 100) < 0.01 then "<0.01%"
-                      else ( ($p * 100) | round2 | tostring
-                             + "%" ) end
-                  end;
-              def risk_fmt:
-                .vulnerability.risk
-                | if . == null then "-"
-                  elif type == "number" then
-                    (round2 | tostring)
-                  else (. | tostring) end;
-              .matches[] |
-              [ (.artifact.name // "-" | esc),
-                (.artifact.version // "-" | esc),
-                ( ( .vulnerability.fix.versions // [] )
-                  | if length == 0 then "-"
-                    else join(", ") end | esc ),
-                (.artifact.type // "-" | esc),
-                (.vulnerability.id // "-" | esc),
-                (.vulnerability.severity // "-" | esc),
-                epss_pct,
-                risk_fmt
-              ] | "| " + join(" | ") + " |"
-            ' "${json_file}"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  ### Step 4c: Attach SBOM + Grype reports to draft release ###
+  ### Step 5c: Attach SBOM + Grype reports to draft release ###
   release-attach:
     name: 'Attach Release Assets'
-    needs: [tag-validate, sign-attest-scan]
-    # Run even when sign-attest-scan fails: SBOM and Grype reports
-    # are most valuable on a failing release because they explain
-    # *why* it failed. The upload step below no-ops gracefully
-    # when no artifacts were produced, and promote-release still
-    # waits on sign-attest-scan, so a failed scan leaves the
-    # draft un-promoted regardless of release-attach's outcome.
+    # grype produces the sbom-and-scan-* artifacts attached below;
+    # sign-attest gates the verification footer. Depend on both.
+    needs: [tag-validate, grype, sign-attest]
+    # Run even when grype or sign-attest fails: SBOM and Grype
+    # reports are most valuable on a failing release because they
+    # explain *why* it failed. The upload step below no-ops
+    # gracefully when no artifacts were produced, and
+    # promote-release still waits on grype + sign-attest, so a
+    # failed scan leaves the draft un-promoted regardless of
+    # release-attach's outcome.
     if: >-
       always() && needs.tag-validate.result == 'success'
     runs-on: 'ubuntu-24.04'
@@ -907,7 +1052,7 @@ jobs:
 
       - name: 'Download SBOMs + Grype reports'
         # Tolerate runs where no sbom-and-scan-* artifacts were
-        # produced (e.g. sign-attest-scan failed before the
+        # produced (e.g. the grype job failed before its
         # upload-artifact step in any matrix entry). The next step
         # checks for and gracefully no-ops on an empty asset set,
         # but only if this step is allowed to succeed without
@@ -941,15 +1086,15 @@ jobs:
 
       - name: 'Append verification footer to release notes'
         # Only stamp the footer (with its cosign verify / gh
-        # attestation verify guidance) when sign-attest-scan
-        # actually ran. If publish-ghcr failed and the scan job
+        # attestation verify guidance) when sign-attest actually
+        # ran. If publish-ghcr failed and the sign-attest job
         # was skipped, no signatures or attestations exist and
-        # the footer's claims would be false. A scan that ran
+        # the footer's claims would be false. A job that ran
         # and failed still produced some signatures/attestations
         # for some matrix entries, so partial-failure runs are
         # treated as 'footer-worthy' — verification just won't
         # succeed for the missing components.
-        if: needs.sign-attest-scan.result != 'skipped'
+        if: needs.sign-attest.result != 'skipped'
         shell: bash
         env:
           REPO: ${{ github.repository }}
@@ -1042,7 +1187,12 @@ jobs:
   ### Step 5: Promote draft release ###
   promote-release:
     name: 'Promote Draft Release'
-    needs: [tag-validate, publish-ghcr, sign-attest-scan, release-attach]
+    needs:
+      - tag-validate
+      - publish-ghcr
+      - grype
+      - sign-attest
+      - release-attach
     runs-on: 'ubuntu-24.04'
     permissions:
       contents: write
@@ -1099,8 +1249,10 @@ jobs:
       - tag-validate
       - build-containers
       - functional-tests
+      - sbom
+      - grype
       - publish-ghcr
-      - sign-attest-scan
+      - sign-attest
       - release-attach
       - promote-release
     runs-on: 'ubuntu-latest'
@@ -1115,8 +1267,10 @@ jobs:
           R_TAG: ${{ needs.tag-validate.result }}
           R_BUILD: ${{ needs.build-containers.result }}
           R_TESTS: ${{ needs.functional-tests.result }}
+          R_SBOM: ${{ needs.sbom.result }}
+          R_GRYPE: ${{ needs.grype.result }}
           R_PUBLISH: ${{ needs.publish-ghcr.result }}
-          R_SCAN: ${{ needs.sign-attest-scan.result }}
+          R_SIGN: ${{ needs.sign-attest.result }}
           R_ATTACH: ${{ needs.release-attach.result }}
           R_PROMOTE: ${{ needs.promote-release.result }}
         run: |
@@ -1128,8 +1282,10 @@ jobs:
               echo "| Tag validation | ${R_TAG} |"
               echo "| Image builds | ${R_BUILD} |"
               echo "| Functional tests | ${R_TESTS} |"
+              echo "| SBOM generation | ${R_SBOM} |"
+              echo "| Grype audit | ${R_GRYPE} |"
               echo "| GHCR publish | ${R_PUBLISH} |"
-              echo "| Sign + SBOM + Grype | ${R_SCAN} |"
+              echo "| Sign + attest | ${R_SIGN} |"
               echo "| Release assets | ${R_ATTACH} |"
               echo "| Release promote | ${R_PROMOTE} |"
               echo ""
