@@ -521,6 +521,7 @@ jobs:
     # failure keeps pr-grype's overall result 'failure'.
     if: >-
       !cancelled() && needs.pr-sbom.result != 'skipped'
+      && needs.pr-sbom.result != 'cancelled'
     runs-on: 'ubuntu-latest'
     permissions:
       contents: read

@@ -574,6 +574,7 @@ jobs:
     if: >-
       !cancelled() && needs.tag-validate.result == 'success'
       && needs.sbom.result != 'skipped'
+      && needs.sbom.result != 'cancelled'
     runs-on: 'ubuntu-latest'
     permissions:
       contents: read
