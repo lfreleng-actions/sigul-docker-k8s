@@ -5,33 +5,48 @@ SPDX-FileCopyrightText: 2025 The Linux Foundation
 
 # Sigul Test PKI Infrastructure
 
-This directory contains the PKI infrastructure for Sigul integration testing.
+This directory contains the PKI scaffolding for Sigul integration testing.
+
+## Certificate generation
+
+The runtime generates the Sigul server, bridge, and client certificates
+fresh inside an NSS database (`certutil`/`pk12util`); this repository
+ships no static certificate files. Container startup runs
+`scripts/cert-init.sh`, which creates a throwaway CA and signs a
+component certificate for each role into
+`/etc/pki/sigul/<component>`, then distributes the runtime material
+under `/var/sigul/secrets/certificates/`.
+`pki/generate-production-aligned-certs.sh` is the NSS generation helper
+that flow invokes (and that `tests/test-serial-fix-e2e.sh` exercises
+directly).
+
+Because the runtime mints every certificate and private key on demand,
+this repository commits no long-lived private keys.
+
+> Historical note: earlier revisions committed static
+> `server-key.pem` / `server.crt` and `bridge-key.pem` / `bridge.crt`
+> PEM pairs here. The NSS-based runtime generation above superseded
+> them; no runtime code path ever read them, so we removed them. Do
+> not re-add private keys to this directory.
 
 ## Files
-
-### Certificate Authority
-
-- `ca.crt` - Root CA certificate (public)
-
-### Server Certificates
-
-- `server.crt` - Sigul server certificate (public)
-- `server-key.pem` - Sigul server private key (private)
-
-### Bridge Certificates
-
-- `bridge.crt` - Sigul bridge certificate (public)
-- `bridge-key.pem` - Sigul bridge private key (private)
 
 ### Configuration Templates
 
 - `server.conf.template` - Server configuration template
 - `bridge.conf.template` - Bridge configuration template
+- `client.conf.template` - Client configuration template
+
+### Scripts
+
+- `generate-production-aligned-certs.sh` - NSS certificate generation
+  helper used by the runtime cert-init flow
 
 ## Client PKI
 
 The system packages client PKI separately in
-`pki/client-pki-encrypted.asc` and includes:
+`pki/client-pki-encrypted.asc` (git-ignored, generated on demand) and
+includes:
 
 - Client certificate and private key
 - CA certificate for verification

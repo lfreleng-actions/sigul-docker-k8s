@@ -67,6 +67,13 @@ node_modules/*
 # Allow configuration templates and documentation
 !pki/*.conf.template
 !pki/README.md
+# Never commit certificates or private keys here. All Sigul PKI
+# material is generated fresh at runtime via NSS (see pki/README.md);
+# these patterns stop legacy/static key material being re-added.
+pki/*.pem
+pki/*.key
+pki/*.crt
+pki/*.p12
 # Ignore any generated files
 pki/client-pki-encrypted.asc
 
