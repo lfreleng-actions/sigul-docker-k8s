@@ -474,6 +474,15 @@ jobs:
   pr-grype:
     name: 'Grype: ${{ matrix.component }}'
     needs: [pr-sbom]
+    # pr-sbom is a matrix job: a single failed component leg marks
+    # the whole pr-sbom job 'failure', which would otherwise skip
+    # pr-grype entirely and deny SARIF/reports for the components
+    # whose SBOMs built fine. Run whenever pr-sbom actually executed
+    # (not skipped / cancelled). The per-component download-artifact
+    # step still fails the leg for any missing SBOM, so a real SBOM
+    # failure keeps pr-grype's overall result 'failure'.
+    if: >-
+      !cancelled() && needs.pr-sbom.result != 'skipped'
     runs-on: 'ubuntu-latest'
     permissions:
       contents: read

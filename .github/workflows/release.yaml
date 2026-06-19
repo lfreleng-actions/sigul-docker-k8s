@@ -519,6 +519,17 @@ jobs:
     # sbom job so SBOM generation and the vulnerability policy gate
     # fail independently and report distinct results.
     needs: [tag-validate, sbom]
+    # sbom is a matrix job: a single failed component leg marks the
+    # whole sbom job 'failure', which would otherwise skip grype
+    # entirely and deny SARIF/reports for the components whose SBOMs
+    # built fine. Run whenever sbom actually executed (not skipped /
+    # cancelled) on a valid release tag. The per-component
+    # download-artifact step still fails the leg for any missing
+    # SBOM, so grype's overall result stays 'failure' and
+    # publish-ghcr (which requires grype success) remains blocked.
+    if: >-
+      !cancelled() && needs.tag-validate.result == 'success'
+      && needs.sbom.result != 'skipped'
     runs-on: 'ubuntu-latest'
     permissions:
       contents: read

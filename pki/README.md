@@ -10,15 +10,19 @@ This directory contains the PKI scaffolding for Sigul integration testing.
 ## Certificate generation
 
 The runtime generates the Sigul server, bridge, and client certificates
-fresh inside an NSS database (`certutil`/`pk12util`); this repository
+fresh inside NSS databases (`certutil`/`pk12util`); this repository
 ships no static certificate files. Container startup runs
-`scripts/cert-init.sh`, which creates a throwaway CA and signs a
-component certificate for each role into
-`/etc/pki/sigul/<component>`, then distributes the runtime material
-under `/var/sigul/secrets/certificates/`.
-`pki/generate-production-aligned-certs.sh` is the NSS generation helper
-that flow invokes (and that `tests/test-serial-fix-e2e.sh` exercises
-directly).
+`scripts/cert-init.sh`, which makes the bridge act as a throwaway
+Certificate Authority: it creates an NSS database under
+`/etc/pki/sigul/bridge`, signs a certificate for each role (bridge,
+server, client), and exports the public material to distribution
+directories under the bridge NSS volume
+(`/etc/pki/sigul/bridge/{ca,server,client}-export`). The server and
+client import their certificates from there. The bridge shares its CA
+public certificate and retains the CA private key.
+`pki/generate-production-aligned-certs.sh` is a separate NSS helper for
+local and test tooling; `tests/test-serial-fix-e2e.sh` exercises it
+directly and the container `cert-init.sh` flow does not invoke it.
 
 Because the runtime mints every certificate and private key on demand,
 this repository commits no long-lived private keys.
@@ -40,7 +44,9 @@ this repository commits no long-lived private keys.
 ### Scripts
 
 - `generate-production-aligned-certs.sh` - NSS certificate generation
-  helper used by the runtime cert-init flow
+  helper for local and test tooling. `tests/test-serial-fix-e2e.sh`
+  exercises it directly; the container `cert-init.sh` flow does not
+  invoke it.
 
 ## Client PKI
 
@@ -55,9 +61,10 @@ includes:
 
 ## Usage in Docker Compose
 
-This script uses the existing shared CA from the repository and generates
-component certificates for containerized deployments. The shared CA ensures
-consistent trust relationships across all deployments.
+`scripts/cert-init.sh` runs at container startup, generates a fresh CA
+on the bridge, and issues component certificates for the containerized
+deployment. The bridge-held CA signs every component certificate, which
+keeps trust relationships consistent across the stack.
 
 ## Usage in Workflows
 
@@ -82,6 +89,6 @@ Example workflow usage:
 
 This PKI infrastructure serves testing purposes. Do not use in production.
 
-The shared CA certificate and private key exist in the repository for
-consistent testing across environments. In production, use a proper Certificate
-Authority with appropriate security controls.
+The runtime generates the CA certificate and private key on demand; the
+repository stores no CA private key. In production, use a proper
+Certificate Authority with appropriate security controls.
