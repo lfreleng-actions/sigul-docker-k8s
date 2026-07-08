@@ -351,14 +351,16 @@ jobs:
 
       - name: 'Load images into local Docker daemon'
         shell: bash
+        env:
+          PLATFORM_ID: ${{ steps.platform.outputs.id }}
         run: |
           set -euo pipefail
           for component in client server bridge; do
-              tarball="/tmp/${component}-${{ steps.platform.outputs.id }}.tar"
+              tarball="/tmp/${component}-${PLATFORM_ID}.tar"
               echo "Loading ${tarball}"
               docker load --input "${tarball}"
-              docker tag "${component}:${{ steps.platform.outputs.id }}" \
-                  "${component}-${{ steps.platform.outputs.id }}-image:test"
+              docker tag "${component}:${PLATFORM_ID}" \
+                  "${component}-${PLATFORM_ID}-image:test"
           done
           docker images | grep -E '(client|server|bridge)-' || true
 

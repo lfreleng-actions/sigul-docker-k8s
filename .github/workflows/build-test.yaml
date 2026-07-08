@@ -263,38 +263,50 @@ jobs:
       - name: 'Set build outputs for client amd64'
         id: build-client-amd64
         if: matrix.component == 'client' && matrix.platform == 'linux/amd64'
+        env:
+          DIGEST: ${{ steps.docker-build.outputs.digest }}
         run: |
-          echo "digest=${{ steps.docker-build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
       - name: 'Set build outputs for client arm64'
         id: build-client-arm64
         if: matrix.component == 'client' && matrix.platform == 'linux/arm64'
+        env:
+          DIGEST: ${{ steps.docker-build.outputs.digest }}
         run: |
-          echo "digest=${{ steps.docker-build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
       - name: 'Set build outputs for server amd64'
         id: build-server-amd64
         if: matrix.component == 'server' && matrix.platform == 'linux/amd64'
+        env:
+          DIGEST: ${{ steps.docker-build.outputs.digest }}
         run: |
-          echo "digest=${{ steps.docker-build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
       - name: 'Set build outputs for server arm64'
         id: build-server-arm64
         if: matrix.component == 'server' && matrix.platform == 'linux/arm64'
+        env:
+          DIGEST: ${{ steps.docker-build.outputs.digest }}
         run: |
-          echo "digest=${{ steps.docker-build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
       - name: 'Set build outputs for bridge amd64'
         id: build-bridge-amd64
         if: matrix.component == 'bridge' && matrix.platform == 'linux/amd64'
+        env:
+          DIGEST: ${{ steps.docker-build.outputs.digest }}
         run: |
-          echo "digest=${{ steps.docker-build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
       - name: 'Set build outputs for bridge arm64'
         id: build-bridge-arm64
         if: matrix.component == 'bridge' && matrix.platform == 'linux/arm64'
+        env:
+          DIGEST: ${{ steps.docker-build.outputs.digest }}
         run: |
-          echo "digest=${{ steps.docker-build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
       - name: 'Upload ${{ matrix.component }} image as artifact'
         # yamllint disable-line rule:line-length
@@ -829,9 +841,10 @@ jobs:
 
       - name: 'Load and tag container images'
         shell: bash
+        env:
+          PLATFORM_ID: ${{ steps.runner-arch.outputs.platform-id }}
         run: |
           # Loading/tagging container images
-          PLATFORM_ID="${{ steps.runner-arch.outputs.platform-id }}"
           echo "🔧 Loading/tagging ${PLATFORM_ID} container images for" \
             "functional tests"
 
