@@ -51,11 +51,20 @@ RUN dnf install -y --setopt=install_weak_deps=False --allowerasing \
 # globs intentionally trail with '*' (not '.*'): idna 3.11 ships its
 # metadata as 'idna-3.11.dist-info' with no patch component, so
 # '*.dist-info' would miss it.
+# python3-cryptography 48.0.0 is likewise flagged by
+# GHSA-537c-gmf6-5ccf (vulnerable OpenSSL bundled in the upstream
+# cryptography 48.0.0 wheels; fixed in 48.0.1), so upgrade it the
+# same way. The '<49' cap keeps the wheel on the same major series
+# as the Fedora package sigul builds against. cryptography is an
+# arch-specific package whose dnf metadata lives under /usr/lib64,
+# so that tree joins the dist-info cleanup below.
 RUN python3 -m pip install --upgrade --break-system-packages \
-        'pip>=26.1' 'idna>=3.15' && \
+        'pip>=26.1' 'idna>=3.15' 'cryptography>=48.0.1,<49' && \
     find /usr/lib/python3*/site-packages \
+        /usr/lib64/python3*/site-packages \
         \( -name 'pip-26.0*.dist-info' \
-        -o -name 'idna-3.11*.dist-info' \) \
+        -o -name 'idna-3.11*.dist-info' \
+        -o -name 'cryptography-48.0.0*.dist-info' \) \
         -type d -exec rm -rf {} +
 
 # Copy patches for debugging (if they exist)
