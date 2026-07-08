@@ -60,8 +60,8 @@ jobs:
     name: 'Repository Metadata'
     runs-on: 'ubuntu-latest'
     permissions:
-      contents: read
-      pull-requests: read
+      contents: read  # Checkout repository contents
+      pull-requests: read  # Gather pull request metadata
     timeout-minutes: 5
     steps:
       # Load the egress allow-list out-of-band from the
@@ -86,6 +86,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: 'Gather repository metadata'
         id: repo-metadata
@@ -138,6 +139,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
 
       - name: 'Validate tag'
         id: validate
@@ -217,6 +219,8 @@ jobs:
       - name: 'Checkout repository'
         # yamllint disable-line rule:line-length
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: 'Set up Docker Buildx'
         # yamllint disable-line rule:line-length
@@ -225,8 +229,10 @@ jobs:
       - name: 'Compute platform identifier'
         id: platform
         shell: bash
+        env:
+          MATRIX_PLATFORM: ${{ matrix.platform }}
         run: |
-          platform_id=$(echo "${{ matrix.platform }}" | tr '/' '-')
+          platform_id=$(echo "${MATRIX_PLATFORM}" | tr '/' '-')
           echo "id=${platform_id}" >> "$GITHUB_OUTPUT"
 
       # Generate the full standard OCI label set from the workflow
@@ -253,7 +259,11 @@ jobs:
           file: 'Dockerfile.${{ matrix.component }}'
           # ARM runners build natively, AMD runners build for amd64;
           # buildx still needs the platforms hint for non-native legs.
-          platforms: ${{ matrix.runner == 'ubuntu-24.04-arm' && '' || matrix.platform }}
+          # The former pseudo-ternary here
+          # (runner == arm && '' || matrix.platform) always evaluated
+          # to matrix.platform because the empty string is falsy, so
+          # reference matrix.platform directly (identical behaviour).
+          platforms: ${{ matrix.platform }}
           tags: |
             ${{ matrix.component }}:${{ steps.platform.outputs.id }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -302,6 +312,8 @@ jobs:
       - name: 'Checkout repository'
         # yamllint disable-line rule:line-length
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: 'Set up Docker Buildx'
         # yamllint disable-line rule:line-length
@@ -310,8 +322,10 @@ jobs:
       - name: 'Compute platform identifier'
         id: platform
         shell: bash
+        env:
+          MATRIX_PLATFORM: ${{ matrix.platform }}
         run: |
-          platform_id=$(echo "${{ matrix.platform }}" | tr '/' '-')
+          platform_id=$(echo "${MATRIX_PLATFORM}" | tr '/' '-')
           echo "id=${platform_id}" >> "$GITHUB_OUTPUT"
 
       - name: 'Download client image artifact'
@@ -497,10 +511,12 @@ jobs:
 
       - name: 'Load image from tar artifact'
         shell: bash
+        env:
+          COMPONENT: ${{ matrix.component }}
         run: |
           set -euo pipefail
-          docker load --input /tmp/${{ matrix.component }}-linux-amd64.tar
-          docker images | grep "^${{ matrix.component }} " || true
+          docker load --input "/tmp/${COMPONENT}-linux-amd64.tar"
+          docker images | grep "^${COMPONENT} " || true
 
       - name: 'Generate SPDX SBOM'
         # The SBOM is generated from the amd64 leg only and used as
@@ -580,7 +596,7 @@ jobs:
       contents: read
       # github/codeql-action/upload-sarif publishes Grype findings
       # to the repository's code-scanning alerts.
-      security-events: write
+      security-events: write  # Upload Grype SARIF to code scanning
     timeout-minutes: 15
     strategy:
       # Don't short-circuit other components if one's Grype audit
@@ -776,8 +792,8 @@ jobs:
     needs: [tag-validate, functional-tests, grype]
     runs-on: 'ubuntu-latest'
     permissions:
-      contents: read
-      packages: write
+      contents: read  # Checkout repository contents
+      packages: write  # Push release container images to GHCR
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -804,6 +820,8 @@ jobs:
       - name: 'Checkout repository'
         # yamllint disable-line rule:line-length
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: 'Set up Docker Buildx'
         # yamllint disable-line rule:line-length
@@ -864,11 +882,13 @@ jobs:
 
       - name: 'Load platform images from tar artifacts'
         shell: bash
+        env:
+          COMPONENT: ${{ matrix.component }}
         run: |
           set -euo pipefail
-          docker load --input /tmp/${{ matrix.component }}-linux-amd64.tar
-          docker load --input /tmp/${{ matrix.component }}-linux-arm64.tar
-          docker images | grep '^${{ matrix.component }} ' || true
+          docker load --input "/tmp/${COMPONENT}-linux-amd64.tar"
+          docker load --input "/tmp/${COMPONENT}-linux-arm64.tar"
+          docker images | grep "^${COMPONENT} " || true
 
       - name: 'Push per-arch images and assemble multi-arch index'
         # Push each platform image exactly once under a stable
@@ -890,9 +910,11 @@ jobs:
         # per-tag-per-arch push loop.
         shell: bash
         env:
+          COMPONENT: ${{ matrix.component }}
           # yamllint disable-line rule:line-length
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}/${{ matrix.component }}
           FULL_TAG: ${{ needs.tag-validate.outputs.tag }}
+          META_TAGS: ${{ steps.meta.outputs.tags }}
         # yamllint disable rule:line-length
         run: |
           set -euo pipefail
@@ -900,7 +922,7 @@ jobs:
           # Pre-flight: refuse to push if metadata-action produced
           # no tags, or if any computed tag is malformed (ends with
           # ':' which would mean an empty version).
-          mapfile -t tags <<< "${{ steps.meta.outputs.tags }}"
+          mapfile -t tags <<< "${META_TAGS}"
           nonempty=()
           for t in "${tags[@]}"; do
               [[ -n "${t}" ]] || continue
@@ -922,8 +944,8 @@ jobs:
           # per-arch references and serve as the imagetools inputs.
           amd64_src="${IMAGE}:${FULL_TAG}-amd64"
           arm64_src="${IMAGE}:${FULL_TAG}-arm64"
-          docker tag "${{ matrix.component }}:linux-amd64" "${amd64_src}"
-          docker tag "${{ matrix.component }}:linux-arm64" "${arm64_src}"
+          docker tag "${COMPONENT}:linux-amd64" "${amd64_src}"
+          docker tag "${COMPONENT}:linux-arm64" "${arm64_src}"
           docker push "${amd64_src}"
           docker push "${arm64_src}"
 
@@ -938,14 +960,16 @@ jobs:
           docker buildx imagetools create \
               "${tag_args[@]}" \
               "${amd64_src}" "${arm64_src}"
-          echo "✅ Published multi-arch indexes for ${{ matrix.component }}"
+          echo "✅ Published multi-arch indexes for ${COMPONENT}"
         # yamllint enable rule:line-length
 
       - name: 'Verify pushed manifests'
         shell: bash
+        env:
+          META_TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           set -euo pipefail
-          mapfile -t tags <<< "${{ steps.meta.outputs.tags }}"
+          mapfile -t tags <<< "${META_TAGS}"
           for tag in "${tags[@]}"; do
               [[ -n "${tag}" ]] || continue
               echo "=== ${tag} ==="
@@ -964,14 +988,14 @@ jobs:
     needs: [tag-validate, publish-ghcr, sbom]
     runs-on: 'ubuntu-latest'
     permissions:
-      contents: read
-      packages: write
-      # cosign keyless signing + attestation predicates use OIDC.
-      id-token: write
+      contents: read  # Checkout repository contents
+      packages: write  # Attach signatures/attestations as OCI referrers
+      # yamllint disable-line rule:line-length
+      id-token: write  # cosign keyless signing + attestation predicates use OIDC
       # actions/attest-build-provenance + actions/attest write
       # signed attestations and (with push-to-registry: true) attach
       # them as OCI referrers on the manifest digest.
-      attestations: write
+      attestations: write  # Write signed build attestations
     timeout-minutes: 20
     strategy:
       # Don't short-circuit other components if one fails; we want
@@ -1117,7 +1141,7 @@ jobs:
       always() && needs.tag-validate.result == 'success'
     runs-on: 'ubuntu-24.04'
     permissions:
-      contents: write
+      contents: write  # Upload assets to the draft GitHub release
     timeout-minutes: 5
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1299,7 +1323,7 @@ jobs:
       - release-attach
     runs-on: 'ubuntu-24.04'
     permissions:
-      contents: write
+      contents: write  # Promote the draft GitHub release
     timeout-minutes: 5
     steps:
       # Load the egress allow-list out-of-band from the
@@ -1322,6 +1346,8 @@ jobs:
       - name: 'Checkout repository'
         # yamllint disable-line rule:line-length
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: 'Decide whether release is pre-release'
         id: release-kind
@@ -1389,6 +1415,7 @@ jobs:
           R_SIGN: ${{ needs.sign-attest.result }}
           R_ATTACH: ${{ needs.release-attach.result }}
           R_PROMOTE: ${{ needs.promote-release.result }}
+          REPO: ${{ github.repository }}
         run: |
           {
               echo "# Release ${TAG}"
@@ -1411,10 +1438,9 @@ jobs:
                   echo "Pull with:"
                   echo ""
                   echo "\`\`\`"
-                  repo="${{ github.repository }}"
-                  echo "docker pull ghcr.io/${repo}/client:${TAG}"
-                  echo "docker pull ghcr.io/${repo}/server:${TAG}"
-                  echo "docker pull ghcr.io/${repo}/bridge:${TAG}"
+                  echo "docker pull ghcr.io/${REPO}/client:${TAG}"
+                  echo "docker pull ghcr.io/${REPO}/server:${TAG}"
+                  echo "docker pull ghcr.io/${REPO}/bridge:${TAG}"
                   echo "\`\`\`"
               else
                   echo "## ❌ Release did not complete"
