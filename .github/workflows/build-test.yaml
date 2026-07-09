@@ -52,8 +52,8 @@ jobs:
     name: 'Repository Metadata'
     runs-on: 'ubuntu-latest'
     permissions:
-      contents: read
-      pull-requests: read
+      contents: read  # Checkout repository contents
+      pull-requests: read  # Gather pull request metadata
     timeout-minutes: 5
     steps:
       # Load the egress allow-list out-of-band from the
@@ -78,6 +78,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: 'Gather repository metadata'
         id: repo-metadata
@@ -167,6 +168,8 @@ jobs:
       - name: 'Checkout repository'
         # yamllint disable-line rule:line-length
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: 'Set up Docker Buildx'
         # yamllint disable-line rule:line-length
@@ -176,13 +179,15 @@ jobs:
         shell: bash
         env:
           CLEAR_CACHE: ${{ github.event.inputs.clear_cache }}
+          COND_BOOLEAN: ${{ github.event.inputs.clear_cache == true }}
+          COND_STRING: ${{ github.event.inputs.clear_cache == 'true' }}
         # yamllint disable rule:line-length
         run: |
           echo "🔍 Debugging cache-clearing configuration..."
           echo "clear_cache input: '${CLEAR_CACHE}'"
           echo "clear_cache type: $(printf '%s' "${CLEAR_CACHE}" | wc -c) chars"
-          echo "Condition evaluation: ${{ github.event.inputs.clear_cache == true }}"
-          echo "Condition (string): ${{ github.event.inputs.clear_cache == 'true' }}"
+          echo "Condition evaluation: ${COND_BOOLEAN}"
+          echo "Condition (string): ${COND_STRING}"
         # yamllint enable rule:line-length
 
       - name: 'Clear build caches if requested'
@@ -201,8 +206,10 @@ jobs:
       - name: 'Extract platform identifier'
         id: platform
         shell: bash
+        env:
+          MATRIX_PLATFORM: ${{ matrix.platform }}
         run: |
-          platform_id="${{ matrix.platform }}"
+          platform_id="${MATRIX_PLATFORM}"
           platform_id="${platform_id//\//-}"
           echo "id=${platform_id}" >> "$GITHUB_OUTPUT"
           echo "Platform ID: ${platform_id}"
@@ -236,7 +243,11 @@ jobs:
         with:
           context: .
           file: Dockerfile.${{ matrix.component }}
-          platforms: ${{ matrix.runner == 'ubuntu-24.04-arm' && '' || matrix.platform }}
+          # The former pseudo-ternary here
+          # (runner == arm && '' || matrix.platform) always evaluated
+          # to matrix.platform because the empty string is falsy, so
+          # reference matrix.platform directly (identical behaviour).
+          platforms: ${{ matrix.platform }}
           # Local-only build tag. The publish-ghcr job below applies
           # the manual-<sha> tag if a maintainer opts into
           # publishing.
@@ -252,38 +263,50 @@ jobs:
       - name: 'Set build outputs for client amd64'
         id: build-client-amd64
         if: matrix.component == 'client' && matrix.platform == 'linux/amd64'
+        env:
+          DIGEST: ${{ steps.docker-build.outputs.digest }}
         run: |
-          echo "digest=${{ steps.docker-build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
       - name: 'Set build outputs for client arm64'
         id: build-client-arm64
         if: matrix.component == 'client' && matrix.platform == 'linux/arm64'
+        env:
+          DIGEST: ${{ steps.docker-build.outputs.digest }}
         run: |
-          echo "digest=${{ steps.docker-build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
       - name: 'Set build outputs for server amd64'
         id: build-server-amd64
         if: matrix.component == 'server' && matrix.platform == 'linux/amd64'
+        env:
+          DIGEST: ${{ steps.docker-build.outputs.digest }}
         run: |
-          echo "digest=${{ steps.docker-build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
       - name: 'Set build outputs for server arm64'
         id: build-server-arm64
         if: matrix.component == 'server' && matrix.platform == 'linux/arm64'
+        env:
+          DIGEST: ${{ steps.docker-build.outputs.digest }}
         run: |
-          echo "digest=${{ steps.docker-build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
       - name: 'Set build outputs for bridge amd64'
         id: build-bridge-amd64
         if: matrix.component == 'bridge' && matrix.platform == 'linux/amd64'
+        env:
+          DIGEST: ${{ steps.docker-build.outputs.digest }}
         run: |
-          echo "digest=${{ steps.docker-build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
       - name: 'Set build outputs for bridge arm64'
         id: build-bridge-arm64
         if: matrix.component == 'bridge' && matrix.platform == 'linux/arm64'
+        env:
+          DIGEST: ${{ steps.docker-build.outputs.digest }}
         run: |
-          echo "digest=${{ steps.docker-build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
       - name: 'Upload ${{ matrix.component }} image as artifact'
         # yamllint disable-line rule:line-length
@@ -299,8 +322,8 @@ jobs:
     name: 'Publish: ${{ matrix.component }}'
     runs-on: 'ubuntu-latest'
     permissions:
-      contents: read
-      packages: write
+      contents: read  # Checkout repository contents
+      packages: write  # Push container images to GHCR
     timeout-minutes: 10
     needs: [build-containers]
     # Pull-request triggers never publish.  workflow_dispatch only
@@ -336,6 +359,8 @@ jobs:
       - name: 'Checkout repository'
         # yamllint disable-line rule:line-length
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: 'Set up Docker Buildx'
         # yamllint disable-line rule:line-length
@@ -365,24 +390,27 @@ jobs:
 
       - name: 'Load platform images'
         shell: bash
+        env:
+          COMPONENT: ${{ matrix.component }}
         run: |
           set -euo pipefail
-          docker load --input /tmp/${{ matrix.component }}-linux-amd64.tar
-          docker load --input /tmp/${{ matrix.component }}-linux-arm64.tar
-          docker images | grep '^${{ matrix.component }} ' || true
+          docker load --input "/tmp/${COMPONENT}-linux-amd64.tar"
+          docker load --input "/tmp/${COMPONENT}-linux-arm64.tar"
+          docker images | grep "^${COMPONENT} " || true
 
       # yamllint disable rule:line-length
       - name: 'Push images and create multi-arch manifest'
         shell: bash
         env:
+          COMPONENT: ${{ matrix.component }}
           IMAGE: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.component }}
           TAG: manual-${{ github.sha }}
         run: |
           set -euo pipefail
 
           # Per-arch images
-          docker tag "${{ matrix.component }}:linux-amd64" "${IMAGE}:${TAG}-amd64"
-          docker tag "${{ matrix.component }}:linux-arm64" "${IMAGE}:${TAG}-arm64"
+          docker tag "${COMPONENT}:linux-amd64" "${IMAGE}:${TAG}-amd64"
+          docker tag "${COMPONENT}:linux-arm64" "${IMAGE}:${TAG}-arm64"
           docker push "${IMAGE}:${TAG}-amd64"
           docker push "${IMAGE}:${TAG}-arm64"
 
@@ -530,7 +558,7 @@ jobs:
       # this scope is silently downgraded to read; the upload step
       # is wrapped in continue-on-error so the scan still produces
       # the downloadable SARIF artifact in that case.
-      security-events: write
+      security-events: write  # Upload Grype SARIF to code scanning
     timeout-minutes: 15
     strategy:
       # Don't short-circuit other components if one's Grype scan
@@ -757,6 +785,8 @@ jobs:
       - name: 'Checkout repository'
         # yamllint disable-line rule:line-length
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: 'Set up Docker Buildx'
         # yamllint disable-line rule:line-length
@@ -811,9 +841,10 @@ jobs:
 
       - name: 'Load and tag container images'
         shell: bash
+        env:
+          PLATFORM_ID: ${{ steps.runner-arch.outputs.platform-id }}
         run: |
           # Loading/tagging container images
-          PLATFORM_ID="${{ steps.runner-arch.outputs.platform-id }}"
           echo "🔧 Loading/tagging ${PLATFORM_ID} container images for" \
             "functional tests"
 
@@ -1270,6 +1301,14 @@ jobs:
     steps:
       - name: 'Generate deploy summary'
         shell: bash
+        env:
+          BUILD_RESULT: ${{ needs.build-containers.result }}
+          SBOM_RESULT: ${{ needs.pr-sbom.result }}
+          GRYPE_RESULT: ${{ needs.pr-grype.result }}
+          TESTS_RESULT: ${{ needs.functional-tests.result }}
+          PUBLISH_RESULT: ${{ needs.publish-ghcr.result }}
+          REGISTRY_NAME: ${{ env.REGISTRY }}
+          IMAGE: ${{ env.IMAGE_NAME }}
         run: |
           {
             echo "## Sigul Deploy Summary 🐳"
@@ -1279,13 +1318,13 @@ jobs:
             echo "| Job | Status |"
             echo "|-----|--------|"
             echo "| Build (matrix: amd64 + arm64) |" \
-              " ${{ needs.build-containers.result }} |"
+              " ${BUILD_RESULT} |"
             echo "| SBOM (matrix: 3 components) |" \
-              " ${{ needs.pr-sbom.result }} |"
+              " ${SBOM_RESULT} |"
             echo "| Grype (matrix: 3 components) |" \
-              " ${{ needs.pr-grype.result }} |"
+              " ${GRYPE_RESULT} |"
             echo "| Functional Tests (matrix: amd64 + arm64) |" \
-              " ${{ needs.functional-tests.result }} |"
+              " ${TESTS_RESULT} |"
             echo ""
 
             # Note: needs.<job>.result is the *overall* matrix outcome
@@ -1296,13 +1335,13 @@ jobs:
             # individual matrix legs in the UI for per-platform detail.
 
             echo "### Functional Tests"
-            echo "- **Status**: ${{ needs.functional-tests.result }}"
+            echo "- **Status**: ${TESTS_RESULT}"
             echo "- **Includes**: Integration testing against fresh infrastructure"
             echo ""
 
             echo "### Supply-chain scan"
-            echo "- **SBOM status**: ${{ needs.pr-sbom.result }}"
-            echo "- **Grype status**: ${{ needs.pr-grype.result }}"
+            echo "- **SBOM status**: ${SBOM_RESULT}"
+            echo "- **Grype status**: ${GRYPE_RESULT}"
             echo "- **Includes**: SPDX SBOM (anchore/sbom-action)" \
               "and Grype vulnerability scan per component image"
             echo "- **Artifacts**: pr-sbom-and-scan-COMPONENT per" \
@@ -1314,16 +1353,16 @@ jobs:
             echo ""
 
             echo "### GHCR Publishing"
-            echo "- **Registry**: ${{ env.REGISTRY }}"
-            echo "- **Image**: ${{ env.IMAGE_NAME }}"
-            echo "- **Status**: ${{ needs.publish-ghcr.result }}"
+            echo "- **Registry**: ${REGISTRY_NAME}"
+            echo "- **Image**: ${IMAGE}"
+            echo "- **Status**: ${PUBLISH_RESULT}"
             echo "- **Method**: Pre-built artifacts (no rebuild)"
             echo ""
 
-            if [ "${{ needs.publish-ghcr.result }}" = "success" ]; then
+            if [ "${PUBLISH_RESULT}" = "success" ]; then
               echo "✅ **Optimization Success**: Images were published using " \
                 "pre-built artifacts, avoiding duplicate builds!"
-            elif [ "${{ needs.publish-ghcr.result }}" = "skipped" ]; then
+            elif [ "${PUBLISH_RESULT}" = "skipped" ]; then
               echo "⏭️ **Publishing Skipped**: " \
               "pull requests cannot publish containers."
             else
