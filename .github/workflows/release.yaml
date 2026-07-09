@@ -70,7 +70,7 @@ jobs:
       # yamllint disable-line rule:line-length
       - uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
         with:
-          config: '@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
+          config: '@8f4f0cf83e6a015957e83261ed379fd811fc060e'  # v0.5.1
 
       # Harden the runner with the just-loaded allow-list.
       - name: 'Harden runner (block)'
@@ -122,7 +122,7 @@ jobs:
       # yamllint disable-line rule:line-length
       - uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
         with:
-          config: '@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
+          config: '@8f4f0cf83e6a015957e83261ed379fd811fc060e'  # v0.5.1
 
       # Harden the runner with the just-loaded allow-list.
       - name: 'Harden runner (block)'
@@ -493,7 +493,7 @@ jobs:
       # yamllint disable-line rule:line-length
       - uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
         with:
-          config: '@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
+          config: '@8f4f0cf83e6a015957e83261ed379fd811fc060e'  # v0.5.1
 
       # Harden the runner with the just-loaded allow-list.
       - name: 'Harden runner (block)'
@@ -622,7 +622,7 @@ jobs:
       # yamllint disable-line rule:line-length
       - uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
         with:
-          config: '@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
+          config: '@8f4f0cf83e6a015957e83261ed379fd811fc060e'  # v0.5.1
 
       # Harden the runner with the just-loaded allow-list.
       - name: 'Harden runner (block)'
@@ -808,7 +808,7 @@ jobs:
       # yamllint disable-line rule:line-length
       - uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
         with:
-          config: '@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
+          config: '@8f4f0cf83e6a015957e83261ed379fd811fc060e'  # v0.5.1
 
       # Harden the runner with the just-loaded allow-list.
       - name: 'Harden runner (block)'
@@ -1013,7 +1013,7 @@ jobs:
       # yamllint disable-line rule:line-length
       - uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
         with:
-          config: '@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
+          config: '@8f4f0cf83e6a015957e83261ed379fd811fc060e'  # v0.5.1
 
       # Harden the runner with the just-loaded allow-list.
       - name: 'Harden runner (block)'
@@ -1160,7 +1160,7 @@ jobs:
       # yamllint disable-line rule:line-length
       - uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
         with:
-          config: '@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
+          config: '@8f4f0cf83e6a015957e83261ed379fd811fc060e'  # v0.5.1
 
       # Harden the runner with the just-loaded allow-list.
       - name: 'Harden runner (block)'
@@ -1334,7 +1334,7 @@ jobs:
       # yamllint disable-line rule:line-length
       - uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
         with:
-          config: '@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
+          config: '@8f4f0cf83e6a015957e83261ed379fd811fc060e'  # v0.5.1
 
       # Harden the runner with the just-loaded allow-list.
       - name: 'Harden runner (block)'
