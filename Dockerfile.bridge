@@ -59,17 +59,26 @@ RUN dnf update -y && \
 # disappear from the SBOM altogether.
 #
 # idna and cryptography previously needed the same treatment for
-# GHSA-65pc-fj4g-8rjx and GHSA-537c-gmf6-5ccf. Fedora 44 now ships idna
-# 3.18 and cryptography 49.0.0, both already fixed, so those pins are
-# removed. Keeping 'cryptography>=48.0.1,<49' had become harmful: the
-# cap installed an older 48.0.1 into /usr/local that shadowed Fedora's
-# 49.0.0.
+# GHSA-65pc-fj4g-8rjx and GHSA-537c-gmf6-5ccf. Fedora 44 ships idna
+# 3.18, already fixed, so that pin stays removed. cryptography needs
+# the treatment again: 49.0.0 is affected by CVE-2026-69247 /
+# GHSA-g6cj-pr64-35w5 (PKCS#7 EnvelopedData decryption exposes a
+# Bleichenbacher oracle; affects >=44.0.0 <50.0.0), and Fedora 44 has
+# not (yet) shipped an updated python3-cryptography. The pin is a
+# floor with no upper cap: a '<' cap previously caused an older
+# /usr/local install to shadow a newer, fixed dnf-provided version.
+#
+# The lib* globs matter: pure-Python packages (pip, setuptools) live
+# under lib/, but packages with compiled extensions (cryptography)
+# land in Fedora's platform-specific lib64/ tree - in both the dnf
+# and /usr/local install roots. Checking only lib/ leaves the stale
+# dnf dist-info behind and Grype keeps flagging the old version.
 RUN python3 -m pip install --upgrade --break-system-packages \
-        'pip>=26.1.2' 'setuptools>=83.0.0' && \
-    for pkg in pip setuptools; do \
-        if ls -d /usr/local/lib/python3*/site-packages/"${pkg}"-*.dist-info \
+        'pip>=26.1.2' 'setuptools>=83.0.0' 'cryptography>=50.0.0' && \
+    for pkg in pip setuptools cryptography; do \
+        if ls -d /usr/local/lib*/python3*/site-packages/"${pkg}"-*.dist-info \
             >/dev/null 2>&1; then \
-            rm -rf /usr/lib/python3*/site-packages/"${pkg}"-*.dist-info; \
+            rm -rf /usr/lib*/python3*/site-packages/"${pkg}"-*.dist-info; \
         fi; \
     done
 
