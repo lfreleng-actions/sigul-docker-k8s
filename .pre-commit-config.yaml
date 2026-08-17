@@ -28,6 +28,9 @@ repos:
       - id: check-merge-conflict
       - id: check-xml
       - id: check-yaml
+        # Helm templates are Go-templated, not valid YAML;
+        # 'helm lint' validates them instead.
+        exclude: ^K8S/charts/[^/]+/templates/
       - id: debug-statements
       - id: end-of-file-fixer
       - id: requirements-txt-fixer
@@ -51,6 +54,9 @@ repos:
     hooks:
       - id: yamllint
         types: [yaml]
+        # Helm templates are Go-templated, not valid YAML;
+        # 'helm lint' validates them instead.
+        exclude: ^K8S/charts/[^/]+/templates/
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: 7c55798a78262d14b2074abf623d8a992ebb70d4  # frozen: v0.16.2
@@ -72,7 +78,7 @@ repos:
       - id: write-good
         files: "\\.(rst|md|markdown|mdown|mkdn)$"
         exclude:
-          "^(docs/|DEPLOYMENT_GUIDE\\.md|OPERATIONS_GUIDE\\.md|README\\.md|baseline-paths\\.md|patches/README\\.md)"
+          "^(docs/|K8S/docs/|DEPLOYMENT_GUIDE\\.md|OPERATIONS_GUIDE\\.md|README\\.md|baseline-paths\\.md|patches/README\\.md|K8S/charts/sigul/README\\.md)"
 
   - repo: https://github.com/shellcheck-py/shellcheck-py
     rev: 745eface02aef23e168a8afb6b5737818efbea95  # frozen: v0.11.0.1
@@ -94,7 +100,7 @@ repos:
       - id: markdownlint
         args: ["--fix"]
         exclude:
-          "^(docs/|OPERATIONS_GUIDE\\.md|baseline-paths\\.md)"
+          "^(docs/|K8S/docs/|OPERATIONS_GUIDE\\.md|baseline-paths\\.md)"
 
   - repo: https://github.com/fsfe/reuse-tool
     rev: 9fabf9eb815a57aac116b435e8346c200cdb8604  # frozen: v6.2.0

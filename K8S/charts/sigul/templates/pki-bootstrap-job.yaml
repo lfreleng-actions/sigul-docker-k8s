@@ -1,0 +1,208 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# PKI bootstrap: generates the tenant's private CA + component certs
+# with certutil (preserving Sigul's established PKI mechanics) and
+# publishes them as Secrets.
+#
+# Ordering differs by management plane. Under Argo CD this is a Sync
+# hook at wave -1, so it completes before the workloads are created.
+# Under plain Helm it is a normal (revisioned) Job applied alongside
+# them - it is deliberately NOT a Helm hook, because a hook would have
+# to drag its ConfigMap, RBAC and pre-created Secrets into the hook
+# lifecycle too. The script compensates: it records the restart
+# obligation before publishing, so a run interrupted after workloads
+# have consumed its output is recovered with a coordinated restart.
+{{- if .Values.serviceAccounts.pkiBootstrap.create }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "sigul.fullname" . }}-pki-bootstrap
+  labels:
+    {{- include "sigul.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "sigul.fullname" . }}-pki-bootstrap
+  labels:
+    {{- include "sigul.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+rules:
+  # The Secrets are pre-created (empty) by the chart (secrets.yaml),
+  # so no "create" verb is needed - create cannot be constrained by
+  # resourceNames and would let this token mint arbitrary Secrets.
+  # The Job writes /data via merge-patch only (metadata stays owned
+  # by the chart's field manager).
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "patch"]
+    resourceNames:
+      - {{ include "sigul.secret.caPublic" . }}
+      - {{ include "sigul.secret.bridgeP12" . }}
+      - {{ include "sigul.secret.serverP12" . }}
+      - {{ include "sigul.secret.clientP12" . }}
+      - {{ include "sigul.secret.passwords" . }}
+      - {{ include "sigul.secret.admin" . }}
+      - {{ include "sigul.secret.marker" . }}
+  # Mutual exclusion between concurrent bootstrap runners. Pre-created
+  # by the chart (templates/lease.yaml) so "create" stays out of this
+  # Role, exactly as for the Secrets.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "patch"]
+    resourceNames:
+      - {{ include "sigul.lease.bootstrapLock" . }}
+  {{- if .Values.pki.forceRestartWorkloads }}
+  # OPT-IN (pki.forceRestartWorkloads): force-mode regeneration
+  # triggers a coordinated rolling restart. Note patch on a workload
+  # is pod-template modification power - keep disabled unless the
+  # convenience outweighs least-privilege for this token (default
+  # path: operator performs the rollout manually, see README).
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "patch"]
+    resourceNames:
+      - {{ include "sigul.bridge.deploymentName" . }}
+      - {{ include "sigul.toolbox.deploymentName" . }}
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get", "patch"]
+    resourceNames:
+      - {{ include "sigul.server.statefulSetName" . }}
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "sigul.fullname" . }}-pki-bootstrap
+  labels:
+    {{- include "sigul.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "sigul.pkiBootstrap.serviceAccountName" . }}
+roleRef:
+  kind: Role
+  name: {{ include "sigul.fullname" . }}-pki-bootstrap
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # Revisioned name: Job pod templates are immutable, and with plain
+  # Helm a completed Job can linger (ttlSecondsAfterFinished) across
+  # an upgrade - patching it would fail. A per-revision name sidesteps
+  # that; under Argo CD the hook-delete-policy recreates it anyway
+  # (Argo renders with a constant revision).
+  name: {{ include "sigul.fullname" . }}-pki-bootstrap-r{{ .Release.Revision }}
+  labels:
+    {{- include "sigul.labels" . | nindent 4 }}
+    app.kubernetes.io/component: pki-bootstrap
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 3600
+  # Bounded below the lock lease duration so a run can never outlive
+  # the lease it holds (which would let a second runner acquire the
+  # lock while the first is still writing).
+  activeDeadlineSeconds: {{ mul (div (int .Values.pki.lockLeaseDurationSeconds) 3) 2 }}
+  template:
+    metadata:
+      labels:
+        {{- include "sigul.labels" . | nindent 8 }}
+        app.kubernetes.io/component: pki-bootstrap
+    spec:
+      {{- include "sigul.imagePullSecrets" . | nindent 6 }}
+      serviceAccountName: {{ include "sigul.pkiBootstrap.serviceAccountName" . }}
+      restartPolicy: Never
+      securityContext:
+        {{- include "sigul.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: pki-bootstrap
+          image: {{ include "sigul.image.bridge" . }}
+          imagePullPolicy: {{ .Values.images.bridge.pullPolicy }}
+          command: ["/bin/bash", "/scripts/pki-bootstrap.sh"]
+          securityContext:
+            {{- include "sigul.containerSecurityContext" . | nindent 12 }}
+          env:
+            - name: PKI_MODE
+              value: {{ .Values.pki.mode | quote }}
+            - name: EXTERNAL_FQDN
+              value: {{ .Values.pki.externalFQDN | quote }}
+            - name: INTERNAL_FQDN
+              value: {{ include "sigul.bridge.internalFQDN" . | quote }}
+            - name: BRIDGE_SERVICE_NAME
+              value: {{ include "sigul.bridge.serviceName" . | quote }}
+            - name: CA_VALIDITY_MONTHS
+              value: {{ .Values.pki.caValidityMonths | quote }}
+            - name: CERT_VALIDITY_MONTHS
+              value: {{ .Values.pki.certValidityMonths | quote }}
+            - name: SECRET_CA_PUBLIC
+              value: {{ include "sigul.secret.caPublic" . | quote }}
+            - name: SECRET_BRIDGE_P12
+              value: {{ include "sigul.secret.bridgeP12" . | quote }}
+            - name: SECRET_SERVER_P12
+              value: {{ include "sigul.secret.serverP12" . | quote }}
+            - name: SECRET_CLIENT_P12
+              value: {{ include "sigul.secret.clientP12" . | quote }}
+            - name: SECRET_PASSWORDS
+              value: {{ include "sigul.secret.passwords" . | quote }}
+            - name: SECRET_ADMIN
+              value: {{ include "sigul.secret.admin" . | quote }}
+            - name: SECRET_MARKER
+              value: {{ include "sigul.secret.marker" . | quote }}
+            - name: LOCK_LEASE
+              value: {{ include "sigul.lease.bootstrapLock" . | quote }}
+            - name: LOCK_DURATION_SECONDS
+              value: {{ .Values.pki.lockLeaseDurationSeconds | quote }}
+            # Lock holder identity: unique per pod, so a retry can tell
+            # its own stale lease from a live competitor's.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            {{- if .Values.pki.forceRestartWorkloads }}
+            - name: BRIDGE_DEPLOYMENT
+              value: {{ include "sigul.bridge.deploymentName" . | quote }}
+            - name: SERVER_STATEFULSET
+              value: {{ include "sigul.server.statefulSetName" . | quote }}
+            {{- if .Values.adminToolbox.enabled }}
+            - name: ADMIN_TOOLBOX_DEPLOYMENT
+              value: {{ include "sigul.toolbox.deploymentName" . | quote }}
+            {{- end }}
+            {{- end }}
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: work
+              mountPath: /work
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ include "sigul.fullname" . }}-scripts
+            defaultMode: 0555
+        - name: work
+          emptyDir:
+            medium: Memory
+        - name: tmp
+          emptyDir:
+            medium: Memory

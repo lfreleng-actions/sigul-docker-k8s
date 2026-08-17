@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Sigul server configuration - Kubernetes variant.
+# Rendered at pod start by nss-init.sh (envsubst) into an emptyDir;
+# never stored in a ConfigMap because it embeds the NSS password.
+#
+# NOTE: database-path deliberately lives UNDER /var/lib/sigul/server
+# (the PVC mount) - this fixes the compose-stack defect where the
+# SQLite DB landed on the container writable layer and was lost on
+# recreation (EVALUATION.md section 2.5).
+#
+# Variables: NSS_PASSWORD, SERVER_CERT_NICKNAME, BRIDGE_HOSTNAME,
+#            BRIDGE_PORT
+
+[server]
+bridge-hostname: ${BRIDGE_HOSTNAME}
+bridge-port: ${BRIDGE_PORT}
+max-file-payload-size: 1073741824
+max-memory-payload-size: 1048576
+max-rpms-payload-size: 10737418240
+server-cert-nickname: ${SERVER_CERT_NICKNAME}
+signing-timeout: 60
+# Matches the CI stack (scripts/cert-init.sh): authentication still
+# requires a CA-signed client cert AND the user's password. Strict
+# mode (CN == username) needs per-user client certs - a candidate
+# production hardening once per-user issuance exists.
+lenient-username-check: ${LENIENT_USERNAME_CHECK}
+
+[database]
+database-path: /var/lib/sigul/server/server.sqlite
+
+[gnupg]
+gnupg-home: /var/lib/sigul/server/gnupg
+gnupg-key-type: RSA
+gnupg-key-length: 2048
+gnupg-key-usage: sign
+passphrase-length: 64
+
+[daemon]
+unix-user: sigul
+unix-group: sigul
+
+[nss]
+nss-dir: /etc/pki/sigul/server
+nss-password: ${NSS_PASSWORD}
+nss-min-tls: tls1.2

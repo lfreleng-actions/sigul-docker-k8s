@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Dedicated StorageClass for the server volume: gp3 + encrypted with a
+# customer-managed KMS key + RETAIN policy (the cluster default
+# auto-ebs-sc uses Delete, unacceptable for signing-key storage).
+{{- if .Values.storageClass.create }}
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  # Namespace-qualified name by default: StorageClass is cluster-scoped
+  # while releases are namespace-scoped, and the per-tenant Argo CD
+  # Applications pin the same releaseName, so the namespace is what
+  # keeps tenants from colliding on (and co-owning) this object.
+  name: {{ include "sigul.storageClassName" . }}
+  labels:
+    {{- include "sigul.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+provisioner: ebs.csi.eks.amazonaws.com
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  type: gp3
+  encrypted: "true"
+  {{- with .Values.storageClass.kmsKeyId }}
+  kmsKeyId: {{ . | quote }}
+  {{- end }}
+{{- end }}

@@ -1,0 +1,183 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# On-demand admin client for key ceremonies and user provisioning.
+# Enable temporarily (adminToolbox.enabled=true), then:
+#   kubectl exec -it deploy/<release>-admin-toolbox -- bash
+#
+# In --batch mode sigul reads credentials from stdin as NUL-terminated
+# values; it never reads them from the environment. SIGUL_ADMIN_PASSWORD
+# is supplied to the container for convenience but must be piped in:
+#   printf '%s\0' "$SIGUL_ADMIN_PASSWORD" \
+#     | sigul --batch -c /etc/sigul/client.conf list-users
+# Administrative commands that also take a key passphrase expect the
+# admin password first:
+#   printf '%s\0%s\0' "$SIGUL_ADMIN_PASSWORD" "$KEY_PASSPHRASE" \
+#     | sigul --batch -c /etc/sigul/client.conf new-key \
+#         --key-admin admin <key-name>
+# Signing commands take only the key passphrase:
+#   printf '%s\0' "$KEY_PASSPHRASE" \
+#     | sigul --batch -c /etc/sigul/client.conf sign-text \
+#         -o <output> <key-name> <file>
+# Admin credentials stay inside the cluster; disable when done.
+{{- if .Values.adminToolbox.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sigul.fullname" . }}-admin-toolbox
+  labels:
+    {{- include "sigul.labels" . | nindent 4 }}
+    app.kubernetes.io/component: admin-toolbox
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "sigul.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: admin-toolbox
+  template:
+    metadata:
+      labels:
+        {{- include "sigul.labels" . | nindent 8 }}
+        app.kubernetes.io/component: admin-toolbox
+    spec:
+      {{- include "sigul.imagePullSecrets" . | nindent 6 }}
+      # A long-running interactive pod holding Sigul admin
+      # credentials; it talks only to the bridge, never to the
+      # Kubernetes API (operators reach it with kubectl exec).
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "sigul.podSecurityContext" . | nindent 8 }}
+      initContainers:
+        - name: nss-init
+          image: {{ include "sigul.image.client" . }}
+          imagePullPolicy: {{ .Values.images.client.pullPolicy }}
+          command: ["/bin/bash", "/scripts/nss-init.sh"]
+          securityContext:
+            {{- include "sigul.containerSecurityContext" . | nindent 12 }}
+          env:
+            - name: SIGUL_ROLE
+              value: client
+            - name: NSS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sigul.secret.passwords" . }}
+                  key: client-nss-password
+            - name: P12_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sigul.secret.passwords" . }}
+                  key: p12-password
+            - name: BRIDGE_HOSTNAME
+              value: {{ include "sigul.bridge.serviceName" . | quote }}
+            - name: SERVER_HOSTNAME
+              value: {{ include "sigul.server.certCN" . | quote }}
+            - name: SIGUL_USER_NAME
+              value: {{ .Values.server.adminUser | quote }}
+            - name: CLIENT_PORT
+              value: {{ .Values.bridge.ports.client | quote }}
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: conf-templates
+              mountPath: /conf-templates
+              readOnly: true
+            - name: pki-input
+              mountPath: /pki-input
+              readOnly: true
+            - name: nss
+              mountPath: /nss-out
+            - name: config
+              mountPath: /config-out
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: toolbox
+          image: {{ include "sigul.image.client" . }}
+          imagePullPolicy: {{ .Values.images.client.pullPolicy }}
+          command: ["/bin/bash", "-c", "sleep infinity"]
+          securityContext:
+            {{- include "sigul.containerSecurityContext" . | nindent 12 }}
+          env:
+            - name: SIGUL_ADMIN_USER
+              value: {{ .Values.server.adminUser | quote }}
+            - name: SIGUL_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sigul.secret.admin" . }}
+                  key: admin-password
+          volumeMounts:
+            - name: nss
+              mountPath: /etc/pki/sigul/client
+            - name: config
+              mountPath: /etc/sigul
+              readOnly: true
+            - name: workspace
+              mountPath: /workspace
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ include "sigul.fullname" . }}-scripts
+            defaultMode: 0555
+        - name: conf-templates
+          configMap:
+            name: {{ include "sigul.fullname" . }}-conf-templates
+        - name: pki-input
+          projected:
+            sources:
+              - secret:
+                  name: {{ include "sigul.secret.caPublic" . }}
+              - secret:
+                  name: {{ include "sigul.secret.clientP12" . }}
+                  items:
+                    - key: client.p12
+                      path: client.p12
+        - name: nss
+          emptyDir: {}
+        - name: config
+          emptyDir:
+            medium: Memory
+        - name: workspace
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+{{- if .Values.networkPolicy.enabled }}
+---
+# Toolbox egress: bridge client port only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "sigul.fullname" . }}-admin-toolbox-egress
+  labels:
+    {{- include "sigul.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "sigul.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: admin-toolbox
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "sigul.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: bridge
+      ports:
+        - protocol: TCP
+          port: {{ .Values.bridge.ports.client }}
+{{- end }}
+{{- end }}

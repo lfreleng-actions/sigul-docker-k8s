@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Example Argo CD Application for the OpenSearch tenant.
+# One Application per tenant; the namespace carries the tenant prefix
+# (convention mirrors the cluster's platform-* namespaces).
+#
+# NOTE: repoURL/targetRevision are placeholders until the chart lands
+# on a main branch (or an OCI/chart registry). Apply to the
+# platform-argocd namespace.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: opensearch-sigul
+  namespace: platform-argocd
+  labels:
+    sigul.linuxfoundation.org/tenant: opensearch
+spec:
+  project: default  # TODO: dedicated AppProject per platform-team conventions
+  source:
+    repoURL: https://github.com/lfreleng-actions/sigul-sign-docker.git
+    targetRevision: main
+    path: K8S/charts/sigul
+    helm:
+      releaseName: sigul
+      valuesObject:
+        tenant: opensearch
+        pki:
+          externalFQDN: sigul-bridge.opensearch.org  # PLACEHOLDER
+        networkPolicy:
+          # REPLACE before applying: the CIDRs the Kubernetes API
+          # endpoint resolves to (or the cluster VPC CIDR). Leaving
+          # this empty falls back to allowing the Secret-writing
+          # bootstrap pod HTTPS egress to ANY destination, which is an
+          # exfiltration path for its ServiceAccount token. A wrong
+          # value fails loudly (the Job cannot reach the API); an
+          # absent one fails silently, so the placeholder stays.
+          # Confirm with:
+          #   aws eks describe-cluster --name <cluster> \
+          #     --query 'cluster.resourcesVpcConfig'
+          apiServerCIDRs:
+            - 10.0.0.0/16  # PLACEHOLDER - target cluster VPC CIDR
+        storageClass:
+          create: true
+          # name derived per release + namespace (cluster-scoped
+          # resource); the server claim uses it automatically.
+          # kmsKeyId: arn:aws:kms:us-west-2:837749700030:key/...  # CMK TBD
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: opensearch-sigul
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/enforce: restricted
+        pod-security.kubernetes.io/warn: restricted
+    # Deliberately NO automated prune/self-heal: this is signing
+    # infrastructure - syncs are human-triggered (EVALUATION.md 6.2).
+    automated: null
+  # The chart pre-creates its Secrets empty; the bootstrap Job
+  # populates /data out-of-band. Without this, Argo would report the
+  # populated Secrets as drifted (and a hard sync could wipe them).
+  ignoreDifferences:
+    - kind: Secret
+      jsonPointers:
+        - /data
