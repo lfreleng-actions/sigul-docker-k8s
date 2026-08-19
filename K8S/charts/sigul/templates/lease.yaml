@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Mutual exclusion for the PKI bootstrap Job.
+#
+# The Job name is revisioned, so plain Helm can have two bootstrap Jobs
+# alive at once (a second `helm upgrade` issued before the first Job
+# finished). Both would generate independently and interleave writes to
+# the CA, P12 and password Secrets, producing a mixed trust domain that
+# the loser then marks complete. Per-Secret resourceVersion checks
+# cannot prevent that: each writer legitimately reads the latest version
+# before patching.
+#
+# This Lease is the compare-and-set point. Acquisition is a single
+# conditional patch carrying the observed resourceVersion, so exactly
+# one runner wins; the loser fails fast and its Job backoff retries once
+# the holder has finished. Pre-created here (empty) for the same reason
+# as the Secrets: the Job's Role can then omit the unrestrictable
+# "create" verb.
+#
+# The lease duration is the safety net for a runner killed without
+# releasing (OOM, node loss). Job.activeDeadlineSeconds is set below it
+# so a run can never outlive its own lease.
+---
+apiVersion: coordination.k8s.io/v1
+kind: Lease
+metadata:
+  name: {{ include "sigul.lease.bootstrapLock" . }}
+  labels:
+    {{- include "sigul.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  leaseDurationSeconds: {{ .Values.pki.lockLeaseDurationSeconds }}

@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Sigul client configuration - Kubernetes variant (admin toolbox).
+# Rendered at pod start by nss-init.sh (sed) into an emptyDir;
+# never stored in a ConfigMap because it embeds the NSS password.
+#
+# server-hostname must match the server certificate CN exactly: the
+# client validates the inner (double-TLS) session against it.
+#
+# Variables: NSS_PASSWORD, BRIDGE_HOSTNAME, CLIENT_PORT,
+#            SERVER_HOSTNAME, SIGUL_USER_NAME
+
+[client]
+bridge-hostname: ${BRIDGE_HOSTNAME}
+bridge-port: ${CLIENT_PORT}
+server-hostname: ${SERVER_HOSTNAME}
+client-cert-nickname: ${CLIENT_CERT_NICKNAME}
+user-name: ${SIGUL_USER_NAME}
+
+[nss]
+nss-dir: /etc/pki/sigul/client
+nss-password: ${NSS_PASSWORD}
+nss-min-tls: tls1.2

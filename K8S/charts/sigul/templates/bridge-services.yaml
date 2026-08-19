@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Internal Service: server (44333) and in-cluster clients / admin
+# toolbox (44334). NetworkPolicy restricts who may actually connect.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sigul.bridge.serviceName" . }}
+  labels:
+    {{- include "sigul.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bridge
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ include "sigul.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: bridge
+  ports:
+    - name: server
+      port: {{ .Values.bridge.ports.server }}
+      targetPort: server
+    - name: client
+      port: {{ .Values.bridge.ports.client }}
+      targetPort: client
+---
+# Headless Service: DNS for this name resolves only while the bridge
+# pod is Ready (exec-based probes - no sockets opened). The server's
+# wait-for-bridge gate polls this name with getent so startup never
+# opens bare TCP connections that would disturb the bridge's serial
+# accept loop (see the probe notes in bridge-deployment.yaml).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sigul.bridge.headlessServiceName" . }}
+  labels:
+    {{- include "sigul.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bridge
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: {{ include "sigul.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: bridge
+  ports:
+    - name: server
+      port: {{ .Values.bridge.ports.server }}
+      targetPort: server
+{{- if .Values.bridge.service.external.enabled }}
+---
+# External NLB: client-facing port ONLY, plain L4 TCP passthrough
+# (double-TLS forbids any TLS termination in the path). Provisioned by
+# EKS Auto Mode's built-in load balancer controller.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sigul.bridge.serviceName" . }}-external
+  labels:
+    {{- include "sigul.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bridge
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+    service.beta.kubernetes.io/aws-load-balancer-scheme: {{ .Values.bridge.service.external.scheme }}
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+    service.beta.kubernetes.io/aws-load-balancer-attributes: load_balancing.cross_zone.enabled=true
+    # Health checks target the HTTP sidecar, NOT the Sigul listeners:
+    # bare TCP checks against 44333/44334 disrupt the bridge's serial
+    # accept loop / exhaust its client backlog.
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-protocol: HTTP
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-port: {{ .Values.bridge.ports.health | quote }}
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-path: /healthz
+    {{- if .Values.bridge.service.external.externalDNS }}
+    external-dns.alpha.kubernetes.io/hostname: {{ .Values.pki.externalFQDN }}
+    {{- end }}
+    {{- with .Values.bridge.service.external.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: {{ include "sigul.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: bridge
+  ports:
+    - name: client
+      port: {{ .Values.bridge.ports.client }}
+      targetPort: client
+{{- end }}

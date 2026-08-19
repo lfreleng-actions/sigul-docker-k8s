@@ -1,0 +1,306 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Sigul server: holds ALL long-term key material (GnuPG home + SQLite
+# DB on the PVC). Single replica by architecture - SQLite, local
+# GnuPG home, one persistent bridge connection. Listens on nothing;
+# egress-only to the bridge.
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "sigul.fullname" . }}-server
+  labels:
+    {{- include "sigul.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 1
+  serviceName: {{ include "sigul.fullname" . }}-server
+  podManagementPolicy: OrderedReady
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "sigul.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        {{- include "sigul.labels" . | nindent 8 }}
+        app.kubernetes.io/component: server
+    spec:
+      {{- include "sigul.imagePullSecrets" . | nindent 6 }}
+      # Neither the daemon nor its init containers call the Kubernetes
+      # API; they consume mounted Secrets. This pod holds the signing
+      # keys, so it carries no cluster credential.
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "sigul.podSecurityContext" . | nindent 8 }}
+      initContainers:
+        {{- if .Values.server.persistence.volumePermissions.enabled }}
+        # Local-dev only (local-path/hostpath provisioners ignore
+        # fsGroup). NOT for production: EBS CSI applies fsGroup, and
+        # restricted PSS forbids root containers.
+        #
+        # The root mode must be exactly what fsGroup expects (group
+        # rwx + setgid). A tighter mode such as 755 leaves the root
+        # permanently mismatched, so fsGroupChangePolicy:
+        # OnRootMismatch recurses on EVERY mount and re-opens the
+        # GnuPG home to the group - sigul then refuses to start with
+        # "gnupg home directory is openable by another user", i.e.
+        # the server breaks on its first restart.
+        - name: volume-permissions
+          image: {{ include "sigul.image.server" . }}
+          imagePullPolicy: {{ .Values.images.server.pullPolicy }}
+          command: ["/bin/bash", "-c", "chown -R 1000:1000 /var/lib/sigul && chmod 2775 /var/lib/sigul"]
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              # DAC_OVERRIDE: traverse mode-700 dirs owned by 1000
+              # (e.g. gnupg) created by earlier runs.
+              add: ["CHOWN", "FOWNER", "DAC_OVERRIDE", "DAC_READ_SEARCH"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/sigul
+        {{- end }}
+        # Gate on bridge READINESS without opening any TCP connection:
+        # the headless Service's DNS records exist only while the
+        # bridge pod is Ready (its probes are exec-based). A bare TCP
+        # probe here would disrupt the bridge's serial accept loop
+        # (accepted connections trigger an immediate TLS handshake).
+        # Note: the image entrypoint still performs one nc-based check
+        # before launching the daemon; because this gate guarantees
+        # the bridge is already up, that amounts to a single bounded
+        # connection the bridge recovers from. Removing it entirely is
+        # image-level (Phase 0) work.
+        - name: wait-for-bridge
+          image: {{ include "sigul.image.server" . }}
+          imagePullPolicy: {{ .Values.images.server.pullPolicy }}
+          command:
+            - /bin/bash
+            - -c
+            - |
+              for i in $(seq 1 90); do
+                if getent hosts {{ include "sigul.bridge.headlessServiceName" . }} >/dev/null 2>&1; then
+                  echo "bridge is Ready (headless DNS resolves)"; exit 0
+                fi
+                echo "waiting for bridge readiness ($i/90)"; sleep 2
+              done
+              echo "bridge never became Ready" >&2; exit 1
+          securityContext:
+            {{- include "sigul.containerSecurityContext" . | nindent 12 }}
+        - name: nss-init
+          image: {{ include "sigul.image.server" . }}
+          imagePullPolicy: {{ .Values.images.server.pullPolicy }}
+          command: ["/bin/bash", "/scripts/nss-init.sh"]
+          securityContext:
+            {{- include "sigul.containerSecurityContext" . | nindent 12 }}
+          env:
+            - name: SIGUL_ROLE
+              value: server
+            - name: NSS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sigul.secret.passwords" . }}
+                  key: server-nss-password
+            - name: P12_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sigul.secret.passwords" . }}
+                  key: p12-password
+            - name: BRIDGE_HOSTNAME
+              value: {{ include "sigul.bridge.serviceName" . | quote }}
+            - name: BRIDGE_PORT
+              value: {{ .Values.bridge.ports.server | quote }}
+            - name: LENIENT_USERNAME_CHECK
+              value: {{ .Values.server.lenientUsernameCheck | quote }}
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: conf-templates
+              mountPath: /conf-templates
+              readOnly: true
+            - name: pki-input
+              mountPath: /pki-input
+              readOnly: true
+            - name: nss
+              mountPath: /nss-out
+            - name: config
+              mountPath: /config-out
+            - name: tmp
+              mountPath: /tmp
+        # First-boot schema + administrator creation, deliberately NOT
+        # left to the image entrypoint: it warns rather than fails when
+        # sigul_server_add_admin errors, and its "already initialized"
+        # branch means the administrator is never retried. Failing here
+        # keeps the daemon from starting without one, and confines the
+        # admin credential to this container.
+        - name: db-init
+          image: {{ include "sigul.image.server" . }}
+          imagePullPolicy: {{ .Values.images.server.pullPolicy }}
+          command: ["/bin/bash", "/scripts/db-init.sh"]
+          securityContext:
+            {{- include "sigul.containerSecurityContext" . | nindent 12 }}
+          env:
+            - name: SIGUL_ADMIN_USER
+              value: {{ .Values.server.adminUser | quote }}
+            - name: SIGUL_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sigul.secret.admin" . }}
+                  key: admin-password
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/sigul
+            - name: nss
+              mountPath: /etc/pki/sigul/server
+            - name: config
+              mountPath: /etc/sigul
+              readOnly: true
+            - name: run
+              mountPath: /run
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: server
+          image: {{ include "sigul.image.server" . }}
+          imagePullPolicy: {{ .Values.images.server.pullPolicy }}
+          # Runs as UID 1000: entrypoint's non-root branch handles DB
+          # init + admin creation on first boot, then exec's
+          # sigul_server directly.
+          command: ["/usr/local/bin/entrypoint.sh"]
+          securityContext:
+            {{- include "sigul.containerSecurityContext" . | nindent 12 }}
+          env:
+            - name: SIGUL_ROLE
+              value: server
+            # SIGUL_ADMIN_USER only: by the time this container runs,
+            # db-init has created the database, so the entrypoint takes
+            # its "already initialized" path and never needs the
+            # credential. Keeping the password out of the long-running
+            # daemon means a compromise of it cannot read an
+            # administrator credential from the environment.
+            - name: SIGUL_ADMIN_USER
+              value: {{ .Values.server.adminUser | quote }}
+          # No ports: the server listens on nothing.
+          # startupProbe holds liveness off through the entrypoint's
+          # bridge-wait + first-boot DB/admin initialization (up to
+          # 5 min) - without it, liveness SIGKILLs the container
+          # before sigul_server ever spawns (observed exit 137).
+          startupProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                # Anchored to the daemon's script path: the bracket
+                # defeats pgrep -f matching this probe's own command
+                # line, and the \.py suffix excludes the first-boot
+                # helpers (server_create_db.py, server_add_admin.py)
+                # whose names contain the daemon prefix.
+                - "pgrep -f '/usr/share/sigul/serve[r]\\.py' >/dev/null"
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                - "pgrep -f '/usr/share/sigul/serve[r]\\.py' >/dev/null"
+            periodSeconds: 10
+            failureThreshold: 5
+          # Truest readiness signal: an ESTABLISHED connection to the
+          # bridge's server-facing port.
+          readinessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                # -H suppresses the header line, which would otherwise
+                # satisfy grep even with no matching socket.
+                - "ss -Htn state established '( dport = :{{ .Values.bridge.ports.server }} )' | grep -q ."
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/sigul
+            - name: nss
+              mountPath: /etc/pki/sigul/server
+            - name: config
+              mountPath: /etc/sigul
+              readOnly: true
+            - name: run
+              mountPath: /run
+            - name: var-log
+              mountPath: /var/log
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            {{- toYaml .Values.server.resources | nindent 12 }}
+      {{- with .Values.server.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ include "sigul.fullname" . }}-scripts
+            defaultMode: 0555
+        - name: conf-templates
+          configMap:
+            name: {{ include "sigul.fullname" . }}-conf-templates
+        - name: pki-input
+          projected:
+            sources:
+              - secret:
+                  name: {{ include "sigul.secret.caPublic" . }}
+              - secret:
+                  name: {{ include "sigul.secret.serverP12" . }}
+                  items:
+                    - key: server.p12
+                      path: server.p12
+        - name: nss
+          emptyDir: {}
+        - name: config
+          emptyDir:
+            medium: Memory
+        - name: run
+          emptyDir: {}
+        - name: var-log
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        # Deliberately NOT sigul.labels: it embeds chart/app versions,
+        # and volumeClaimTemplates are immutable - version bumps would
+        # make every upgrade fail. Stable identity labels only.
+        labels:
+          app.kubernetes.io/name: {{ include "sigul.name" . }}
+          app.kubernetes.io/instance: {{ .Release.Name }}
+          app.kubernetes.io/component: server
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with include "sigul.server.storageClassName" . }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.server.persistence.size }}

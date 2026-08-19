@@ -1,0 +1,165 @@
+{{/*
+SPDX-License-Identifier: Apache-2.0
+SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+Common template helpers for the sigul chart.
+*/}}
+
+{{- define "sigul.name" -}}
+{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/* Base name for all resources. Truncated to 42 characters so that
+     every generated name stays within the 63-character DNS label
+     limit after suffixing - the longest suffixes in this chart are
+     "-pki-bootstrap-egress" / "-admin-toolbox-egress" (21 chars). */}}
+{{- define "sigul.fullname" -}}
+{{- if .Values.fullnameOverride -}}
+{{- .Values.fullnameOverride | trunc 42 | trimSuffix "-" -}}
+{{- else -}}
+{{- $name := default .Chart.Name .Values.nameOverride -}}
+{{- if contains $name .Release.Name -}}
+{{- .Release.Name | trunc 42 | trimSuffix "-" -}}
+{{- else -}}
+{{- printf "%s-%s" .Release.Name $name | trunc 42 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "sigul.labels" -}}
+helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
+app.kubernetes.io/name: {{ include "sigul.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+sigul.linuxfoundation.org/tenant: {{ .Values.tenant | quote }}
+{{- end -}}
+
+{{/* Image references: digest wins over tag. */}}
+{{- define "sigul.image.bridge" -}}
+{{- if .Values.images.bridge.digest -}}
+{{ .Values.images.bridge.repository }}@{{ .Values.images.bridge.digest }}
+{{- else -}}
+{{ .Values.images.bridge.repository }}:{{ .Values.images.bridge.tag }}
+{{- end -}}
+{{- end -}}
+
+{{- define "sigul.image.server" -}}
+{{- if .Values.images.server.digest -}}
+{{ .Values.images.server.repository }}@{{ .Values.images.server.digest }}
+{{- else -}}
+{{ .Values.images.server.repository }}:{{ .Values.images.server.tag }}
+{{- end -}}
+{{- end -}}
+
+{{- define "sigul.image.client" -}}
+{{- if .Values.images.client.digest -}}
+{{ .Values.images.client.repository }}@{{ .Values.images.client.digest }}
+{{- else -}}
+{{ .Values.images.client.repository }}:{{ .Values.images.client.tag }}
+{{- end -}}
+{{- end -}}
+
+{{/* Internal (ClusterIP) bridge service name and cluster-DNS FQDN.
+     sigul.fullname reserves suffix space (42-char cap), so plain
+     suffixing is safe here. */}}
+{{- define "sigul.bridge.serviceName" -}}
+{{ include "sigul.fullname" . }}-bridge
+{{- end -}}
+
+{{/* Headless variant: DNS resolves only when the bridge pod is Ready
+     (exec-probe based), enabling a wait gate that never opens a TCP
+     connection to the bridge. */}}
+{{- define "sigul.bridge.headlessServiceName" -}}
+{{ include "sigul.fullname" . }}-bridge-hl
+{{- end -}}
+
+{{- define "sigul.bridge.internalFQDN" -}}
+{{ include "sigul.bridge.serviceName" . }}.{{ .Release.Namespace }}.svc.cluster.local
+{{- end -}}
+
+{{/* Server certificate CN (client validates inner TLS against it). */}}
+{{- define "sigul.server.certCN" -}}
+sigul-server.{{ include "sigul.bridge.internalFQDN" . }}
+{{- end -}}
+
+{{/* Secret names: the contract between bootstrap Job and workloads.
+     The admin Secret is deliberately separate from the PKI-coupled
+     passwords Secret: PKI regeneration (mode=force) must never
+     overwrite the admin credential already hashed into the server's
+     persistent database. */}}
+{{- define "sigul.secret.caPublic" -}}{{ include "sigul.fullname" . }}-ca-public{{- end -}}
+{{- define "sigul.secret.bridgeP12" -}}{{ include "sigul.fullname" . }}-bridge-p12{{- end -}}
+{{- define "sigul.secret.serverP12" -}}{{ include "sigul.fullname" . }}-server-p12{{- end -}}
+{{- define "sigul.secret.clientP12" -}}{{ include "sigul.fullname" . }}-client-p12{{- end -}}
+{{- define "sigul.secret.passwords" -}}{{ include "sigul.fullname" . }}-passwords{{- end -}}
+{{- define "sigul.secret.admin" -}}{{ include "sigul.fullname" . }}-admin{{- end -}}
+{{- define "sigul.secret.marker" -}}{{ include "sigul.fullname" . }}-pki-complete{{- end -}}
+{{- define "sigul.lease.bootstrapLock" -}}{{ include "sigul.fullname" . }}-pki-lock{{- end -}}
+
+{{/* Workload names (referenced by the bootstrap Job for force-mode
+     coordinated restarts). */}}
+{{- define "sigul.bridge.deploymentName" -}}{{ include "sigul.fullname" . }}-bridge{{- end -}}
+{{- define "sigul.server.statefulSetName" -}}{{ include "sigul.fullname" . }}-server{{- end -}}
+{{- define "sigul.toolbox.deploymentName" -}}{{ include "sigul.fullname" . }}-admin-toolbox{{- end -}}
+
+{{/* Bootstrap ServiceAccount: generated name, or a caller-supplied
+     existing account when creation is disabled. */}}
+{{- define "sigul.pkiBootstrap.serviceAccountName" -}}
+{{- if .Values.serviceAccounts.pkiBootstrap.create -}}
+{{ include "sigul.fullname" . }}-pki-bootstrap
+{{- else -}}
+{{ required "serviceAccounts.pkiBootstrap.name is required when create=false" .Values.serviceAccounts.pkiBootstrap.name }}
+{{- end -}}
+{{- end -}}
+
+{{/* StorageClass name: explicit value, or release-derived. The class
+     is cluster-scoped while releases are namespace-scoped, so the
+     namespace (unique cluster-wide) is the discriminator that makes
+     the derived name unique. Release name alone is not enough: the
+     per-tenant Argo CD Applications pin the same releaseName and
+     differ only by destination namespace. */}}
+{{- define "sigul.storageClassName" -}}
+{{- if .Values.storageClass.name -}}
+{{ .Values.storageClass.name }}
+{{- else -}}
+{{ printf "%s-%s-server-sc" .Release.Namespace (include "sigul.fullname" .) | trunc 253 | trimSuffix "-" }}
+{{- end -}}
+{{- end -}}
+
+{{/* Server volume StorageClass: explicit value wins; otherwise the
+     chart-created Retain-policy class when enabled; otherwise the
+     cluster default. */}}
+{{- define "sigul.server.storageClassName" -}}
+{{- if .Values.server.persistence.storageClassName -}}
+{{ .Values.server.persistence.storageClassName }}
+{{- else if .Values.storageClass.create -}}
+{{ include "sigul.storageClassName" . }}
+{{- end -}}
+{{- end -}}
+
+{{/* Restricted-PSS-compliant pod security context (UID/GID 1000). */}}
+{{- define "sigul.podSecurityContext" -}}
+runAsNonRoot: true
+runAsUser: 1000
+runAsGroup: 1000
+fsGroup: 1000
+fsGroupChangePolicy: OnRootMismatch
+seccompProfile:
+  type: RuntimeDefault
+{{- end -}}
+
+{{- define "sigul.containerSecurityContext" -}}
+allowPrivilegeEscalation: false
+readOnlyRootFilesystem: true
+capabilities:
+  drop: ["ALL"]
+{{- end -}}
+
+{{/* imagePullSecrets snippet (GHCR packages currently private). */}}
+{{- define "sigul.imagePullSecrets" -}}
+{{- with .Values.imagePullSecrets }}
+imagePullSecrets:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end -}}

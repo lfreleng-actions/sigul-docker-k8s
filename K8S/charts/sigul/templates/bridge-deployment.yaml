@@ -1,0 +1,229 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Sigul bridge: the only listener in the system. Stateless by design
+# here - its NSS DB is rebuilt from Secrets at every pod start, so no
+# PVC is needed. Single replica; Recreate strategy prevents two
+# bridges competing for the server's persistent connection.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sigul.fullname" . }}-bridge
+  labels:
+    {{- include "sigul.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bridge
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "sigul.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: bridge
+  template:
+    metadata:
+      labels:
+        {{- include "sigul.labels" . | nindent 8 }}
+        app.kubernetes.io/component: bridge
+    spec:
+      {{- include "sigul.imagePullSecrets" . | nindent 6 }}
+      # The bridge never calls the Kubernetes API. This pod is the
+      # internet-facing component, so it must not carry a cluster
+      # credential a compromise could steal.
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "sigul.podSecurityContext" . | nindent 8 }}
+      initContainers:
+        - name: nss-init
+          image: {{ include "sigul.image.bridge" . }}
+          imagePullPolicy: {{ .Values.images.bridge.pullPolicy }}
+          command: ["/bin/bash", "/scripts/nss-init.sh"]
+          securityContext:
+            {{- include "sigul.containerSecurityContext" . | nindent 12 }}
+          env:
+            - name: SIGUL_ROLE
+              value: bridge
+            - name: NSS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sigul.secret.passwords" . }}
+                  key: bridge-nss-password
+            - name: P12_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sigul.secret.passwords" . }}
+                  key: p12-password
+            - name: CLIENT_PORT
+              value: {{ .Values.bridge.ports.client | quote }}
+            - name: SERVER_PORT
+              value: {{ .Values.bridge.ports.server | quote }}
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: conf-templates
+              mountPath: /conf-templates
+              readOnly: true
+            - name: pki-input
+              mountPath: /pki-input
+              readOnly: true
+            - name: nss
+              mountPath: /nss-out
+            - name: config
+              mountPath: /config-out
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: bridge
+          image: {{ include "sigul.image.bridge" . }}
+          imagePullPolicy: {{ .Values.images.bridge.pullPolicy }}
+          # Runs as UID 1000 from the start: the entrypoint's non-root
+          # branch exec's sigul_bridge directly (no su/chown path).
+          command: ["/usr/local/bin/entrypoint.sh"]
+          securityContext:
+            {{- include "sigul.containerSecurityContext" . | nindent 12 }}
+          env:
+            - name: SIGUL_ROLE
+              value: bridge
+          ports:
+            - name: client
+              containerPort: {{ .Values.bridge.ports.client }}
+            - name: server
+              containerPort: {{ .Values.bridge.ports.server }}
+          # IMPORTANT: never use tcpSocket probes against the bridge.
+          # The double-TLS-patched bridge treats every accepted
+          # connection on 44333 as a server and immediately runs
+          # force_handshake() - a bare TCP probe causes
+          # PR_END_OF_FILE_ERROR and disrupts the accept cycle. Bare
+          # connects to 44334 pile up in the accept backlog (bridge
+          # accepts clients only once a server is attached) until the
+          # queue is full and real clients get SYN-dropped. Probe
+          # state via ss/pgrep instead - no connections made.
+          startupProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                - "ss -tln | grep -q ':{{ .Values.bridge.ports.server }} ' && ss -tln | grep -q ':{{ .Values.bridge.ports.client }} '"
+            periodSeconds: 5
+            failureThreshold: 12
+          readinessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                - "ss -tln | grep -q ':{{ .Values.bridge.ports.client }} '"
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              # Anchored to the daemon script path; bracket defeats
+              # self-matching of the probe's own command line.
+              command: ["/bin/bash", "-c", "pgrep -f '/usr/share/sigul/[b]ridge\\.py' >/dev/null"]
+            periodSeconds: 10
+            failureThreshold: 5
+          volumeMounts:
+            - name: nss
+              mountPath: /etc/pki/sigul/bridge
+            - name: config
+              mountPath: /etc/sigul
+              readOnly: true
+            - name: run
+              mountPath: /run
+            - name: var-lib
+              mountPath: /var/lib/sigul
+            - name: var-log
+              mountPath: /var/log
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            {{- toYaml .Values.bridge.resources | nindent 12 }}
+        # HTTP health sidecar: the NLB (and anything else that wants a
+        # connect-based check) probes this instead of the Sigul
+        # listeners - bare TCP checks against 44333/44334 disrupt the
+        # bridge's serial accept loop / exhaust its client backlog.
+        # Reports listen-state read from /proc/net/tcp*; never opens
+        # connections to the daemon.
+        - name: health
+          image: {{ include "sigul.image.bridge" . }}
+          imagePullPolicy: {{ .Values.images.bridge.pullPolicy }}
+          command:
+            - python3
+            - /scripts/bridge-healthcheck.py
+            - {{ .Values.bridge.ports.client | quote }}
+            - {{ .Values.bridge.ports.server | quote }}
+            - {{ .Values.bridge.ports.health | quote }}
+          securityContext:
+            {{- include "sigul.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: health
+              containerPort: {{ .Values.bridge.ports.health }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 10
+            failureThreshold: 5
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+      {{- with .Values.bridge.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.bridge.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.bridge.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ include "sigul.fullname" . }}-scripts
+            defaultMode: 0555
+        - name: conf-templates
+          configMap:
+            name: {{ include "sigul.fullname" . }}-conf-templates
+        - name: pki-input
+          projected:
+            sources:
+              - secret:
+                  name: {{ include "sigul.secret.caPublic" . }}
+              - secret:
+                  name: {{ include "sigul.secret.bridgeP12" . }}
+                  items:
+                    - key: bridge.p12
+                      path: bridge.p12
+        - name: nss
+          emptyDir: {}
+        - name: config
+          emptyDir:
+            medium: Memory
+        - name: run
+          emptyDir: {}
+        - name: var-lib
+          emptyDir: {}
+        - name: var-log
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

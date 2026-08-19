@@ -1,0 +1,166 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Default values for the sigul chart.
+#
+# One release per tenant/project (e.g. namespace "opensearch-sigul").
+# The namespace is NOT set by this chart; it comes from the Helm
+# release / Argo CD Application destination.
+---
+nameOverride: ""
+fullnameOverride: ""
+
+# Tenant/project label applied to all resources (informational).
+tenant: opensearch
+
+# GHCR packages are public; anonymous pulls work. Optional hook for
+# mirrored/private registries.
+imagePullSecrets: []
+#  - name: ghcr-pull
+
+images:
+  # Pinned to the v0.1.6 release: multi-arch indexes published by the
+  # release workflow (Grype-gated, provenance/SBOM attested), which
+  # include the fix for cryptography CVE-2026-69247.
+  # yamllint disable rule:line-length
+  bridge:
+    repository: ghcr.io/lfreleng-actions/sigul-sign-docker/bridge
+    tag: v0.1.6
+    digest: "sha256:ade471f269f72eac24ab6d88fc19e48e938f92aac38a8d1305467e331c456d0d"
+    pullPolicy: IfNotPresent
+  server:
+    repository: ghcr.io/lfreleng-actions/sigul-sign-docker/server
+    tag: v0.1.6
+    digest: "sha256:4fab7076d3ed241a4528ef3541c25d4b49de415fda1db572d00000084cde34f9"
+    pullPolicy: IfNotPresent
+  client:
+    repository: ghcr.io/lfreleng-actions/sigul-sign-docker/client
+    tag: v0.1.6
+    digest: "sha256:e90ec9705a77d6cb651628323c6642f7892402de269fbacdb1fde09268706940"
+    pullPolicy: IfNotPresent
+  # yamllint enable rule:line-length
+
+pki:
+  # Idempotency mode for the bootstrap Job:
+  #   auto  - generate PKI only on a genuinely new installation; the
+  #           Job refuses to overwrite surviving PKI Secrets whose
+  #           marker was lost (recovery guidance is logged)
+  #   force - regenerate everything (DESTROYS existing trust domain!)
+  #   skip  - do nothing (e.g. after manual secret restore)
+  mode: auto
+  # Automatic coordinated rollout after force-mode regeneration.
+  # Default OFF (least privilege): enabling grants the bootstrap
+  # ServiceAccount patch on the named workloads, which amounts to
+  # pod-template modification power - a compromised bootstrap pod
+  # could then alter the server pod spec. When disabled, force-mode
+  # rotation logs the manual rollout commands instead (see README
+  # runbook); force is an operator-driven action, so the operator
+  # performs the restarts with their own identity.
+  forceRestartWorkloads: false
+  caValidityMonths: 120
+  certValidityMonths: 24
+  # Duration of the Lease that serialises bootstrap runs. Plain Helm
+  # can leave two revisioned bootstrap Jobs alive at once; interleaved
+  # writes would produce a mixed trust domain. This is only the safety
+  # net for a runner killed without releasing (OOM, node loss) - the
+  # Job's activeDeadlineSeconds is derived from it so a run can never
+  # outlive its own lease.
+  lockLeaseDurationSeconds: 1800
+  # FQDN placed in certificate CN/SANs. PLACEHOLDER until the real
+  # name under the project domain is assigned (see EVALUATION.md
+  # section 8, question 4). Internal service DNS SANs are added
+  # automatically.
+  externalFQDN: sigul-bridge.opensearch.org
+
+bridge:
+  ports:
+    client: 44334  # client-facing (exposed via NLB)
+    server: 44333  # server-facing (ClusterIP only)
+    health: 8080   # HTTP sidecar for NLB health checks (never probe
+                   # the Sigul listeners with bare TCP)
+  service:
+    external:
+      enabled: true
+      # Internet-facing per decision in EVALUATION.md section 8 Q2;
+      # mutual TLS (double-TLS) is the primary access gate.
+      scheme: internet-facing
+      annotations: {}
+      # external-dns record for the client-facing NLB. Disabled until
+      # the production FQDN is final; when enabled, the hostname
+      # annotation is derived from pki.externalFQDN.
+      externalDNS: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+server:
+  adminUser: admin
+  # yes = CI-stack parity: auth requires CA-signed client cert +
+  # password. no = strict cert-CN==username (needs per-user certs).
+  lenientUsernameCheck: "yes"
+  persistence:
+    # Explicit StorageClass for the key-material volume. When empty
+    # AND storageClass.create is true, the chart-created Retain-policy
+    # class is used automatically; when both are unset, the cluster
+    # default applies (on the target EKS cluster that default is
+    # encrypted gp3 but with reclaimPolicy Delete - not recommended
+    # for production).
+    storageClassName: ""
+    size: 10Gi
+    # Root-chown initContainer for provisioners that ignore fsGroup
+    # (local-path/hostpath). Keep DISABLED in production (EBS CSI
+    # honors fsGroup; restricted PSS forbids root containers).
+    volumePermissions:
+      enabled: false
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# Optional dedicated StorageClass for the server volume.
+# gp3 + encrypted + Retain. Provide a customer-managed KMS key ARN
+# once the platform team confirms CMK ownership (EVALUATION.md 8.1).
+storageClass:
+  create: false
+  # Class name. Empty = derived per release (<fullname>-server-sc):
+  # StorageClass is cluster-scoped, so a fixed name would collide
+  # between tenant releases on a shared cluster. Set explicitly only
+  # to consume a platform-managed class.
+  name: ""
+  kmsKeyId: ""
+
+networkPolicy:
+  enabled: true
+  # CIDRs of the Kubernetes API endpoint, used to constrain the PKI
+  # bootstrap Job's egress (its token can write Secrets; open HTTPS
+  # egress would be an exfiltration path). Empty list = allow
+  # 443/6443 to any destination (local/dev clusters where the
+  # endpoint IPs are not stable). For EKS, set the cluster endpoint
+  # addresses or VPC CIDR.
+  apiServerCIDRs: []
+  #  - 10.0.0.0/16
+
+# On-demand admin client pod for key ceremonies and user provisioning
+# (kubectl exec into it; see chart README). Disabled by default.
+adminToolbox:
+  enabled: false
+
+serviceAccounts:
+  # The PKI bootstrap Job needs get/update on the chart's named
+  # Secrets (pre-created empty by the chart - no create verb needed).
+  pkiBootstrap:
+    create: true
+    # Existing ServiceAccount to use when create=false (required in
+    # that case; the caller must bind equivalent RBAC to it).
+    name: ""

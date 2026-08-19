@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sigul.fullname" . }}-scripts
+  labels:
+    {{- include "sigul.labels" . | nindent 4 }}
+  annotations:
+    # Must exist before the PKI bootstrap Job (sync-wave -1) mounts it;
+    # unannotated resources default to wave 0 and would deadlock the
+    # first Argo sync.
+    argocd.argoproj.io/sync-wave: "-2"
+data:
+  pki-bootstrap.sh: |
+{{ .Files.Get "files/scripts/pki-bootstrap.sh" | indent 4 }}
+  publish-secrets.py: |
+{{ .Files.Get "files/scripts/publish-secrets.py" | indent 4 }}
+  nss-init.sh: |
+{{ .Files.Get "files/scripts/nss-init.sh" | indent 4 }}
+  db-init.sh: |
+{{ .Files.Get "files/scripts/db-init.sh" | indent 4 }}
+  bridge-healthcheck.py: |
+{{ .Files.Get "files/scripts/bridge-healthcheck.py" | indent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sigul.fullname" . }}-conf-templates
+  labels:
+    {{- include "sigul.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+data:
+  bridge.conf.template: |
+{{ .Files.Get "files/conf/bridge.conf.template" | indent 4 }}
+  server.conf.template: |
+{{ .Files.Get "files/conf/server.conf.template" | indent 4 }}
+  client.conf.template: |
+{{ .Files.Get "files/conf/client.conf.template" | indent 4 }}

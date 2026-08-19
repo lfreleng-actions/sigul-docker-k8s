@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Sigul bridge configuration - Kubernetes variant.
+# Rendered at pod start by nss-init.sh (envsubst) into an emptyDir;
+# never stored in a ConfigMap because it embeds the NSS password.
+#
+# Variables: NSS_PASSWORD, BRIDGE_CERT_NICKNAME, CLIENT_PORT, SERVER_PORT
+
+[bridge]
+bridge-cert-nickname: ${BRIDGE_CERT_NICKNAME}
+client-listen-port: ${CLIENT_PORT}
+server-listen-port: ${SERVER_PORT}
+
+[koji]
+
+[daemon]
+unix-user: sigul
+unix-group: sigul
+
+[nss]
+nss-dir: /etc/pki/sigul/bridge
+nss-password: ${NSS_PASSWORD}
+nss-min-tls: tls1.2

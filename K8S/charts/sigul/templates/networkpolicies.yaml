@@ -1,0 +1,167 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+{{- if .Values.networkPolicy.enabled }}
+---
+# Default deny: nothing in this namespace talks unless allowed below.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "sigul.fullname" . }}-default-deny
+  labels:
+    {{- include "sigul.labels" . | nindent 4 }}
+  annotations:
+    # Ahead of the wave -1 PKI bootstrap hook: policies applied after
+    # it would leave the token-bearing Job pod unrestricted on the
+    # first Argo sync.
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# DNS egress, scoped to the components that actually resolve names:
+# the server (bridge Service + headless readiness gate) and the admin
+# toolbox (bridge Service). The bridge initiates no connections, and
+# the PKI bootstrap Job reaches the API via the env-injected
+# KUBERNETES_SERVICE_HOST address - granting them DNS would only
+# widen the exfiltration surface of a token-bearing pod.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "sigul.fullname" . }}-allow-dns
+  labels:
+    {{- include "sigul.labels" . | nindent 4 }}
+  annotations:
+    # Ahead of the wave -1 PKI bootstrap hook: policies applied after
+    # it would leave the token-bearing Job pod unrestricted on the
+    # first Argo sync.
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "sigul.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [server, admin-toolbox]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Bridge ingress: 44334 from anywhere (NLB/external CI clients -
+# double-TLS mutual auth is the gate); 44333 from the server pod only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "sigul.fullname" . }}-bridge
+  labels:
+    {{- include "sigul.labels" . | nindent 4 }}
+  annotations:
+    # Ahead of the wave -1 PKI bootstrap hook: policies applied after
+    # it would leave the token-bearing Job pod unrestricted on the
+    # first Argo sync.
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "sigul.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: bridge
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.bridge.ports.client }}
+        # NLB health checkers (VPC addresses) probe the HTTP sidecar.
+        - protocol: TCP
+          port: {{ .Values.bridge.ports.health }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "sigul.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: server
+      ports:
+        - protocol: TCP
+          port: {{ .Values.bridge.ports.server }}
+---
+# Server egress: bridge only (plus DNS from the shared policy above).
+# The PKI bootstrap Job and nss-init containers need the Kubernetes
+# API; the apiserver endpoint is cluster-external (EKS), covered by
+# the 443 rule scoped to the bootstrap component.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "sigul.fullname" . }}-server-egress
+  labels:
+    {{- include "sigul.labels" . | nindent 4 }}
+  annotations:
+    # Ahead of the wave -1 PKI bootstrap hook: policies applied after
+    # it would leave the token-bearing Job pod unrestricted on the
+    # first Argo sync.
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "sigul.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: server
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "sigul.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: bridge
+      ports:
+        - protocol: TCP
+          port: {{ .Values.bridge.ports.server }}
+---
+# PKI bootstrap Job: needs the API server. On EKS the endpoint is 443;
+# on kind/Docker Desktop the Service DNATs to the node's 6443 before
+# policy evaluation, so both ports are allowed. Because this pod's
+# token can write Secrets, restrict the destination to the API
+# endpoint CIDRs via networkPolicy.apiServerCIDRs whenever the
+# cluster's endpoint addresses are known (open HTTPS egress would
+# otherwise be an exfiltration path).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "sigul.fullname" . }}-pki-bootstrap-egress
+  labels:
+    {{- include "sigul.labels" . | nindent 4 }}
+  annotations:
+    # Ahead of the wave -1 PKI bootstrap hook: policies applied after
+    # it would leave the token-bearing Job pod unrestricted on the
+    # first Argo sync.
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "sigul.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: pki-bootstrap
+  policyTypes: [Egress]
+  egress:
+    - {{- if .Values.networkPolicy.apiServerCIDRs }}
+      to:
+        {{- range .Values.networkPolicy.apiServerCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+{{- end }}

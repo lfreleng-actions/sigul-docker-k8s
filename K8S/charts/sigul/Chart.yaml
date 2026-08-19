@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+---
+apiVersion: v2
+name: sigul
+description: >-
+  Sigul signing infrastructure (bridge + server) for Kubernetes.
+  One release per tenant/project; each release owns a private PKI
+  trust domain (CA + component certificates) bootstrapped by a Job.
+type: application
+version: 0.1.0
+appVersion: "1.4"
+keywords:
+  - sigul
+  - signing
+  - gpg
+  - security
+home: https://github.com/lfreleng-actions/sigul-sign-docker
+maintainers:
+  - name: The Linux Foundation Release Engineering
+    email: releng@linuxfoundation.org

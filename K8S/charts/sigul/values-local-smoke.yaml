@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Values overlay for local smoke testing on Docker Desktop Kubernetes.
+#
+#   helm install sigul K8S/charts/sigul \
+#     --kube-context docker-desktop \
+#     --namespace sigul-smoke --create-namespace \
+#     -f K8S/charts/sigul/values-local-smoke.yaml
+#
+# Differences from production values:
+# - no external NLB (EKS-only annotations)
+# - no dedicated StorageClass (Docker Desktop provides 'hostpath')
+# - NetworkPolicies stay enabled but are NOT enforced by Docker
+#   Desktop's CNI - they render/apply, which is still worth testing
+# - external FQDN irrelevant locally; in-cluster SANs carry the test
+---
+tenant: local-smoke
+
+pki:
+  externalFQDN: sigul-bridge.local.test
+
+bridge:
+  service:
+    external:
+      enabled: false
+
+server:
+  persistence:
+    storageClassName: ""  # docker-desktop default: local-path
+    size: 1Gi
+    volumePermissions:
+      enabled: true  # local-path provisioner ignores fsGroup
+
+storageClass:
+  create: false
+
+adminToolbox:
+  enabled: true
