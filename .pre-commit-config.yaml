@@ -4,8 +4,10 @@
 
 ci:
   autofix_prs: false
-  # pre-commit.ci sandbox prevents network calls; disable gha-workflow-linter
-  skip: [gha-workflow-linter]
+  # pre-commit.ci sandbox prevents network calls; disable gha-workflow-linter.
+  # aislop also runs engines that can call the network at scan time
+  # (dependency audits), so it cannot run in the sandbox either.
+  skip: [gha-workflow-linter, aislop]
   autofix_commit_msg: |
     Chore: pre-commit autofixes
 
@@ -136,6 +138,22 @@ repos:
     rev: 7f11ad46be1cd2b3d778428d40fcb09309bb3be5  # frozen: v1.4.1
     hooks:
       - id: gha-workflow-linter
+
+  # Catch AI slop developer-side before it reaches a pull request.
+  # Runs the full-repository quality gate, scored against
+  # .aislop/config.yml. A local hook installing the published npm
+  # package: the scanaislop/aislop git repository does not ship the
+  # built dist/, so its bundled pre-commit hook cannot install. Bump
+  # the pinned version here manually when new aislop releases ship.
+  - repo: local
+    hooks:
+      - id: aislop
+        name: aislop
+        entry: aislop ci --human
+        language: node
+        additional_dependencies: ["aislop@0.13.1"]
+        pass_filenames: false
+        always_run: true
 
   - repo: https://github.com/python-jsonschema/check-jsonschema
     rev: c4654a7e007c9619a5eb63c39a456572a0fa1851  # frozen: 0.38.0

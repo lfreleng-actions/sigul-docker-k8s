@@ -83,7 +83,6 @@ if sys.version_info >= (3, 13):
 
         # Check if rounds are specified
         if parts[2].startswith("rounds="):
-            # Extract rounds value
             rounds_str = parts[2].split("=")[1]
             try:
                 rounds = int(rounds_str)
