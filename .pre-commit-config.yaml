@@ -25,6 +25,9 @@ repos:
       - id: check-added-large-files
       - id: check-ast
       - id: check-json
+        # Zed's settings.json is JSONC: comments are permitted (as in
+        # VS Code), and the strict JSON parser cannot read them.
+        exclude: ^\.zed/
       - id: check-merge-conflict
       - id: check-xml
       - id: check-yaml
@@ -55,11 +58,14 @@ repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: 65dbdb59d2f2d9c3bdc343c566821ad3319ddaa3  # frozen: v0.16.3
     hooks:
+      # No 'files' filter: the hook's own types:[python] selector is
+      # the correct scope. A path allowlist inherited from a template
+      # (scripts|tests|custom_components) silently excluded
+      # build-scripts/ and K8S/, so Python added there was never
+      # linted or formatted in CI while editors still flagged it.
       - id: ruff
-        files: ^(scripts|tests|custom_components)/.+\.py$
         args: [--fix, --exit-non-zero-on-fix]
       - id: ruff-format
-        files: ^(scripts|tests|custom_components)/.+\.py$
 
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: 7ff8d35ae36a7d2b968f2f90b4c723e292e594ee  # frozen: v2.3.1

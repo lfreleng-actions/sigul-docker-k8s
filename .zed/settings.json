@@ -1,0 +1,24 @@
+{
+  // Helm chart templates are Go text/template documents, not YAML.
+  // The bundled YAML language server reports hundreds of spurious
+  // parse errors on them ("Block collections are not allowed within
+  // flow collections", etc.) because `{{- include ... }}` is not
+  // valid YAML syntax.
+  //
+  // Mapping them to the Helm language (Zed "Helm" extension, backed by
+  // helm-ls + tree-sitter-go-template) gives correct highlighting and
+  // template-aware diagnostics instead. The extension itself only
+  // claims `.helmignore` by default, so the association must be
+  // declared here.
+  //
+  // These files are excluded from yamllint / check-yaml in
+  // .pre-commit-config.yaml for the same reason; `helm lint` and
+  // `helm template` are what validate them in CI.
+  "file_types": {
+    "Helm": [
+      "**/charts/*/templates/**/*.yaml",
+      "**/charts/*/templates/**/*.yml",
+      "**/charts/*/templates/**/*.tpl"
+    ]
+  }
+}
