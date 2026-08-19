@@ -16,7 +16,6 @@ SPDX-FileCopyrightText: 2025 The Linux Foundation
 [![Build & Test](https://github.com/lfreleng-actions/sigul-sign-docker/actions/workflows/build-test.yaml/badge.svg?branch=main)](https://github.com/lfreleng-actions/sigul-sign-docker/actions/workflows/build-test.yaml)
 [![pre-commit.ci status badge]][pre-commit.ci results page]
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/lfreleng-actions/sigul-sign-docker/badge)](https://scorecard.dev/viewer/?uri=github.com/lfreleng-actions/sigul-sign-docker)
-[![Zizmor Scan](https://github.com/lfreleng-actions/sigul-sign-docker/actions/workflows/zizmor.yaml/badge.svg?branch=main)](https://github.com/lfreleng-actions/sigul-sign-docker/actions/workflows/zizmor.yaml)
 
 [![Client Image](https://img.shields.io/badge/ghcr.io-client-blue?logo=docker&logoColor=white)](https://github.com/lfreleng-actions/sigul-sign-docker/pkgs/container/sigul-sign-docker%2Fclient)
 [![Server Image](https://img.shields.io/badge/ghcr.io-server-blue?logo=docker&logoColor=white)](https://github.com/lfreleng-actions/sigul-sign-docker/pkgs/container/sigul-sign-docker%2Fserver)
