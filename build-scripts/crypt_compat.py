@@ -17,7 +17,13 @@ import sys
 if sys.version_info >= (3, 13):
     # Python 3.13+ - use passlib for crypt functionality
     try:
-        from passlib.hash import sha512_crypt
+        # passlib ships no type information, so every symbol reached
+        # through it is Unknown to the type checker. Suppressed at the
+        # point of use rather than repo-wide, so the strict settings
+        # keep applying to everything else.
+        from passlib.hash import (
+            sha512_crypt,  # pyright: ignore[reportUnknownVariableType]
+        )
     except ImportError as exc:
         raise ImportError(
             "passlib is required for crypt module compatibility in "
@@ -47,7 +53,7 @@ if sys.version_info >= (3, 13):
         """
         # Convert bytes to string if needed
         if isinstance(word, bytes):
-            word = word.decode('utf-8')
+            word = word.decode("utf-8")
 
         # Tolerate non-SHA-512 salts the way POSIX crypt(3) does.
         # Sigul's authenticate_admin uses crypt(password, 'xx') as a
@@ -66,31 +72,32 @@ if sys.version_info >= (3, 13):
         # SHA-512 path.  Re-implementing parity here would require
         # invoking sha512_crypt with a synthesised salt and is not
         # worth the complexity for a placeholder-salt code path.
-        if not salt.startswith('$6$'):
-            return '!' + salt + '!invalid-crypt-salt'
+        if not salt.startswith("$6$"):
+            return "!" + salt + "!invalid-crypt-salt"
 
         # Extract salt and optional rounds
         # Format: $6$salt or $6$rounds=N$salt
-        parts = salt.split('$')
+        parts = salt.split("$")
         if len(parts) < 3:
-            return '!' + salt + '!invalid-crypt-salt'
+            return "!" + salt + "!invalid-crypt-salt"
 
         # Check if rounds are specified
-        if parts[2].startswith('rounds='):
-            # Extract rounds value
-            rounds_str = parts[2].split('=')[1]
+        if parts[2].startswith("rounds="):
+            rounds_str = parts[2].split("=")[1]
             try:
                 rounds = int(rounds_str)
             except ValueError:
                 rounds = 5000  # default
-            salt_value = parts[3] if len(parts) > 3 else ''
+            salt_value = parts[3] if len(parts) > 3 else ""
         else:
             rounds = 5000  # default rounds
             salt_value = parts[2]
 
         # Use passlib to generate the hash
         # passlib's sha512_crypt.hash() returns the full crypt string
-        return sha512_crypt.using(rounds=rounds, salt=salt_value).hash(word)
+        return sha512_crypt.using(  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            rounds=rounds, salt=salt_value
+        ).hash(word)
 
 else:
     # Python < 3.13 - re-export the standard library crypt module's API.
@@ -102,11 +109,11 @@ else:
     # fallback for older interpreters; suppress the resulting
     # reportUnreachable on the import line.
     from crypt import (  # pyright: ignore[reportUnreachable]  # noqa: F401
-        crypt,
-        mksalt,
-        methods,
-        METHOD_SHA512,
-        METHOD_SHA256,
-        METHOD_MD5,
         METHOD_CRYPT,
+        METHOD_MD5,
+        METHOD_SHA256,
+        METHOD_SHA512,
+        crypt,
+        methods,
+        mksalt,
     )

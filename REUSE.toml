@@ -11,6 +11,7 @@ path = [
     "test-packages-fixed.Dockerfile",
     "baseline-network.json",
     "pyrightconfig.json",
+    ".zed/**",
     "pki/**/*.pem",
     "pki/**/*.crt",
     "pki/**/*.key",

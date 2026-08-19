@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# aislop quality gate configuration.
+#
+# Mirrors the canonical configuration in
+# lfreleng-actions/actions-template: the default pass threshold is
+# 75, held here at 100 so that any regression fails the gate rather
+# than eroding the score gradually.
+#
+# The gate scores the changed surface rather than the whole history,
+# so this is a ratchet on new work; it does not assert that every
+# pre-existing file would score 100 today.
+ci:
+  failBelow: 100
