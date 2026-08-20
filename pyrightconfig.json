@@ -3,5 +3,10 @@
   "typeCheckingMode": "all",
   "reportMissingImports": "none",
   "reportMissingModuleSource": "none",
-  "reportMissingTypeStubs": "none"
+  "reportMissingTypeStubs": "none",
+  "executionEnvironments": [
+    {
+      "root": "K8S/charts/sigul/files/scripts"
+    }
+  ]
 }

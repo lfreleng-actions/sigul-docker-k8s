@@ -403,7 +403,7 @@ K8S/
     files/
       conf/                     # bridge/server config templates
       scripts/                  # pki-bootstrap.sh, nss-init.sh,
-                                # publish-secrets.py
+                                # publish-secrets.py, k8s_api.py
     templates/
       pki-bootstrap-job.yaml    # + SA/Role/RoleBinding, sync-wave -1
       bridge-deployment.yaml    # wave 1
