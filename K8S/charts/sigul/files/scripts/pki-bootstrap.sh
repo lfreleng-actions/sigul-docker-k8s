@@ -190,16 +190,18 @@ perform_rotation_restart() {
 MARKER_STATE=none
 if "${PUBLISH[@]}" exists "${SECRET_MARKER}"; then
     # A populated marker without a 'state' key was written by hand;
-    # treat it as a completed bootstrap.
+    # treat it as a completed bootstrap. 'get' only ever prints
+    # vetted literals (complete|in-progress|unrecognized), never raw
+    # Secret content, so the value is safe to log below.
     MARKER_STATE="$("${PUBLISH[@]}" get "${SECRET_MARKER}" state || echo complete)"
     case "${MARKER_STATE}" in
         complete|in-progress) ;;
         *)
             # Fail closed rather than guess: an unrecognized state
             # must never fall through to "looks like a new install".
-            die "Marker Secret '${SECRET_MARKER}' has unrecognized
-state '${MARKER_STATE}' (want complete|in-progress). Refusing to act
-on an ambiguous bootstrap state - inspect the Secret and repair it."
+            die "Marker Secret '${SECRET_MARKER}' does not hold a
+recognized state (want complete|in-progress). Refusing to act on an
+ambiguous bootstrap state - inspect the Secret and repair it."
             ;;
     esac
 fi

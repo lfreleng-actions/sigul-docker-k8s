@@ -17,6 +17,8 @@ data:
 {{ .Files.Get "files/scripts/pki-bootstrap.sh" | indent 4 }}
   publish-secrets.py: |
 {{ .Files.Get "files/scripts/publish-secrets.py" | indent 4 }}
+  k8s_api.py: |
+{{ .Files.Get "files/scripts/k8s_api.py" | indent 4 }}
   nss-init.sh: |
 {{ .Files.Get "files/scripts/nss-init.sh" | indent 4 }}
   db-init.sh: |
