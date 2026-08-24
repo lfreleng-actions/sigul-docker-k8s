@@ -65,6 +65,13 @@ pki:
   # net for a runner killed without releasing (OOM, node loss) - the
   # Job's activeDeadlineSeconds is derived from it so a run can never
   # outlive its own lease.
+  #
+  # Raising this is always safe. LOWERING it is not, while a
+  # bootstrap Job is running: Helm patches the field on the Lease
+  # that Job is holding, shortening its expiry underneath it and
+  # letting a retrying revision acquire the lock concurrently. Check
+  # for a pki-bootstrap pod before reducing it. See
+  # templates/lease.yaml.
   lockLeaseDurationSeconds: 1800
   # FQDN placed in certificate CN/SANs. PLACEHOLDER until the real
   # name under the project domain is assigned (see EVALUATION.md

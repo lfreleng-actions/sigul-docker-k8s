@@ -19,8 +19,30 @@
 # "create" verb.
 #
 # The lease duration is the safety net for a runner killed without
-# releasing (OOM, node loss). Job.activeDeadlineSeconds is set below it
-# so a run can never outlive its own lease.
+# releasing (OOM, node loss). Job.activeDeadlineSeconds, plus the
+# pod's termination grace period, is bounded below it so a run can
+# never outlive its own lease (see templates/pki-bootstrap-job.yaml,
+# which validates that relationship at render time).
+#
+# Seeded here and re-asserted by the holder on every acquisition
+# (k8s_api.acquire_lease patches it from pki.lockLeaseDurationSeconds).
+#
+# OPERATIONAL CAVEAT: because Helm manages this field, an upgrade
+# that LOWERS pki.lockLeaseDurationSeconds patches it on a Lease a
+# previous revision's Job may still be holding, shortening that
+# holder's expiry underneath it. A retrying revision could then
+# acquire the lock while the first runner is still writing the PKI
+# Secrets, producing exactly the mixed trust domain this object
+# prevents. Raising the value is always safe; lower it only when no
+# bootstrap Job is running (check for a pki-bootstrap pod first).
+#
+# Leaving the field unmanaged instead does not fix this: the removal
+# is itself a patch that lands on the held Lease, and a runner then
+# has no recorded duration to judge - any substituted value is either
+# too short (declares a live holder dead) or, if a ceiling is
+# assumed, unbounded above by pki.lockLeaseDurationSeconds and so no
+# safer. Keeping the field and bounding when it may be lowered is the
+# honest trade.
 ---
 apiVersion: coordination.k8s.io/v1
 kind: Lease

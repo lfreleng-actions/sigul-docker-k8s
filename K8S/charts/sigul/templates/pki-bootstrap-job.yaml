@@ -13,6 +13,42 @@
 # lifecycle too. The script compensates: it records the restart
 # obligation before publishing, so a run interrupted after workloads
 # have consumed its output is recovered with a coordinated restart.
+{{- /*
+  Termination budget for the bootstrap pod, derived in one place so
+  the two halves cannot drift apart.
+
+  Two constraints have to hold at once:
+
+    * the grace period must outlast the longest foreground command,
+      or the scratch-scrubbing EXIT trap in pki-bootstrap.sh never
+      runs and a SIGKILL leaves the CA private key in /work;
+    * the whole run - deadline plus grace - must finish before the
+      lock Lease expires, or a terminating runner outlives its own
+      lock and a second one starts writing the PKI Secrets
+      concurrently, producing a mixed trust domain.
+
+  lockLeaseDurationSeconds is user-settable with no lower bound, so
+  a short lease can satisfy the first and break the second. Reject
+  that at render time rather than letting it become a race in a
+  cluster.
+*/}}
+{{- $graceSeconds := 160 }}
+{{- $leaseSeconds := int .Values.pki.lockLeaseDurationSeconds }}
+{{- $deadlineSeconds := mul (div $leaseSeconds 3) 2 }}
+{{- /* Positivity applies to every mode: templates/lease.yaml renders
+       this value into the Lease unconditionally, and the API rejects
+       a non-positive leaseDurationSeconds. Catching it here beats
+       rendering cleanly and failing at admission. */}}
+{{- if le $leaseSeconds 0 }}
+{{- fail (printf "pki.lockLeaseDurationSeconds must be greater than zero (got %d). templates/lease.yaml renders it into the Lease, and the Kubernetes API rejects a non-positive leaseDurationSeconds." $leaseSeconds) }}
+{{- end }}
+{{- /* The timing invariant, by contrast, is mode-specific: only auto
+       and force take the lock; skip exits before acquiring it
+       (pki-bootstrap.sh), so a short duration must not block
+       rendering there. */}}
+{{- if and (ne .Values.pki.mode "skip") (ge (add $deadlineSeconds $graceSeconds) $leaseSeconds) }}
+{{- fail (printf "pki.lockLeaseDurationSeconds is %d, which is too short: the bootstrap Job's activeDeadlineSeconds (%d) plus its terminationGracePeriodSeconds (%d) reach %d, at or past the lease expiry. A terminating runner could then outlive its own lock and race a second one onto the PKI Secrets. Use at least 600." $leaseSeconds $deadlineSeconds $graceSeconds (add $deadlineSeconds $graceSeconds)) }}
+{{- end }}
 {{- if .Values.serviceAccounts.pkiBootstrap.create }}
 ---
 apiVersion: v1
@@ -116,10 +152,20 @@ metadata:
 spec:
   backoffLimit: 2
   ttlSecondsAfterFinished: 3600
+  {{- if ne .Values.pki.mode "skip" }}
   # Bounded below the lock lease duration so a run can never outlive
   # the lease it holds (which would let a second runner acquire the
-  # lock while the first is still writing).
-  activeDeadlineSeconds: {{ mul (div (int .Values.pki.lockLeaseDurationSeconds) 3) 2 }}
+  # lock while the first is still writing). The termination grace
+  # period counts towards that too - see the budget at the top of
+  # this file.
+  #
+  # Omitted for mode=skip: that run exits before taking the lock, so
+  # there is no lease to stay inside, and deriving a deadline from an
+  # unused duration only creates ways to fail - a duration below 3
+  # floors to 0, which the Job API rejects outright, and a small one
+  # could kill the no-op pod before it starts.
+  activeDeadlineSeconds: {{ $deadlineSeconds }}
+  {{- end }}
   template:
     metadata:
       labels:
@@ -159,10 +205,35 @@ spec:
       # automounting on the account itself so nothing else inherits
       # it.
       #
-      # Either way the pod is short-lived: the Job runs once, and its
-      # scratch material lives in a memory-backed emptyDir.
+      # Either way the pod is short-lived: the Job runs once, its
+      # scratch material lives in a memory-backed emptyDir, and
+      # pki-bootstrap.sh scrubs that scratch on exit, including on
+      # failure and on SIGTERM, so a failed run does not leave the CA
+      # private key sitting in the pod until the Job's TTL expires.
+      # A SIGKILL (OOM, grace-period expiry) cannot be trapped, so
+      # the key can outlive that one case, until the pod object is
+      # removed. It stays in tmpfs rather than the container
+      # filesystem - though tmpfs pages can be swapped, so a strict
+      # never-on-disk guarantee also needs swap disabled on the
+      # nodes (or a noswap tmpfs).
       automountServiceAccountToken: {{ ne .Values.pki.mode "skip" }}
       restartPolicy: Never
+      # Sized so the EXIT trap in pki-bootstrap.sh completes on a
+      # SIGTERM. Bash defers a trapped signal until the current
+      # foreground command returns, and the trap then runs a second
+      # bounded command of its own, so the budget is:
+      #
+      #   70s  in-flight publish-secrets call (capped by `timeout`)
+      # +  0s  scrub_scratch (local rm)
+      # + 70s  release_lock, another publish-secrets call
+      # + 20s  margin
+      #   ----
+      #   160s
+      #
+      # Dropping the lock release from this budget would be the
+      # expensive mistake: a SIGKILL there leaves the Lease held for
+      # its full duration, and the replacement Job cannot acquire it.
+      terminationGracePeriodSeconds: {{ $graceSeconds }}
       securityContext:
         {{- include "sigul.podSecurityContext" . | nindent 8 }}
       containers:
