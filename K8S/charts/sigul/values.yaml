@@ -113,9 +113,20 @@ server:
     # for production).
     storageClassName: ""
     size: 10Gi
-    # Root-chown initContainer for provisioners that ignore fsGroup
-    # (local-path/hostpath). Keep DISABLED in production (EBS CSI
-    # honors fsGroup; restricted PSS forbids root containers).
+    # Root-chown initContainer for storage that does not establish
+    # ownership itself: local-path/hostpath provisioners, and EFS on
+    # a direct mount where root access is preserved. It cannot help
+    # a root-squashed EFS mount or an access point - the chown fails
+    # with EPERM and the pod stays in Init:Error - nor is it needed
+    # with the EBS CSI driver, which applies fsGroup on its own, so
+    # keep it DISABLED there and let the namespace enforce
+    # restricted PSS.
+    #
+    # Enabling it caps the namespace at baseline PodSecurity. The
+    # container runs as UID 0 and adds CHOWN, FOWNER and
+    # DAC_OVERRIDE, all of which baseline permits; restricted permits
+    # neither the UID nor the capabilities. See the chart README,
+    # "Volume permissions and Pod Security Standards".
     volumePermissions:
       enabled: false
   resources:

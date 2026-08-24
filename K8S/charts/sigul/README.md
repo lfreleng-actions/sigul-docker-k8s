@@ -45,9 +45,17 @@ templates as comments):
 - `lenient-username-check: yes` matches the CI stack (cert + password
   auth). Strict CN==username needs per-user client certs - candidate
   hardening once per-user issuance exists.
-- `server.persistence.volumePermissions.enabled` exists only for
-  local provisioners that ignore `fsGroup` (local-path/hostpath).
-  Keep it disabled on EKS. It leaves the volume root at mode `2775` —
+- `server.persistence.volumePermissions.enabled` exists for storage
+  that does not establish ownership itself: local-path/hostpath
+  provisioners, and EFS on a direct mount **with root access
+  preserved** (root-squashed mounts leave it in `Init:Error`). Keep
+  it disabled with the
+  EBS CSI driver, which applies `fsGroup` on its own; enabling it
+  caps the namespace at `baseline` PodSecurity — see [Volume
+  permissions and Pod Security
+  Standards](#volume-permissions-and-pod-security-standards) for
+  which case applies where.
+  It leaves the volume root at mode `2775` —
   exactly what `fsGroup` expects — because a tighter mode keeps the
   root permanently mismatched, so `fsGroupChangePolicy:
   OnRootMismatch` relabels the volume on every mount and re-opens the
@@ -129,6 +137,105 @@ Produced by the bootstrap Job, consumed by workloads:
 | `<release>-passwords` | NSS + P12 passwords (PKI-coupled) | all |
 | `<release>-admin` | `admin-password` (created once) | server, toolbox |
 | `<release>-pki-complete` | `state` + metadata | Job idempotency marker |
+
+## Volume permissions and Pod Security Standards
+
+Every workload the chart ships runs unprivileged (UID 1000,
+`readOnlyRootFilesystem`, all capabilities dropped) and satisfies
+`restricted` PodSecurity — with one opt-in exception.
+
+`server.persistence.volumePermissions.enabled: true` adds a
+`volume-permissions` initContainer that runs as UID 0 and adds
+`CHOWN`, `FOWNER` and `DAC_OVERRIDE`. All three are on `baseline`'s
+capability allow-list, and `baseline` places no constraint on
+`runAsUser`, so the pod is admitted at that level. `restricted`
+forbids UID 0 and permits adding `NET_BIND_SERVICE` only, so it
+rejects the pod whatever the capability list says.
+
+Enabling this therefore caps the namespace at `baseline`:
+
+| Namespace enforces | `volumePermissions: false` | `volumePermissions: true` |
+| --- | --- | --- |
+| `privileged` | admitted | admitted |
+| `baseline` | admitted | admitted |
+| `restricted` | admitted | **rejected** |
+
+The capability list is minimal, and deliberately excludes
+`DAC_READ_SEARCH`. `CAP_DAC_OVERRIDE` already bypasses read, write
+and execute checks, and for a directory the execute bit *is* the
+search bit — so it covers everything the recursive `chown` needs to
+walk, including the mode-`700` GnuPG home left by an earlier run.
+`DAC_READ_SEARCH` adds nothing there, and it is the one capability in
+the original list that `baseline` rejects. Earlier revisions of this
+chart included it, and a `baseline` namespace refused the pod:
+
+```text
+create Pod sigul-server-0 in StatefulSet sigul-server failed error:
+pods "sigul-server-0" is forbidden: violates PodSecurity
+"baseline:latest": non-default capabilities (container
+"volume-permissions" must not include "DAC_READ_SEARCH" in
+securityContext.capabilities.add)
+```
+
+If you see that, you are on an older chart. Do not re-add the
+capability to a newer one — it costs the whole `baseline` profile and
+buys nothing.
+
+Which path applies:
+
+1. **Production (EKS with the EBS CSI driver)** — leave
+   `volumePermissions.enabled: false`, the default. The EBS CSI driver
+   applies `fsGroup` to the volume itself, so the initContainer has
+   nothing to do and the namespace can enforce `restricted`, as
+   `K8S/argocd/opensearch-sigul.yaml` does. This is the path the
+   chart-created StorageClass targets (`provisioner:
+   ebs.csi.eks.amazonaws.com`).
+
+   EFS is **not** equivalent. Its CSI driver does not perform
+   `fsGroup` ownership management, so leaving `volumePermissions`
+   disabled will not give the server a writable volume. Something
+   has to make the volume's root directory owned by UID/GID `1000`
+   before the server starts, and which options exist depends on how
+   the filesystem is reached:
+
+   - **Direct mount, root access preserved** — EFS does not squash
+     root by default, so `volumePermissions` works here: the
+     initContainer chowns the volume as it would any other. It costs
+     the `restricted` profile, as above.
+   - **Direct mount, `elasticfilesystem:ClientRootAccess` withheld**
+     — root is mapped to the anonymous UID, so the initContainer's
+     `chown` fails with `Operation not permitted`. Its command is
+     `chown … && chmod …`, so the container exits non-zero and the
+     pod stays in `Init:Error` — that failing initContainer is the
+     symptom to troubleshoot, not a silently unwritable volume.
+     There is no access point to configure here either, so the
+     directory has to be given the right ownership out-of-band, from
+     a client that does hold root access.
+   - **Access point** — set its `PosixUser` to `1000`/`1000`, and
+     leave `volumePermissions` disabled: the access point enforces
+     that identity, so a `chown` cannot take effect anyway. Note
+     that `CreationInfo` (`OwnerUid`/`OwnerGid`/`Permissions`)
+     applies **only** when EFS creates the root path. Point the
+     access point at a path that does not exist yet; against an
+     existing directory EFS keeps whatever ownership it already has,
+     and the server still cannot write.
+2. **Local development (k3d/k3s local-path, Docker Desktop
+   hostpath)** — these provisioners ignore `fsGroup`, so the
+   initContainer is required and the namespace must not enforce
+   `restricted`. An unlabelled namespace is unrestricted, so nothing
+   extra is needed unless a cluster-wide default applies it.
+
+PodSecurity is an admission check, so a rejected pod is never created
+rather than created and failing. Recovery needs no reinstall: the
+StatefulSet controller keeps retrying the create with backoff, so
+relabelling the namespace is enough and the pod appears on the next
+attempt. Labelling first is still preferable — it avoids a burst of
+admission failures in the event log.
+
+See the [Pod Security Standards][pss] for the full profile
+definitions.
+
+[pss]: https://kubernetes.io/docs/concepts/security/pod-security-standards/
 
 ## Admin toolbox
 

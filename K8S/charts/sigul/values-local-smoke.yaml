@@ -14,6 +14,9 @@
 # - NetworkPolicies stay enabled but are NOT enforced by Docker
 #   Desktop's CNI - they render/apply, which is still worth testing
 # - external FQDN irrelevant locally; in-cluster SANs carry the test
+# - baseline PodSecurity at most: volumePermissions below runs a root
+#   initContainer, which restricted rejects. An unlabelled namespace
+#   is unrestricted, so the command above needs nothing extra.
 ---
 tenant: local-smoke
 
@@ -30,6 +33,8 @@ server:
     storageClassName: ""  # docker-desktop default: local-path
     size: 1Gi
     volumePermissions:
+      # Runs as root, so the namespace must not enforce restricted
+      # PodSecurity - see the header above.
       enabled: true  # local-path provisioner ignores fsGroup
 
 storageClass:
