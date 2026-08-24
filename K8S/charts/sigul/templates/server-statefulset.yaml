@@ -171,7 +171,7 @@ spec:
             {{- include "sigul.containerSecurityContext" . | nindent 12 }}
           env:
             - name: SIGUL_ADMIN_USER
-              value: {{ .Values.server.adminUser | quote }}
+              value: {{ include "sigul.server.adminUser" . | quote }}
             - name: SIGUL_ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -212,7 +212,7 @@ spec:
             # daemon means a compromise of it cannot read an
             # administrator credential from the environment.
             - name: SIGUL_ADMIN_USER
-              value: {{ .Values.server.adminUser | quote }}
+              value: {{ include "sigul.server.adminUser" . | quote }}
           # No ports: the server listens on nothing.
           # startupProbe holds liveness off through the entrypoint's
           # bridge-wait + first-boot DB/admin initialization (up to

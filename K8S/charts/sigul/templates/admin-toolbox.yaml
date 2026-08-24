@@ -76,7 +76,7 @@ spec:
             - name: SERVER_HOSTNAME
               value: {{ include "sigul.server.certCN" . | quote }}
             - name: SIGUL_USER_NAME
-              value: {{ .Values.server.adminUser | quote }}
+              value: {{ include "sigul.server.adminUser" . | quote }}
             - name: CLIENT_PORT
               value: {{ .Values.bridge.ports.client | quote }}
           volumeMounts:
@@ -104,7 +104,7 @@ spec:
             {{- include "sigul.containerSecurityContext" . | nindent 12 }}
           env:
             - name: SIGUL_ADMIN_USER
-              value: {{ .Values.server.adminUser | quote }}
+              value: {{ include "sigul.server.adminUser" . | quote }}
             - name: SIGUL_ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:

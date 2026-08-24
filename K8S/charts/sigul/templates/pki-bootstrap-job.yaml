@@ -23,6 +23,10 @@ metadata:
     {{- include "sigul.labels" . | nindent 4 }}
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
+# Make the token opt-in rather than automatic. The bootstrap Job below
+# asks for it explicitly; anything else that names this account - a
+# debug pod, a copied manifest - gets no credential by default.
+automountServiceAccountToken: false
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -124,6 +128,40 @@ spec:
     spec:
       {{- include "sigul.imagePullSecrets" . | nindent 6 }}
       serviceAccountName: {{ include "sigul.pkiBootstrap.serviceAccountName" . }}
+      # Explicit, and the one pod in this chart that needs a token:
+      # in auto and force modes the script talks to the API server
+      # directly (files/scripts/k8s_api.py reads the projected token)
+      # to patch the PKI Secrets and hold the bootstrap Lease.
+      # Setting it here rather than relying on the cluster default
+      # keeps the requirement visible and survives a ServiceAccount
+      # that disables automounting.
+      #
+      # False for mode=skip: that run exits before its first API
+      # call, so mounting a credential it cannot use is pure
+      # attack surface.
+      #
+      # With serviceAccounts.pkiBootstrap.create=true (the default)
+      # the chart owns the account and its RBAC: automounting is off
+      # on the ServiceAccount, so this line is the only thing that
+      # grants a token. The bound Role is get/patch on the named
+      # Secrets plus the one Lease - and, when
+      # pki.forceRestartWorkloads is enabled, get/patch on the named
+      # Deployments and StatefulSet as well. That last grant is
+      # pod-template modification power on this release's workloads,
+      # so the token this line mounts is materially more capable
+      # under that option than under the default.
+      #
+      # With create=false the chart owns neither. The caller's
+      # account supplies whatever RBAC it already carries, and this
+      # line opts that credential into the pod. Grant it no more than
+      # the Role above defines for the options in use - the workload
+      # verbs only if forceRestartWorkloads is on - and disable
+      # automounting on the account itself so nothing else inherits
+      # it.
+      #
+      # Either way the pod is short-lived: the Job runs once, and its
+      # scratch material lives in a memory-backed emptyDir.
+      automountServiceAccountToken: {{ ne .Values.pki.mode "skip" }}
       restartPolicy: Never
       securityContext:
         {{- include "sigul.podSecurityContext" . | nindent 8 }}

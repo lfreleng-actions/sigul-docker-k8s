@@ -174,4 +174,13 @@ serviceAccounts:
     create: true
     # Existing ServiceAccount to use when create=false (required in
     # that case; the caller must bind equivalent RBAC to it).
+    #
+    # The Job mounts this account's token - it is the one pod in the
+    # chart that calls the Kubernetes API. When the chart creates the
+    # account it also sets automountServiceAccountToken: false on it,
+    # so only the Job gets a token. A caller-supplied account should
+    # do the same, and carry no permissions beyond the Role in
+    # templates/pki-bootstrap-job.yaml - which widens from the
+    # Secrets and Lease to include workload patch when
+    # pki.forceRestartWorkloads is enabled.
     name: ""
