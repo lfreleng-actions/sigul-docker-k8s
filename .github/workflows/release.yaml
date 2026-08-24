@@ -994,9 +994,9 @@ jobs:
       packages: write  # Attach signatures/attestations as OCI referrers
       # yamllint disable-line rule:line-length
       id-token: write  # cosign keyless signing + attestation predicates use OIDC
-      # actions/attest-build-provenance + actions/attest write
-      # signed attestations and (with push-to-registry: true) attach
-      # them as OCI referrers on the manifest digest.
+      # actions/attest writes signed attestations and (with
+      # push-to-registry: true) attaches them as OCI referrers on
+      # the manifest digest.
       attestations: write  # Write signed build attestations
     timeout-minutes: 20
     strategy:
@@ -1075,8 +1075,23 @@ jobs:
         run: cosign sign --yes "${IMAGE_REF}"
 
       - name: 'Attest build provenance'
+        env:
+          # Carried over from actions/attest-build-provenance, which
+          # set this on its wrapped actions/attest step. Node caps a
+          # single response's headers at 16KB by default, which some
+          # OCI registries overflow when attestations are pushed as
+          # referrers. Every release here takes that path
+          # (push-to-registry below is unconditional), so the setting
+          # is load-bearing, not vestigial.
+          # See actions/attest-build-provenance#687.
+          NODE_OPTIONS: '--max-http-header-size=32768'
+        # attest-build-provenance has been a wrapper over
+        # actions/attest since v4; GitHub steers new work at the
+        # underlying action. With no predicate-type/predicate given,
+        # actions/attest emits SLSA build provenance, which is what
+        # the wrapper produced.
         # yamllint disable-line rule:line-length
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
         with:
           subject-name: ${{ steps.ref.outputs.image }}
           subject-digest: ${{ steps.ref.outputs.digest }}
@@ -1106,6 +1121,10 @@ jobs:
           name: sbom-${{ matrix.component }}
 
       - name: 'Attest SBOM'
+        env:
+          # Same registry header-overflow guard as the provenance
+          # step above; this step pushes referrers too.
+          NODE_OPTIONS: '--max-http-header-size=32768'
         # `actions/attest-sbom` was deprecated in favour of the
         # combined `actions/attest` action, which supports SBOM
         # mode automatically when `sbom-path:` is provided. The
