@@ -76,10 +76,33 @@ install_from_source() {
         log_info "Branch / tag: $sigul_branch"
 
         if ! git clone --depth 1 --branch "$sigul_branch" "$sigul_repo" sigul; then
-            log_error "Failed to clone sigul from official upstream repository"
-            log_error "Repository: $sigul_repo"
-            log_error "Branch / tag: $sigul_branch"
-            return 1
+            # Pagure sometimes serves this repository over dumb HTTP:
+            # info/refs comes back as a static file (no
+            # "# service=git-upload-pack" advertisement, and an ETag
+            # instead of Cache-Control: no-cache). git cannot negotiate
+            # a shallow clone over that transport and aborts with
+            #   fatal: dumb http transport does not support shallow
+            #   capabilities
+            # before fetching anything. A full clone works fine over the
+            # same transport, so retry rather than failing the build on
+            # an upstream serving mode we do not control.
+            #
+            # Shallow stays the first attempt: it is much cheaper
+            # whenever smart HTTP is available, which is the normal case.
+            log_info "Shallow clone failed; retrying without --depth"
+            log_info "(upstream may be serving dumb HTTP, which cannot" \
+                "negotiate a shallow fetch)"
+
+            # A failed clone can leave a partial directory behind, which
+            # would make the retry fail with "already exists".
+            rm -rf sigul
+
+            if ! git clone --branch "$sigul_branch" "$sigul_repo" sigul; then
+                log_error "Failed to clone sigul from official upstream repository"
+                log_error "Repository: $sigul_repo"
+                log_error "Branch / tag: $sigul_branch"
+                return 1
+            fi
         fi
 
         log_info "Cloned sigul source from official upstream"
