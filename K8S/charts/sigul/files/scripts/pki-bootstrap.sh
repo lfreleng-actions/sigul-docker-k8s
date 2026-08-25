@@ -36,10 +36,70 @@ set -euo pipefail
 log() { printf '[pki-bootstrap] %s\n' "$*"; }
 die() { printf '[pki-bootstrap] ERROR: %s\n' "$*" >&2; exit 1; }
 
-PUBLISH=(python3 /scripts/publish-secrets.py)
+# Total deadline per invocation, so the shell is never stuck in a
+# foreground helper long enough to lose the scrub below.
+#
+# k8s_api.py bounds each HTTP request at 30s, but a single subcommand
+# issues at most two sequentially (apply/lock/unlock all do a GET then
+# a PATCH), so the real worst case is ~60s, not 30. 70 leaves slack
+# for interpreter start-up without truncating a legitimately slow
+# call; the Job's terminationGracePeriodSeconds is sized above it.
+# Exit 124 on timeout, which the || die callers already treat as
+# failure and the Job retries.
+PUBLISH=(timeout 70 python3 /scripts/publish-secrets.py)
 WORK=/work
 NSSDIR="${WORK}/nssdb"
 OUT="${WORK}/out"
+
+# The scratch NSS database holds the CA *private* key, and /work also
+# accumulates the NSS and P12 passwords in plain files. All of it is
+# memory-backed (emptyDir medium: Memory), but a failed pod is not
+# deleted immediately - backoffLimit retries it, and
+# ttlSecondsAfterFinished keeps the Job around for an hour - so that
+# tmpfs, and the CA key in it, outlives the process that created it.
+#
+# Scrubbing only on the success path would therefore leave the key
+# behind on exactly the runs nobody planned for. Register it as an
+# EXIT trap instead, before any key material exists, so it covers
+# die(), a set -e abort, and ordinary termination.
+#
+# It cannot cover SIGKILL - an OOM kill, or the kubelet's hard stop
+# once the termination grace period expires. No in-process mechanism
+# can: the tmpfs then survives with the pod object, bounded by the
+# Job's ttlSecondsAfterFinished. That residual window is why the
+# emptyDir is memory-backed rather than disk-backed - the scratch
+# stays in tmpfs instead of landing in the container filesystem.
+#
+# tmpfs is not an absolute guarantee: its pages can be paged out to
+# node swap. A deployment that requires the CA key never to touch
+# disk needs swap disabled on the nodes (long the kubelet's own
+# requirement, and still the default) or a noswap tmpfs mount.
+scrub_scratch() {
+    # ${WORK:?} so an unset WORK can never turn this into rm -rf /*.
+    # Dotfiles are matched explicitly (.nss-password, .noise,
+    # .p12-password); /work itself is the mount point and stays.
+    rm -rf -- "${WORK:?}"/* "${WORK:?}"/.[!.]* 2>/dev/null || true
+}
+trap scrub_scratch EXIT
+
+# Signals whose default disposition is to kill the shell outright,
+# which can bypass the EXIT trap. Turning each into a normal exit
+# guarantees the trap runs; 128+signo is the conventional status.
+# SIGTERM matters most - it is what the kubelet sends first, and what
+# an activeDeadlineSeconds timeout delivers before the SIGKILL.
+#
+# Bash defers a trapped signal until the foreground command returns,
+# and does not forward it to that child, so the scrub happens after
+# the in-flight certutil/pk12util/publish-secrets call finishes
+# rather than immediately - and the trap then makes a further bounded
+# call of its own to release the lock. Both are capped (certutil and
+# pk12util are local and fast; publish-secrets carries the timeout
+# above), and the Job's terminationGracePeriodSeconds budgets for the
+# pair, so the trap runs to completion. A command hanging past the
+# grace period is still SIGKILLed with the scratch in place; see the
+# SIGKILL note above.
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 : "${PKI_MODE:=auto}"
 : "${CA_VALIDITY_MONTHS:=120}"
@@ -91,7 +151,9 @@ if [ -n "${LOCK_LEASE:-}" ]; then
 (Lease '${LOCK_LEASE}'). Another run most likely holds it - see the
 error above. Refusing to run concurrently, because interleaved writes
 would produce a mixed trust domain. This run is retried automatically."
-    trap release_lock EXIT
+    # Replaces the scrub-only trap registered above: bash keeps one
+    # handler per signal, so both duties have to live in the one trap.
+    trap 'scrub_scratch; release_lock' EXIT
 fi
 
 # ---------------------------------------------------------------------------
@@ -496,8 +558,10 @@ log "Publishing Secrets"
     --literal "ca-validity-months=${CA_VALIDITY_MONTHS}" \
     --literal "cert-validity-months=${CERT_VALIDITY_MONTHS}"
 
-# Scrub scratch material (pod is ephemeral, but be tidy anyway).
-rm -rf "${NSSDIR}" "${PWFILE}" "${P12PWFILE}" "${NOISE}" "${OUT}"
+# Scrub scratch material now rather than waiting for the EXIT trap,
+# so the CA private key stops existing as early as possible - the
+# coordinated-restart logic below can run for a while.
+scrub_scratch
 
 # A rotation replaced a trust domain that components may already hold,
 # but both workloads rebuild their NSS databases from Secrets only at

@@ -65,6 +65,13 @@ pki:
   # net for a runner killed without releasing (OOM, node loss) - the
   # Job's activeDeadlineSeconds is derived from it so a run can never
   # outlive its own lease.
+  #
+  # Raising this is always safe. LOWERING it is not, while a
+  # bootstrap Job is running: Helm patches the field on the Lease
+  # that Job is holding, shortening its expiry underneath it and
+  # letting a retrying revision acquire the lock concurrently. Check
+  # for a pki-bootstrap pod before reducing it. See
+  # templates/lease.yaml.
   lockLeaseDurationSeconds: 1800
   # FQDN placed in certificate CN/SANs. PLACEHOLDER until the real
   # name under the project domain is assigned (see EVALUATION.md
@@ -113,9 +120,20 @@ server:
     # for production).
     storageClassName: ""
     size: 10Gi
-    # Root-chown initContainer for provisioners that ignore fsGroup
-    # (local-path/hostpath). Keep DISABLED in production (EBS CSI
-    # honors fsGroup; restricted PSS forbids root containers).
+    # Root-chown initContainer for storage that does not establish
+    # ownership itself: local-path/hostpath provisioners, and EFS on
+    # a direct mount where root access is preserved. It cannot help
+    # a root-squashed EFS mount or an access point - the chown fails
+    # with EPERM and the pod stays in Init:Error - nor is it needed
+    # with the EBS CSI driver, which applies fsGroup on its own, so
+    # keep it DISABLED there and let the namespace enforce
+    # restricted PSS.
+    #
+    # Enabling it caps the namespace at baseline PodSecurity. The
+    # container runs as UID 0 and adds CHOWN, FOWNER and
+    # DAC_OVERRIDE, all of which baseline permits; restricted permits
+    # neither the UID nor the capabilities. See the chart README,
+    # "Volume permissions and Pod Security Standards".
     volumePermissions:
       enabled: false
   resources:
@@ -163,4 +181,13 @@ serviceAccounts:
     create: true
     # Existing ServiceAccount to use when create=false (required in
     # that case; the caller must bind equivalent RBAC to it).
+    #
+    # The Job mounts this account's token - it is the one pod in the
+    # chart that calls the Kubernetes API. When the chart creates the
+    # account it also sets automountServiceAccountToken: false on it,
+    # so only the Job gets a token. A caller-supplied account should
+    # do the same, and carry no permissions beyond the Role in
+    # templates/pki-bootstrap-job.yaml - which widens from the
+    # Secrets and Lease to include workload patch when
+    # pki.forceRestartWorkloads is enabled.
     name: ""

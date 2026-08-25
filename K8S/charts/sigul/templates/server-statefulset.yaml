@@ -39,9 +39,22 @@ spec:
         {{- include "sigul.podSecurityContext" . | nindent 8 }}
       initContainers:
         {{- if .Values.server.persistence.volumePermissions.enabled }}
-        # Local-dev only (local-path/hostpath provisioners ignore
-        # fsGroup). NOT for production: EBS CSI applies fsGroup, and
-        # restricted PSS forbids root containers.
+        # For storage that does not establish ownership itself:
+        # local-path/hostpath provisioners, and EFS on a direct
+        # mount where root access is preserved. A root-squashed EFS
+        # mount or an access point enforces the POSIX identity, so
+        # the chown below fails with EPERM and this container blocks
+        # the pod in Init:Error. Not needed with the EBS CSI driver,
+        # which applies fsGroup - leave it disabled there so the
+        # namespace can keep enforcing restricted.
+        #
+        # Admissible under baseline PodSecurity, but never under
+        # restricted. Baseline's capability allow-list includes
+        # CHOWN, FOWNER and DAC_OVERRIDE, and baseline places no
+        # constraint on runAsUser. Restricted forbids UID 0 and
+        # permits adding NET_BIND_SERVICE only, so no capability set
+        # brings this container within it - that is the price of
+        # storage that does not set ownership, not something to tune.
         #
         # The root mode must be exactly what fsGroup expects (group
         # rwx + setgid). A tighter mode such as 755 leaves the root
@@ -62,8 +75,17 @@ spec:
             capabilities:
               drop: ["ALL"]
               # DAC_OVERRIDE: traverse mode-700 dirs owned by 1000
-              # (e.g. gnupg) created by earlier runs.
-              add: ["CHOWN", "FOWNER", "DAC_OVERRIDE", "DAC_READ_SEARCH"]
+              # (e.g. gnupg) created by earlier runs. It bypasses
+              # read, write and execute checks, and for directories
+              # execute is the search bit, so it already covers
+              # everything the recursive chown needs to walk.
+              #
+              # DAC_READ_SEARCH deliberately absent: it grants a
+              # strict subset of that for this workload, and it is
+              # the one capability here outside baseline PSS's
+              # allow-list. Adding it back buys nothing and costs
+              # the whole baseline profile.
+              add: ["CHOWN", "FOWNER", "DAC_OVERRIDE"]
           volumeMounts:
             - name: data
               mountPath: /var/lib/sigul
@@ -149,7 +171,7 @@ spec:
             {{- include "sigul.containerSecurityContext" . | nindent 12 }}
           env:
             - name: SIGUL_ADMIN_USER
-              value: {{ .Values.server.adminUser | quote }}
+              value: {{ include "sigul.server.adminUser" . | quote }}
             - name: SIGUL_ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -190,7 +212,7 @@ spec:
             # daemon means a compromise of it cannot read an
             # administrator credential from the environment.
             - name: SIGUL_ADMIN_USER
-              value: {{ .Values.server.adminUser | quote }}
+              value: {{ include "sigul.server.adminUser" . | quote }}
           # No ports: the server listens on nothing.
           # startupProbe holds liveness off through the entrypoint's
           # bridge-wait + first-boot DB/admin initialization (up to

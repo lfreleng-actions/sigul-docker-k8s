@@ -113,6 +113,33 @@ sigul-server.{{ include "sigul.bridge.internalFQDN" . }}
 {{- end -}}
 {{- end -}}
 
+{{/* Sigul administrator name, validated at render time.
+
+     The value reaches a SQL string literal (files/scripts/db-init.sh
+     counts administrators by name), a command-line argument
+     (sigul_server_add_admin -n) and a rendered client.conf. A quote,
+     backslash, semicolon or newline breaks or subverts at least one
+     of those, and none of them can validate their own input usefully
+     - by then the release is already deployed.
+
+     Rejecting here fails `helm install`/`template` with the reason,
+     before anything is created. The permitted set is deliberately
+     narrower than Sigul allows: it covers every realistic account
+     name while being inert in all three contexts.
+
+     toString first: the grammar permits all-digit names, and an
+     unquoted `adminUser: 123` reaches templates as a number, which
+     regexMatch rejects on type rather than on content. Coercing
+     keeps the failure mode about the name. */}}
+{{- define "sigul.server.adminUser" -}}
+{{- $user := required "server.adminUser is required" .Values.server.adminUser -}}
+{{- $user = toString $user -}}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._@+-]{0,63}$" $user) -}}
+{{- fail (printf "server.adminUser %q is invalid: it must start with a letter or digit and contain only letters, digits, and . _ @ + - (max 64 characters)" $user) -}}
+{{- end -}}
+{{ $user }}
+{{- end -}}
+
 {{/* StorageClass name: explicit value, or release-derived. The class
      is cluster-scoped while releases are namespace-scoped, so the
      namespace (unique cluster-wide) is the discriminator that makes

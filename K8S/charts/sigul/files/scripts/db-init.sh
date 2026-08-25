@@ -38,11 +38,20 @@ die() { printf '[db-init] ERROR: %s\n' "$*" >&2; exit 1; }
 DB="$(grep '^database-path:' "${CONFIG}" | cut -d: -f2 | tr -d ' ')"
 [ -n "${DB}" ] || die "database-path not found in ${CONFIG}"
 
+# The administrator name is interpolated into a SQL string literal
+# below. The chart validates it at render time (sigul.server.adminUser
+# in _helpers.tpl), but this script must hold on its own: it also runs
+# against whatever a hand-written pod spec supplies, and sqlite3's CLI
+# offers no parameter binding to fall back on. Doubling embedded
+# single quotes is the complete escape for a single-quoted literal, so
+# the value can only ever be read as data.
+SQL_ADMIN_USER="${SIGUL_ADMIN_USER//\'/\'\'}"
+
 # Count administrators matching the configured name. SQLite stores the
 # boolean as 1/0. Returns 0 when the table does not exist yet.
 admin_count() {
     sqlite3 "${DB}" \
-        "SELECT COUNT(*) FROM users WHERE name = '${SIGUL_ADMIN_USER}' AND admin = 1;" \
+        "SELECT COUNT(*) FROM users WHERE name = '${SQL_ADMIN_USER}' AND admin = 1;" \
         2>/dev/null || echo 0
 }
 
