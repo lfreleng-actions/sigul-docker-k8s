@@ -46,13 +46,13 @@ Sigul uses a verbosity-based log level system defined in `src/utils.py`:
 
 ```python
 def logging_level_from_options(options):
-    '''Return a logging verbosity level depending on options.verbose'''
+    """Return a logging verbosity level depending on options.verbose"""
     if options.verbose <= 0:
-        return logging.WARNING      # Default: only warnings and errors
+        return logging.WARNING  # Default: only warnings and errors
     elif options.verbose == 1:
-        return logging.INFO         # -v: informational messages
+        return logging.INFO  # -v: informational messages
     else:  # options.verbose >= 2
-        return logging.DEBUG        # -vv: debug messages
+        return logging.DEBUG  # -vv: debug messages
 ```
 
 ### Verbosity Flags
