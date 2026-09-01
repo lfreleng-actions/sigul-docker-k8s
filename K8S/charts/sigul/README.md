@@ -26,8 +26,11 @@ Remaining before production (EKS):
 2. Images are pinned to the `v0.1.6` release (multi-arch,
    Grype-gated, provenance/SBOM attested, public on GHCR with
    anonymous pulls verified).
-3. Platform-team confirmations pending (EVALUATION.md §8.1): KMS CMK
-   for the StorageClass, AppProject conventions, NodePool policy.
+3. Platform-team confirmations pending (EVALUATION.md §8.1):
+   AppProject conventions and NodePool policy. The encrypted
+   StorageClass is **resolved** — the platform team provisions
+   `sigul-ebs` (gp3, customer-managed KMS key, `Retain`) in OpenTofu,
+   and `K8S/argocd/opensearch-sigul.yaml` claims it by name.
 4. Known behavior: clients hitting the bridge during the server↔bridge
    reconnect window (a few seconds after a server restart) get
    `Unexpected EOF in NSPR`; retry succeeds. CI clients should use
@@ -187,9 +190,9 @@ Which path applies:
    `volumePermissions.enabled: false`, the default. The EBS CSI driver
    applies `fsGroup` to the volume itself, so the initContainer has
    nothing to do and the namespace can enforce `restricted`, as
-   `K8S/argocd/opensearch-sigul.yaml` does. This is the path the
-   chart-created StorageClass targets (`provisioner:
-   ebs.csi.eks.amazonaws.com`).
+   `K8S/argocd/opensearch-sigul.yaml` does. This is the path both the
+   chart-created StorageClass and the platform-managed `sigul-ebs`
+   class target (`provisioner: ebs.csi.eks.amazonaws.com`).
 
    EFS is **not** equivalent. Its CSI driver does not perform
    `fsGroup` ownership management, so leaving `volumePermissions`
@@ -510,15 +513,18 @@ the chart does not pin:
   `reclaimPolicy: Retain`. The PV is left `Released` and the volume
   is intact.
 - **`server.persistence.storageClassName` set** — that class's
-  reclaim policy governs.
+  reclaim policy governs, and the chart has no say in it. On
+  `project-shared` EKS that names `sigul-ebs`, which OpenTofu defines
+  as `Retain`, so the volume survives there; treat that as a fact
+  about that one class rather than about named classes generally.
 - **Neither, which is the default** — the cluster default class
   governs, and its policy is often `Delete`.
 
-Only the first is guaranteed, and it is opt-in — `storageClass.create`
-defaults to `false`, so a stock install lands on the cluster default
-class. Check rather than assume. `Released` PVs keep their
-`claimRef`, which is what ties one to a tenant; on a shared cluster
-there will be other tenants' volumes in the same list:
+Only the first is guaranteed by the chart, and it is opt-in —
+`storageClass.create` defaults to `false`, so a stock install lands on
+the cluster default class. Check rather than assume. `Released` PVs
+keep their `claimRef`, which is what ties one to a tenant; on a shared
+cluster there will be other tenants' volumes in the same list:
 
 ```sh
 kubectl get pv \
