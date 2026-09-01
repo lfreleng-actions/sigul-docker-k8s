@@ -464,7 +464,7 @@ build-out.
 | --- | --- | --- |
 | Kubernetes | EKS `v1.36.2-eks`, **EKS Auto Mode** (Karpenter node pools, built-in LB controller, no self-managed addons in kube-system) | Current APIs; node autoscaling is automatic |
 | Node pools | `system` (amd64+arm64, tainted `CriticalAddonsOnly`, c6g.large) and `general-purpose` (**amd64 only**, c6a.large) | Workloads land on amd64. Multi-arch images still built, but amd64 is the runtime target. A dedicated tainted pool for the server (§5.3) would be a new Karpenter NodePool — platform-team request |
-| Storage | Default SC `auto-ebs-sc`: **gp3, `encrypted: "true"`** (EBS CSI via Auto Mode), `reclaimPolicy: Delete`, expansion allowed. EFS CSI driver present, no EFS SC | §5.2 Option A satisfied out of the box. **Define a dedicated `sigul-server-sc`**: gp3, `encrypted: true`, a customer-managed KMS key (`kmsKeyId`), and **`reclaimPolicy: Retain`** — the default Delete policy is unacceptable for the key volume (§6.2 guardrails) |
+| Storage | Default SC `auto-ebs-sc`: **gp3, `encrypted: "true"`** (EBS CSI via Auto Mode), `reclaimPolicy: Delete`, expansion allowed. EFS CSI driver present, no EFS SC. Dedicated **`sigul-ebs`** class added for Sigul (OpenTofu, `eks-csi.tf`) | §5.2 Option A satisfied out of the box, but the default `Delete` policy is unacceptable for the key volume (§6.2 guardrails). `sigul-ebs` is the answer: gp3, `encrypted: true` under a **customer-managed KMS key**, **`reclaimPolicy: Retain`**, `WaitForFirstConsumer`. The chart claims it by name via `server.persistence.storageClassName` and creates no class of its own (§8.1 Q3) |
 | Load balancing | Traefik (default IngressClass) behind an internet-facing **NLB** provisioned by Auto Mode's built-in controller via standard `service.beta.kubernetes.io/aws-load-balancer-*` annotations; no separate AWS LBC deployment | Bridge:44334 gets its **own dedicated NLB Service** (L4 TCP, `nlb-target-type: ip`) rather than sharing Traefik — double-TLS forbids L7 anyway, and an internal-scheme NLB should be the default posture (§7 Q2 below) |
 | GitOps | Argo CD **v3.4.4** in `platform-argocd`, ApplicationSet controller present, **zero Applications defined yet** | Greenfield GitOps — we define the app-of-apps pattern from §6.2 without legacy constraints |
 | Certificates | cert-manager with `letsencrypt-prod`/`staging` ClusterIssuers | For public endpoints only; **not** used for Sigul's internal NSS PKI (consistent with §4.2 decision) |
@@ -484,8 +484,9 @@ narrow to policy decisions (below).
 ## 8. Open Questions
 
 1. ~~**Target platform**~~ — **Resolved:** EKS Auto Mode
-   (`project-shared`, us-west-2). Encrypted gp3 is the default; we add
-   a Retain-policy StorageClass with a CMK for the server volume.
+   (`project-shared`, us-west-2). Encrypted gp3 is the default; the
+   platform team provisions the Retain-policy, CMK-encrypted
+   `sigul-ebs` class for the server volume (§8.1 Q3).
 2. ~~**External exposure policy**~~ — **Decided: internet-facing.**
    GitHub-hosted (public) runners will perform signing, so bridge:44334
    gets an internet-facing NLB. Compensating controls, since source-IP
@@ -552,9 +553,21 @@ party for all of these:
 2. What are the **Argo CD onboarding conventions** — do tenant apps
    get an `AppProject` with namespace/repo restrictions? Who admins
    `platform-argocd`?
-3. Can we register a **dedicated StorageClass** (`sigul-server-sc`:
-   gp3, encrypted, customer-managed KMS key, `Retain`) and who owns
-   the CMK lifecycle?
+3. ~~**Dedicated StorageClass**~~ — **Resolved:** the platform team
+   owns it, defined in OpenTofu
+   (`linuxfoundation/project-shared-cluster-opentofu`, `eks-csi.tf`)
+   rather than by this chart. The class is named **`sigul-ebs`** —
+   not the `sigul-server-sc` this document originally proposed — and
+   provides gp3, `encrypted: true` under the customer-managed key
+   `alias/project-shared-sigul-ebs` (30-day deletion window, rotation
+   on, `prevent_destroy`), `reclaimPolicy: Retain` and
+   `volumeBindingMode: WaitForFirstConsumer`. The CMK lifecycle sits
+   with the platform team. Because Auto Mode provisions volumes with
+   the **cluster** IAM role, and that role's KMS grant is scoped to
+   this one key ARN, a chart-created class cannot supply its own CMK
+   here: the chart must claim `sigul-ebs` by name
+   (`server.persistence.storageClassName`) with
+   `storageClass.create: false`.
 4. **DNS delegation** for the chosen `opensearch.org` name — should
    external-dns manage the record from this cluster, or is the record
    created out-of-band?

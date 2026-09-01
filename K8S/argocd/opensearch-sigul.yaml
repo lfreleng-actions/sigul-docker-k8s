@@ -41,11 +41,25 @@ spec:
           #     --query 'cluster.resourcesVpcConfig'
           apiServerCIDRs:
             - 10.0.0.0/16  # PLACEHOLDER - target cluster VPC CIDR
+        server:
+          persistence:
+            # Platform-managed class, provisioned by OpenTofu in
+            # linuxfoundation/project-shared-cluster-opentofu
+            # (eks-csi.tf): gp3, encrypted under the customer-managed
+            # key alias/project-shared-sigul-ebs, reclaimPolicy
+            # Retain, WaitForFirstConsumer. Naming it here is the
+            # ONLY thing that puts the signing keys on the CMK - the
+            # cluster default auto-ebs-sc is Delete-policy and uses
+            # the AWS-managed aws/ebs key.
+            storageClassName: sigul-ebs
         storageClass:
-          create: true
-          # name derived per release + namespace (cluster-scoped
-          # resource); the server claim uses it automatically.
-          # kmsKeyId: arn:aws:kms:us-west-2:837749700030:key/...  # CMK TBD
+          # Must stay false on this cluster. StorageClass is
+          # cluster-scoped and OpenTofu owns sigul-ebs; a chart-created
+          # class would be a second object competing for the same job,
+          # and EKS Auto Mode provisions with the cluster IAM role,
+          # whose KMS grant is scoped to that one key ARN - so the
+          # chart cannot supply a different CMK even if asked to.
+          create: false
   destination:
     server: https://kubernetes.default.svc
     namespace: opensearch-sigul

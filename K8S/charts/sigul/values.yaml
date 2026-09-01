@@ -112,12 +112,16 @@ server:
   # password. no = strict cert-CN==username (needs per-user certs).
   lenientUsernameCheck: "yes"
   persistence:
-    # Explicit StorageClass for the key-material volume. When empty
-    # AND storageClass.create is true, the chart-created Retain-policy
-    # class is used automatically; when both are unset, the cluster
-    # default applies (on the target EKS cluster that default is
-    # encrypted gp3 but with reclaimPolicy Delete - not recommended
-    # for production).
+    # Explicit StorageClass for the key-material volume, and the
+    # supported way to consume a platform-managed class: on the
+    # project-shared EKS cluster set this to "sigul-ebs" (OpenTofu
+    # owns it) and leave storageClass.create false.
+    #
+    # When empty AND storageClass.create is true, the chart-created
+    # Retain-policy class is used automatically; when both are unset,
+    # the cluster default applies (on the target EKS cluster that
+    # default is encrypted gp3 but with reclaimPolicy Delete - not
+    # recommended for production).
     storageClassName: ""
     size: 10Gi
     # Root-chown initContainer for storage that does not establish
@@ -147,15 +151,25 @@ server:
   affinity: {}
 
 # Optional dedicated StorageClass for the server volume.
-# gp3 + encrypted + Retain. Provide a customer-managed KMS key ARN
-# once the platform team confirms CMK ownership (EVALUATION.md 8.1).
+# gp3 + encrypted + Retain, for clusters where no platform-managed
+# encrypted class exists. Where one does - as on project-shared EKS,
+# whose sigul-ebs class OpenTofu provisions - leave create false and
+# name that class in server.persistence.storageClassName instead.
 storageClass:
   create: false
-  # Class name. Empty = derived per release (<fullname>-server-sc):
+  # Name of the class the chart CREATES (it does not select an
+  # existing one - server.persistence.storageClassName does that, and
+  # this key is inert while create is false). Empty = derived per
+  # release and namespace (<namespace>-<fullname>-server-sc):
   # StorageClass is cluster-scoped, so a fixed name would collide
-  # between tenant releases on a shared cluster. Set explicitly only
-  # to consume a platform-managed class.
+  # between tenant releases on a shared cluster.
   name: ""
+  # Customer-managed KMS key ARN. Leaving this empty does NOT disable
+  # encryption, and that is the trap: the volume is still created with
+  # encrypted "true", just under the provider's default key (aws/ebs
+  # on EBS), so there is no CMK to carry a key policy, rotation or a
+  # deletion guard. Set it on any cluster where the chart creates the
+  # class and the key material matters.
   kmsKeyId: ""
 
 networkPolicy:

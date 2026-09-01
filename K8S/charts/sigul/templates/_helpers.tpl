@@ -156,10 +156,32 @@ sigul-server.{{ include "sigul.bridge.internalFQDN" . }}
 
 {{/* Server volume StorageClass: explicit value wins; otherwise the
      chart-created Retain-policy class when enabled; otherwise the
-     cluster default. */}}
+     cluster default.
+
+     The two settings are alternatives, not layers, so combining them
+     is rejected rather than silently resolved. Creating a class and
+     then claiming from a different one leaves the created class
+     bound to nothing - a cluster-scoped object, owned by a
+     namespaced release, that no volume will ever use, while the key
+     material lands on whatever the named class provides. Both halves
+     look correct in isolation, and neither the claim nor the class
+     reports a problem, so nothing surfaces until someone asks which
+     class actually holds the signing keys.
+
+     To consume a platform-managed class, set only
+     server.persistence.storageClassName and leave storageClass.create
+     false. storageClass.name renames what the chart creates; it never
+     selects an existing class. */}}
 {{- define "sigul.server.storageClassName" -}}
 {{- if .Values.server.persistence.storageClassName -}}
-{{ .Values.server.persistence.storageClassName }}
+{{- $claimed := .Values.server.persistence.storageClassName -}}
+{{- if .Values.storageClass.create -}}
+{{- $created := include "sigul.storageClassName" . -}}
+{{- if ne $created $claimed -}}
+{{- fail (printf "storageClass.create is true (creating StorageClass %q) but server.persistence.storageClassName is %q: the created class would go unused. Set storageClass.create=false to consume the existing class %q, or clear server.persistence.storageClassName to claim from the chart-created one." $created $claimed $claimed) -}}
+{{- end -}}
+{{- end -}}
+{{ $claimed }}
 {{- else if .Values.storageClass.create -}}
 {{ include "sigul.storageClassName" . }}
 {{- end -}}
