@@ -187,6 +187,39 @@ sigul-server.{{ include "sigul.bridge.internalFQDN" . }}
 {{- end -}}
 {{- end -}}
 
+{{/* Scheduling (nodeSelector / tolerations / affinity) for the pods
+     that handle server-grade key material but are not the server.
+
+     Both default to following server.* rather than to empty. Taints
+     repel; they do not attract, so isolating the server onto a
+     dedicated tainted pool takes a toleration to permit it there and
+     a nodeSelector or affinity to keep it there. A pod left with
+     neither does not fail - it schedules somewhere else, which is
+     precisely the outcome the pool exists to prevent, and it does so
+     silently.
+
+     That default matters most for the bootstrap Job. It generates the
+     CA private key and every leaf key in its scratch NSS DB, so a Job
+     carrying no toleration is the one pod a tainted server pool
+     excludes by construction: the most sensitive workload in the
+     chart would be guaranteed to run outside the isolation, on a node
+     shared with everything else.
+
+     Set inheritServer: false to place either pod independently. The
+     three fields then apply as a set and are not merged with the
+     server's - all three left empty means "schedule anywhere", which
+     is a deliberate opt-out rather than a default. */}}
+{{- define "sigul.scheduling" -}}
+{{- $own := .scheduling | default dict -}}
+{{- $inherit := ternary $own.inheritServer true (hasKey $own "inheritServer") -}}
+{{- $eff := ternary .ctx.Values.server $own $inherit -}}
+{{- $out := dict -}}
+{{- with $eff.nodeSelector -}}{{- $_ := set $out "nodeSelector" . -}}{{- end -}}
+{{- with $eff.tolerations -}}{{- $_ := set $out "tolerations" . -}}{{- end -}}
+{{- with $eff.affinity -}}{{- $_ := set $out "affinity" . -}}{{- end -}}
+{{- if $out -}}{{ toYaml $out }}{{- end -}}
+{{- end -}}
+
 {{/* Restricted-PSS-compliant pod security context (UID/GID 1000). */}}
 {{- define "sigul.podSecurityContext" -}}
 runAsNonRoot: true

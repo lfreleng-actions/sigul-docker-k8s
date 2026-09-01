@@ -234,6 +234,9 @@ spec:
       # expensive mistake: a SIGKILL there leaves the Lease held for
       # its full duration, and the replacement Job cannot acquire it.
       terminationGracePeriodSeconds: {{ $graceSeconds }}
+      {{- with include "sigul.scheduling" (dict "ctx" . "scheduling" .Values.pki.scheduling) }}
+      {{- . | nindent 6 }}
+      {{- end }}
       securityContext:
         {{- include "sigul.podSecurityContext" . | nindent 8 }}
       containers:

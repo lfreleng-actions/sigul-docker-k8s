@@ -78,6 +78,20 @@ pki:
   # section 8, question 4). Internal service DNS SANs are added
   # automatically.
   externalFQDN: sigul-bridge.opensearch.org
+  # Placement of the bootstrap Job, which generates the CA private
+  # key and every leaf key in a memory-backed scratch NSS DB. It
+  # follows the server by default because a taint only repels: a Job
+  # carrying no toleration is excluded from a dedicated server pool
+  # by construction, so the most sensitive pod in the chart would be
+  # the one guaranteed to run outside the isolation. Set
+  # inheritServer false to place it independently; the three fields
+  # below then apply as a set, and leaving them empty schedules it
+  # anywhere.
+  scheduling:
+    inheritServer: true
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
 
 bridge:
   ports:
@@ -187,6 +201,14 @@ networkPolicy:
 # (kubectl exec into it; see chart README). Disabled by default.
 adminToolbox:
   enabled: false
+  # Mounts the client P12 and the NSS/admin passwords, and is the pod
+  # operators exec into to run key ceremonies, so it follows the
+  # server's placement on the same reasoning as pki.scheduling above.
+  scheduling:
+    inheritServer: true
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
 
 serviceAccounts:
   # The PKI bootstrap Job needs get/update on the chart's named

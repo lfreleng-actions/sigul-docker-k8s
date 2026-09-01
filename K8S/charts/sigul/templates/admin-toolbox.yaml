@@ -49,6 +49,9 @@ spec:
       # credentials; it talks only to the bridge, never to the
       # Kubernetes API (operators reach it with kubectl exec).
       automountServiceAccountToken: false
+      {{- with include "sigul.scheduling" (dict "ctx" . "scheduling" .Values.adminToolbox.scheduling) }}
+      {{- . | nindent 6 }}
+      {{- end }}
       securityContext:
         {{- include "sigul.podSecurityContext" . | nindent 8 }}
       initContainers:
