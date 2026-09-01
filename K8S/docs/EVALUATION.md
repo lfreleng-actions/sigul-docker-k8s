@@ -375,7 +375,14 @@ lacks A/B. Evaluate E as a roadmap item, not a blocker.
 - PodSecurity `restricted` enforced at the namespace level.
 - No general-purpose workloads on the same nodes — consider a
   dedicated, tainted node pool for the server; optionally bare-metal or
-  confidential-compute nodes.
+  confidential-compute nodes. The chart supports this on every
+  workload: `bridge.*` and `server.*` carry their own
+  `nodeSelector`/`tolerations`/`affinity`, and the bootstrap Job and
+  admin toolbox follow the server by default (`pki.scheduling`,
+  `adminToolbox.scheduling`) so that neither the CA generation nor a
+  key ceremony lands outside the isolated pool. Note that a toleration
+  only permits placement — a `nodeSelector` or affinity is what
+  enforces it.
 - Backups (Velero/CSI snapshots) must inherit encryption; backup
   credentials are as sensitive as the volume itself.
 - Audit logging on all Secret access and exec in the namespace.

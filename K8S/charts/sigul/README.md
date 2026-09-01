@@ -240,6 +240,61 @@ definitions.
 
 [pss]: https://kubernetes.io/docs/concepts/security/pod-security-standards/
 
+## Node isolation
+
+Every workload exposes `nodeSelector`, `tolerations` and `affinity`.
+The bridge and the server carry their own (`bridge.*`, `server.*`);
+the bootstrap Job and the admin toolbox follow the server by default
+via `pki.scheduling` and `adminToolbox.scheduling`.
+
+Pinning the key material to a dedicated node pool takes all three,
+because a taint only repels:
+
+1. **Taint the pool** — keeps every other workload off it.
+2. **Tolerate the taint** — *permits* the Sigul pod to land there.
+3. **Select the pool** with `nodeSelector` or `affinity` — *keeps* it
+   there.
+
+Step 3 is the one to not skip. A pod with a toleration and nothing
+else is free to schedule anywhere, so omitting it buys the cost of a
+dedicated pool with none of the isolation, and nothing reports a
+problem.
+
+```yaml
+server:
+  tolerations:
+    - key: sigul.linuxfoundation.org/dedicated
+      operator: Equal
+      value: keys
+      effect: NoSchedule
+  nodeSelector:
+    sigul.linuxfoundation.org/pool: keys
+```
+
+That is the whole configuration: the bootstrap Job and the toolbox
+inherit both fields, and the bridge stays where it is. Leaving the
+bridge on general-purpose nodes is deliberate — it is the
+internet-facing component, and it holds no signing keys.
+
+The inheritance default exists because the bootstrap Job is the pod
+that generates the CA private key and every leaf key. A Job with no
+toleration cannot schedule onto a tainted pool at all, so an
+independently-configured Job would be excluded from the isolation by
+construction — the most sensitive workload in the chart running on the
+shared nodes. Set `pki.scheduling.inheritServer: false` to place it
+yourself; the three fields then apply as a set rather than merging
+with the server's, and leaving them empty schedules it anywhere.
+
+Node isolation bounds what a **neighbouring tenant's workload** can
+reach. It does nothing against cluster-admin, a compromised
+kubelet, or anyone who can `exec` into this namespace — the same
+boundary that applies to storage encryption (EVALUATION.md §5.2). Pair
+it with the namespace-level controls in EVALUATION.md §5.3.
+
+On the target EKS cluster the pool would be a Karpenter NodePool, so
+whether a tenant may create one is a governance question for the
+platform team (EVALUATION.md §8.1 Q1), not a chart setting.
+
 ## Admin toolbox
 
 Set `adminToolbox.enabled: true` for key ceremonies and user
