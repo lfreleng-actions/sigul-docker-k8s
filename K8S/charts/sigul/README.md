@@ -190,9 +190,13 @@ Which path applies:
    `volumePermissions.enabled: false`, the default. The EBS CSI driver
    applies `fsGroup` to the volume itself, so the initContainer has
    nothing to do and the namespace can enforce `restricted`, as
-   `K8S/argocd/opensearch-sigul.yaml` does. This is the path both the
-   chart-created StorageClass and the platform-managed `sigul-ebs`
-   class target (`provisioner: ebs.csi.eks.amazonaws.com`).
+   `K8S/argocd/opensearch-sigul.yaml` does. The platform-managed
+   `sigul-ebs` class targets this path, and so does the chart-created
+   class by default — though `storageClass.provisioner` can point the
+   latter at another driver, including a self-managed EBS CSI
+   deployment (`ebs.csi.aws.com`), which behaves the same way here.
+   Any driver that does **not** apply `fsGroup` puts you in the EFS
+   case below regardless of the provisioner named.
 
    EFS is **not** equivalent. Its CSI driver does not perform
    `fsGroup` ownership management, so leaving `volumePermissions`

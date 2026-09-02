@@ -178,6 +178,35 @@ storageClass:
   # StorageClass is cluster-scoped, so a fixed name would collide
   # between tenant releases on a shared cluster.
   name: ""
+  # CSI driver backing the class. The default is the driver built in
+  # to EKS Auto Mode; a self-managed EBS CSI deployment registers as
+  # "ebs.csi.aws.com" instead, and the two are not interchangeable -
+  # a class naming a driver the cluster does not run leaves every
+  # claim Pending with no error on the claim itself. The parameters
+  # below are EBS-shaped either way; a non-EBS provisioner needs
+  # different ones and is out of scope for this key.
+  #
+  # Applies at CREATION only. StorageClass.provisioner is immutable,
+  # so changing this for a release that already created its class
+  # fails the upgrade: Helm patches the existing object and the API
+  # rejects the field. Switching means deleting the class first and
+  # letting the next upgrade recreate it. Find it by label rather
+  # than by name - the name is derived by default but storageClass.name
+  # overrides it, and the tenant label is what separates releases that
+  # share a release name on a shared cluster:
+  #
+  #   kubectl get storageclass \
+  #     -l app.kubernetes.io/instance=<release>,\
+  # sigul.linuxfoundation.org/tenant=<tenant>
+  #   kubectl delete storageclass <name-from-above>
+  #   helm upgrade ...
+  #
+  # That is safe for data already on disk. A StorageClass is only
+  # consulted when provisioning, so deleting one binds and deletes
+  # nothing - existing PersistentVolumes keep serving their claims
+  # throughout, and the server never notices. Only new claims need
+  # the class to exist again.
+  provisioner: ebs.csi.eks.amazonaws.com
   # Customer-managed KMS key ARN. Leaving this empty does NOT disable
   # encryption, and that is the trap: the volume is still created with
   # encrypted "true", just under the provider's default key (aws/ebs
