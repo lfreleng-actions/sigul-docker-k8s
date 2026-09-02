@@ -19,9 +19,16 @@ imagePullSecrets: []
 #  - name: ghcr-pull
 
 images:
-  # Pinned to the v0.1.6 release: multi-arch indexes published by the
-  # release workflow (Grype-gated, provenance/SBOM attested), which
-  # include the fix for cryptography CVE-2026-69247.
+  # Tag and digest track the release that published this chart: the
+  # release workflow rewrites both for every component at package
+  # time (build-scripts/pin-chart-images.py), so a chart pulled from
+  # the registry always deploys the images built and audited by its
+  # own release - Grype-gated, provenance/SBOM attested, multi-arch.
+  #
+  # The values committed here are the development baseline used by
+  # `helm install` straight from a checkout. They are not rewritten
+  # by the release, so they lag it; bump them when a newer release is
+  # wanted for local work.
   # yamllint disable rule:line-length
   bridge:
     repository: ghcr.io/lfreleng-actions/sigul-sign-docker/bridge
