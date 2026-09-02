@@ -18,7 +18,7 @@ metadata:
     {{- include "sigul.labels" . | nindent 4 }}
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
-provisioner: ebs.csi.eks.amazonaws.com
+provisioner: {{ .Values.storageClass.provisioner }}
 reclaimPolicy: Retain
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
