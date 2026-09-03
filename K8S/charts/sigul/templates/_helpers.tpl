@@ -26,11 +26,25 @@ Common template helpers for the sigul chart.
 {{- end -}}
 {{- end -}}
 
+{{/* Common labels. The chart label is normalised because the release
+     derives Chart.Version from the git tag: SemVer permits build
+     metadata (v1.2.3-rc+build) and sets no length bound, while a
+     Kubernetes label value rejects "+", caps at 63 characters and must
+     both start and end alphanumeric. Without this, such a tag packages
+     and publishes cleanly, then every workload in the chart is refused
+     at apply time over a label nobody reads.
+
+     Trailing punctuation is stripped after truncating rather than
+     before: the cut itself is what exposes it, and it can land on any
+     of the three characters the label body allows, so trimming only
+     "-" would leave a value ending in "." or "_". */}}
 {{- define "sigul.labels" -}}
-helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
+{{- $chart := printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 -}}
+{{- $version := .Chart.AppVersion | toString | replace "+" "_" | trunc 63 -}}
+helm.sh/chart: {{ regexReplaceAll "[-._]+$" $chart "" }}
 app.kubernetes.io/name: {{ include "sigul.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/version: {{ regexReplaceAll "[-._]+$" $version "" | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 sigul.linuxfoundation.org/tenant: {{ .Values.tenant | quote }}
 {{- end -}}
