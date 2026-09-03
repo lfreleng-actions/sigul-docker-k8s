@@ -346,6 +346,7 @@ jobs:
       - uses: lfreleng-actions/harden-runner-block-action@805eedb0508c07714b61887a2b87a5c4bbeff22a  # v0.12.1
         with:
           config: '@8f4f0cf83e6a015957e83261ed379fd811fc060e'  # v0.5.1
+          allow_list_summary: 'false'
 
       # Harden the runner with the just-loaded allow-list.
       - name: 'Harden runner (block)'
@@ -462,6 +463,7 @@ jobs:
       - uses: lfreleng-actions/harden-runner-block-action@805eedb0508c07714b61887a2b87a5c4bbeff22a  # v0.12.1
         with:
           config: '@8f4f0cf83e6a015957e83261ed379fd811fc060e'  # v0.5.1
+          allow_list_summary: 'false'
 
       # Harden the runner with the just-loaded allow-list.
       - name: 'Harden runner (block)'
@@ -583,6 +585,7 @@ jobs:
       - uses: lfreleng-actions/harden-runner-block-action@805eedb0508c07714b61887a2b87a5c4bbeff22a  # v0.12.1
         with:
           config: '@8f4f0cf83e6a015957e83261ed379fd811fc060e'  # v0.5.1
+          allow_list_summary: 'false'
 
       # Harden the runner with the just-loaded allow-list.
       - name: 'Harden runner (block)'
@@ -1248,6 +1251,7 @@ jobs:
       - uses: lfreleng-actions/harden-runner-block-action@805eedb0508c07714b61887a2b87a5c4bbeff22a  # v0.12.1
         with:
           config: '@8f4f0cf83e6a015957e83261ed379fd811fc060e'  # v0.5.1
+          allow_list_summary: 'false'
 
       # Harden the runner with the just-loaded allow-list.
       - name: 'Harden runner (block)'
