@@ -462,10 +462,9 @@ required).
 
 ## 7. Target Platform Survey: `project-shared` EKS Cluster
 
-Surveyed 2026-08-17 (read-only) via the `project-shared-cluster`
-kube-context (account `837749700030`, us-west-2, role
-`lfit-sysadmins-mfa`). The cluster is ~6 days old — a fresh platform
-build-out.
+Surveyed 2026-08-17 (read-only) against the target cluster, using a
+read-only role in the platform account. The cluster is ~6 days old — a
+fresh platform build-out.
 
 | Aspect | Finding | Implication for Sigul charts |
 | --- | --- | --- |
@@ -477,8 +476,8 @@ build-out.
 | Certificates | cert-manager with `letsencrypt-prod`/`staging` ClusterIssuers | For public endpoints only; **not** used for Sigul's internal NSS PKI (consistent with §4.2 decision) |
 | DNS | external-dns in `platform-external-dns` | Bridge external DNS name can be managed via Service annotation once the FQDN is chosen (Q3) |
 | Secrets tooling | **No** External Secrets Operator, sealed-secrets, or Vault CRDs | §6.2: v1 uses bootstrap-Job-generated Secrets; ESO/Vault becomes an optional later integration |
-| Secrets at rest | **KMS envelope encryption enabled** for `secrets` (CMK `aec7f21d-2e38-4894-ba4f-d570285aae34`, verified via `describe-cluster` 2026-08-17) | Kubernetes Secrets (P12 bundles, NSS/admin passwords) are KMS-encrypted in etcd — §4.2's Secret-based PKI distribution is acceptable |
-| API endpoint | Public endpoint enabled, `publicAccessCidrs: 0.0.0.0/0` | Platform-level observation (not a chart concern); flag to the platform team — a signing system justifies tightening CIDRs or private endpoint access |
+| Secrets at rest | **KMS envelope encryption enabled** for `secrets` (customer-managed key, verified 2026-08-17) | Kubernetes Secrets (P12 bundles, NSS/admin passwords) are KMS-encrypted in etcd — §4.2's Secret-based PKI distribution is acceptable |
+| API endpoint | Public endpoint enabled, with broad network access permitted | Platform-level concern rather than a chart one; narrowing it is a decision for the cluster owners, raised with them in §8.1 |
 | Network policy | `applicationnetworkpolicies.networking.k8s.aws` CRD (Auto Mode NP support) | Standard `NetworkPolicy` resources are enforceable — §4.3/§4.4 policies work |
 | Pod Security | No PSA labels on existing namespaces | Set `pod-security.kubernetes.io/enforce: restricted` on the `sigul` namespace ourselves |
 
@@ -578,9 +577,9 @@ party for all of these:
 4. **DNS delegation** for the chosen `opensearch.org` name — should
    external-dns manage the record from this cluster, or is the record
    created out-of-band?
-5. FYI/flag: the cluster API endpoint is public with
-   `publicAccessCidrs: 0.0.0.0/0` (§7) — consider tightening given
-   signing infrastructure will run here.
+5. FYI/flag: please review the **cluster API endpoint access policy**
+   (§7) against the sensitivity of the workload — signing
+   infrastructure will run here.
 
 ---
 
