@@ -270,6 +270,22 @@ only its own leaf cert (the bridge does not need CA signing capability
 at runtime). Option B is preferred: it decouples cert issuance from
 the bridge pod and makes leaf re-issuance a Job re-run.
 
+> **As implemented, the chart does neither.** The bootstrap Job
+> generates the CA in a memory-backed scratch NSS DB and **discards it
+> with the pod** — the CA private key is exported to no artifact and
+> reaches no Secret and no volume (`files/scripts/pki-bootstrap.sh`).
+>
+> That is a stronger posture than either option above: there is no
+> persisted CA key to steal, and no Secret whose compromise would let
+> an attacker mint trusted certificates. The cost is that **leaf-only
+> re-issuance does not exist**. Changing any certificate — including
+> the bridge SANs — means `pki.mode=force`, which regenerates the whole
+> trust domain and invalidates every client bundle already issued.
+>
+> Adopting Option B later would restore leaf re-issue, at the price of
+> a persisted CA key. That is a deliberate trade, not an oversight, and
+> §8 Q4 below has been corrected to match what ships today.
+
 ### 4.3 Server pod design
 
 - **StatefulSet, 1 replica**, `podManagementPolicy: OrderedReady`.
@@ -513,24 +529,35 @@ narrow to policy decisions (below).
    envelope encryption **confirmed enabled** (KMS CMK, verified
    2026-08-17), so Secret-stored P12 bundles and passwords are
    encrypted at rest in etcd. ESO remains a candidate later phase.
-4. ~~**Bridge cert SANs / external FQDN**~~ — **Decided: placeholder
-   until deployment.** The production name will live under an
-   OpenSearch project domain (likely `*.opensearch.org`, whose DNS the
-   LF operates). Charts proceed with a templated placeholder (e.g.
-   `sigul-bridge.opensearch.org` in values), used consistently for the
-   cert SAN, `client.conf` examples, and the external-dns annotation.
-   This is safe because:
-   - the FQDN is a **Helm value** consumed only at PKI-bootstrap time
-     and in client config — nothing hardcodes it;
-   - under the §4.2 Option B design, renaming later is a **leaf-only
-     re-issue** (re-run the issuance Job with the new SAN + restart the
-     bridge). Client *certificates* are unaffected — only the
-     `bridge-hostname` line in distributed `client.conf` changes;
-   - the internal Service DNS SAN (`sigul-bridge.<ns>.svc.cluster.local`)
-     is stable regardless, so in-cluster testing (admin toolbox,
-     smoke tests) never depends on the external name.
-   The real name must be finalized **before** production client PKI
-   bundles are distributed to CI consumers.
+4. ~~**Bridge cert SANs / external FQDN**~~ — **Decided: placeholder in
+   the chart, but it must be final before the first bootstrap.** The
+   production name will live under an OpenSearch project domain
+   (likely `*.opensearch.org`, whose DNS the LF operates). The chart
+   ships a templated placeholder (`sigul-bridge.opensearch.org` in
+   values), used consistently for the cert SAN, `client.conf`
+   examples, and the external-dns annotation.
+
+   **Correction (2026-09-10).** An earlier revision of this entry said
+   renaming later was a *leaf-only re-issue* under the §4.2 Option B
+   design. That describes the design that was proposed, not the one
+   that shipped. The chart generates the CA in the bootstrap Job's
+   scratch NSS DB and discards it with the pod, so there is no CA key
+   to sign a replacement leaf with and **no leaf-only re-issue path
+   exists** (see the note in §4.2). The practical consequences:
+
+   - Changing `pki.externalFQDN` after a successful bootstrap requires
+     `pki.mode=force`, which regenerates the entire trust domain and
+     **invalidates every client bundle already distributed**.
+   - Deploying with the placeholder therefore *commits* to it. The real
+     name must be set **before the first sync**, not merely before
+     client bundles ship.
+   - What does still hold: the FQDN is a Helm value that nothing
+     hardcodes, and the internal Service DNS SAN
+     (`sigul-bridge.<ns>.svc.cluster.local`) is stable regardless, so
+     in-cluster testing never depends on the external name.
+
+   Restoring a cheap rename means adopting §4.2 Option B (persist the
+   CA key for a dedicated re-issue Job) and accepting that trade.
 5. **Sigul patch upstreaming** — the double-TLS timing patch is
    load-bearing; is upstreaming feasible so images can eventually track
    stock sigul releases?

@@ -22,7 +22,9 @@ capabilities dropped, using unmodified upstream images.
 Remaining before production (EKS):
 
 1. `pki.externalFQDN` is a placeholder until the production DNS name
-   under the project domain is assigned.
+   under the project domain is assigned. It must be set **before the
+   first bootstrap**: there is no leaf-only re-issue path, so changing
+   it later means `pki.mode=force` and a new trust domain.
 2. Images are pinned to the `v0.1.6` release (multi-arch,
    Grype-gated, provenance/SBOM attested, public on GHCR with
    anonymous pulls verified).
