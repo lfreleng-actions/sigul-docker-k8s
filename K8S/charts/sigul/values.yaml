@@ -80,10 +80,15 @@ pki:
   # for a pki-bootstrap pod before reducing it. See
   # templates/lease.yaml.
   lockLeaseDurationSeconds: 1800
-  # FQDN placed in certificate CN/SANs. PLACEHOLDER until the real
-  # name under the project domain is assigned (see EVALUATION.md
-  # section 8, question 4). Internal service DNS SANs are added
-  # automatically.
+  # FQDN placed in certificate CN/SANs. Internal service DNS SANs are
+  # added automatically.
+  #
+  # MUST be final before the first bootstrap. The Job discards the CA
+  # private key with its pod, so there is no leaf-only re-issue path:
+  # changing this afterwards means pki.mode=force, which regenerates
+  # the whole trust domain and invalidates every client bundle already
+  # distributed. Deploying with the placeholder below commits to it.
+  # See EVALUATION.md section 8, question 4.
   externalFQDN: sigul-bridge.opensearch.org
   # Placement of the bootstrap Job, which generates the CA private
   # key and every leaf key in a memory-backed scratch NSS DB. It
