@@ -14,9 +14,29 @@
 # This Lease is the compare-and-set point. Acquisition is a single
 # conditional patch carrying the observed resourceVersion, so exactly
 # one runner wins; the loser fails fast and its Job backoff retries once
-# the holder has finished. Pre-created here (empty) for the same reason
-# as the Secrets: the Job's Role can then omit the unrestrictable
-# "create" verb.
+# the holder has finished.
+#
+# ARGO CD NEVER CREATES THIS OBJECT. coordination.k8s.io/Lease is in
+# Argo CD's *core* exclusion list (util/settings/resources_filter.go),
+# which is appended to any configured exclusions and consulted before
+# inclusions are. It is compiled in, applies to every Argo CD
+# installation, and cannot be re-enabled through resource.inclusions,
+# so this manifest is dropped silently: the Application reports Synced
+# while the lock was never created. The Job therefore creates the Lease
+# itself when it gets a 404 (files/scripts/k8s_lease.py), POSTing it
+# already held so acquisition stays a single atomic step.
+#
+# This template remains what creates the Lease under plain Helm, where
+# the Job finds it present and takes the ordinary CAS path. Helm's kind
+# sorter places an unrecognised kind after Job, so this manifest is
+# submitted just after the Job's; the Job therefore re-polls a 404 for
+# LEASE_WAIT_SECONDS (files/scripts/k8s_lease.py) before creating
+# anything, which lets Helm's create land first and keeps Helm the sole
+# creator whenever it is going to be one. Should that still lose, the
+# Job stamps the same labels and Helm's ownership annotations on what
+# it creates (LOCK_LEASE_METADATA in templates/pki-bootstrap-job.yaml),
+# so Helm adopts the object rather than refusing to install over it.
+# The two planes converge on the same object and the same protocol.
 #
 # The lease duration is the safety net for a runner killed without
 # releasing (OOM, node loss). Job.activeDeadlineSeconds, plus the
@@ -25,7 +45,7 @@
 # which validates that relationship at render time).
 #
 # Seeded here and re-asserted by the holder on every acquisition
-# (k8s_api.acquire_lease patches it from pki.lockLeaseDurationSeconds).
+# (k8s_lease.acquire_lease patches it from pki.lockLeaseDurationSeconds).
 #
 # OPERATIONAL CAVEAT: because Helm manages this field, an upgrade
 # that LOWERS pki.lockLeaseDurationSeconds patches it on a Lease a
@@ -43,6 +63,35 @@
 # assumed, unbounded above by pki.lockLeaseDurationSeconds and so no
 # safer. Keeping the field and bounding when it may be lowered is the
 # honest trade.
+#
+# resource-policy keep: now that the Job can create its own lock, a
+# later release could drop this template - but only once every live
+# Lease already carries this annotation. Helm reads the policy from
+# the live object it is about to delete, not from the manifest that
+# stopped rendering it, so an unannotated Lease would be deleted
+# during that upgrade; if the outgoing revision's Job still held the
+# lock, the incoming one would see 404, recreate the Lease and enter
+# the PKI write path alongside it. Annotating it here first makes
+# that deletion a no-op whenever it comes. The annotation governs
+# deletion only, so Helm still updates the object on upgrade and the
+# caveat above continues to apply.
+#
+# The cost is that `helm uninstall` leaves the Lease behind. It holds
+# no payload, and a reinstall into the same release name and
+# namespace re-adopts it because Helm's ownership metadata still
+# matches. Argo CD never managed it either, so it outlives a teardown
+# on both planes; the uninstall runbook in README.md removes it in
+# step 2, once step 1 has confirmed no bootstrap pod is left holding
+# it.
+#
+# The Job stamping that same ownership metadata does not rescue the
+# install it is racing, only the next one: Helm fixes its adoption set
+# before it creates anything, so a Lease appearing after that
+# preflight still fails the in-flight install with AlreadyExists.
+# Reaching that needs a fresh install whose own create is delayed past
+# the wait window, and it costs a retry, not the trust domain - the
+# lock is correct either way, and the retry adopts the object rather
+# than conflicting again.
 ---
 apiVersion: coordination.k8s.io/v1
 kind: Lease
@@ -52,5 +101,6 @@ metadata:
     {{- include "sigul.labels" . | nindent 4 }}
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
+    helm.sh/resource-policy: keep
 spec:
   leaseDurationSeconds: {{ .Values.pki.lockLeaseDurationSeconds }}

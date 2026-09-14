@@ -7,6 +7,9 @@ the scripts ConfigMap (/scripts inside the Job pod). Talks to the API
 server directly with the pod's ServiceAccount token so the Job can run
 in the sigul bridge image (python3 + requests available) without
 shipping kubectl.
+
+The PKI bootstrap lock lives in its sibling k8s_lease.py, which builds
+on the primitives here.
 """
 
 import base64
@@ -152,128 +155,6 @@ def apply_secret(
     )
     resp.raise_for_status()
     print(f"[publish-secrets] applied Secret {namespace}/{name}", file=sys.stderr)
-
-
-def _lease_url(base: str, namespace: str, name: str) -> str:
-    return f"{base}/apis/coordination.k8s.io/v1/namespaces/{namespace}/leases/{name}"
-
-
-def _now() -> datetime.datetime:
-    return datetime.datetime.now(datetime.timezone.utc)
-
-
-def _parse_ts(value: str) -> datetime.datetime | None:
-    for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
-        try:
-            return datetime.datetime.strptime(value, fmt)
-        except ValueError:
-            continue
-    return None
-
-
-def acquire_lease(name: str, identity: str, duration: int) -> int:
-    """Compare-and-set acquisition of the bootstrap Lease.
-
-    Returns 0 when this identity holds the lease afterwards, 1 when
-    another runner holds an unexpired lease or won the race. The
-    conditional patch (carrying the observed resourceVersion) is what
-    makes concurrent bootstrap Jobs mutually exclusive: the API server
-    admits exactly one of them.
-    """
-    base, headers, namespace = api_base()
-    url = _lease_url(base, namespace, name)
-    resp = requests.get(
-        url, headers=headers, verify=f"{SA_DIR}/ca.crt", timeout=TIMEOUT
-    )
-    if resp.status_code == 404:
-        msg = (
-            f"[publish-secrets] Lease {namespace}/{name} does not exist;"
-            + " it should be pre-created by the Helm chart"
-            + " (templates/lease.yaml). Re-sync the release."
-        )
-        raise SystemExit(msg)
-    resp.raise_for_status()
-    body = cast("dict[str, object]", resp.json())
-    spec = cast("dict[str, object]", body.get("spec") or {})
-    holder = str(spec.get("holderIdentity") or "")
-    renewed = _parse_ts(str(spec.get("renewTime") or ""))
-    held_for = int(cast("int", spec.get("leaseDurationSeconds") or duration))
-
-    if holder and holder != identity and renewed is not None:
-        age = (_now() - renewed).total_seconds()
-        if age < held_for:
-            msg = (
-                f"[publish-secrets] Lease {namespace}/{name} held by"
-                + f" {holder} for another {int(held_for - age)}s"
-            )
-            print(msg, file=sys.stderr)
-            return 1
-
-    meta = cast("dict[str, object]", body.get("metadata") or {})
-    # acquireTime/renewTime are MicroTime: RFC3339 with exactly
-    # microsecond precision. Anything else is rejected with a 422.
-    now = _now().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    patch: dict[str, object] = {
-        "metadata": {"resourceVersion": str(meta.get("resourceVersion") or "")},
-        "spec": {
-            "holderIdentity": identity,
-            "leaseDurationSeconds": duration,
-            "acquireTime": now,
-            "renewTime": now,
-        },
-    }
-    patch_headers = dict(headers)
-    patch_headers["Content-Type"] = "application/merge-patch+json"
-    resp = requests.patch(
-        url,
-        json=patch,
-        headers=patch_headers,
-        verify=f"{SA_DIR}/ca.crt",
-        timeout=TIMEOUT,
-    )
-    if resp.status_code == 409:
-        # Another runner patched between our GET and PATCH; it won.
-        print(
-            f"[publish-secrets] lost the race for Lease {namespace}/{name}",
-            file=sys.stderr,
-        )
-        return 1
-    resp.raise_for_status()
-    print(f"[publish-secrets] acquired Lease {namespace}/{name}", file=sys.stderr)
-    return 0
-
-
-def release_lease(name: str, identity: str) -> None:
-    """Clear the Lease if this identity still holds it."""
-    base, headers, namespace = api_base()
-    url = _lease_url(base, namespace, name)
-    resp = requests.get(
-        url, headers=headers, verify=f"{SA_DIR}/ca.crt", timeout=TIMEOUT
-    )
-    if resp.status_code == 404:
-        return
-    resp.raise_for_status()
-    body = cast("dict[str, object]", resp.json())
-    spec = cast("dict[str, object]", body.get("spec") or {})
-    if str(spec.get("holderIdentity") or "") != identity:
-        return
-    meta = cast("dict[str, object]", body.get("metadata") or {})
-    patch: dict[str, object] = {
-        "metadata": {"resourceVersion": str(meta.get("resourceVersion") or "")},
-        "spec": {"holderIdentity": None, "acquireTime": None, "renewTime": None},
-    }
-    patch_headers = dict(headers)
-    patch_headers["Content-Type"] = "application/merge-patch+json"
-    resp = requests.patch(
-        url,
-        json=patch,
-        headers=patch_headers,
-        verify=f"{SA_DIR}/ca.crt",
-        timeout=TIMEOUT,
-    )
-    if resp.status_code != 409:
-        resp.raise_for_status()
-    print(f"[publish-secrets] released Lease {namespace}/{name}", file=sys.stderr)
 
 
 def restart_workload(kind: str, name: str) -> None:

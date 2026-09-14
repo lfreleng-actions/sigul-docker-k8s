@@ -36,11 +36,12 @@
 {{- $leaseSeconds := int .Values.pki.lockLeaseDurationSeconds }}
 {{- $deadlineSeconds := mul (div $leaseSeconds 3) 2 }}
 {{- /* Positivity applies to every mode: templates/lease.yaml renders
-       this value into the Lease unconditionally, and the API rejects
-       a non-positive leaseDurationSeconds. Catching it here beats
-       rendering cleanly and failing at admission. */}}
+       this value into the Lease, and the bootstrap Job sets it when it
+       creates the lock itself; the API rejects a non-positive
+       leaseDurationSeconds either way. Catching it here beats
+       rendering cleanly and failing later. */}}
 {{- if le $leaseSeconds 0 }}
-{{- fail (printf "pki.lockLeaseDurationSeconds must be greater than zero (got %d). templates/lease.yaml renders it into the Lease, and the Kubernetes API rejects a non-positive leaseDurationSeconds." $leaseSeconds) }}
+{{- fail (printf "pki.lockLeaseDurationSeconds must be greater than zero (got %d). templates/lease.yaml renders it into the Lease and the bootstrap Job sets it when creating the lock, and the Kubernetes API rejects a non-positive leaseDurationSeconds." $leaseSeconds) }}
 {{- end }}
 {{- /* The timing invariant, by contrast, is mode-specific: only auto
        and force take the lock; skip exits before acquiring it
@@ -89,9 +90,24 @@ rules:
       - {{ include "sigul.secret.passwords" . }}
       - {{ include "sigul.secret.admin" . }}
       - {{ include "sigul.secret.marker" . }}
-  # Mutual exclusion between concurrent bootstrap runners. Pre-created
-  # by the chart (templates/lease.yaml) so "create" stays out of this
-  # Role, exactly as for the Secrets.
+  # Mutual exclusion between concurrent bootstrap runners.
+  #
+  # "create" is required even though templates/lease.yaml pre-creates
+  # the object, because that manifest does not survive Argo CD:
+  # coordination.k8s.io/Lease is in Argo CD's *core* exclusion list,
+  # compiled in and not re-enablable via resource.inclusions, so the
+  # rendered Lease is silently dropped and the Job has to create its
+  # own lock (files/scripts/k8s_lease.py). Unlike the Secrets above, no
+  # pre-creation can remove this verb.
+  #
+  # RBAC cannot scope "create" by resourceName, so this grants create
+  # on any Lease in this namespace. That is a materially smaller
+  # concession than it would be for Secrets: a Lease carries no
+  # payload, the namespace holds only this release, and get/patch stay
+  # pinned to the one lock below, so a spurious Lease grants nothing.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["create"]
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "patch"]
@@ -277,6 +293,23 @@ spec:
               value: {{ include "sigul.lease.bootstrapLock" . | quote }}
             - name: LOCK_DURATION_SECONDS
               value: {{ .Values.pki.lockLeaseDurationSeconds | quote }}
+            # Metadata for a Lease this Job has to create itself, which
+            # happens only where Argo CD discarded templates/lease.yaml.
+            # Rendered from the same label helper as that template, plus
+            # the meta.helm.sh/* ownership annotations Helm stamps on
+            # its own objects: Helm refuses to install over a resource
+            # it does not own, and adopts one whose ownership metadata
+            # matches the release. Without these, a Lease created here
+            # would block a later plain-Helm install of this release.
+            - name: LOCK_LEASE_METADATA
+              value: {{ dict
+                  "labels" (include "sigul.labels" . | fromYaml)
+                  "annotations" (dict
+                    "argocd.argoproj.io/sync-wave" "-2"
+                    "helm.sh/resource-policy" "keep"
+                    "meta.helm.sh/release-name" .Release.Name
+                    "meta.helm.sh/release-namespace" .Release.Namespace)
+                  | toJson | quote }}
             # Lock holder identity: unique per pod, so a retry can tell
             # its own stale lease from a live competitor's.
             - name: POD_NAME

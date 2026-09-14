@@ -5,8 +5,9 @@
 
 Minimal replacement for kubectl so the Job can run in the sigul
 bridge image (python3 + requests available) without shipping kubectl.
-The Kubernetes API layer lives in k8s_api.py, mounted alongside this
-script from the same ConfigMap.
+The Kubernetes API layer lives in k8s_api.py, and the bootstrap lock in
+k8s_lease.py, both mounted alongside this script from the same
+ConfigMap.
 
 Usage:
     publish-secrets.py exists NAME [--key KEY]...
@@ -39,13 +40,12 @@ from collections.abc import Callable
 from typing import cast
 
 from k8s_api import (
-    acquire_lease,
     apply_secret,
     get_secret_key,
-    release_lease,
     restart_workload,
     secret_exists,
 )
+from k8s_lease import acquire_lease, release_lease
 
 # The only keys the 'get' subcommand may read, mapped to the complete
 # set of values it may print. 'get' exists solely so the bootstrap
