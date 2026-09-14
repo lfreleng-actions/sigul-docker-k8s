@@ -29,6 +29,16 @@ images:
   # `helm install` straight from a checkout. They are not rewritten
   # by the release, so they lag it; bump them when a newer release is
   # wanted for local work.
+  #
+  # The sigul-sign-docker path below is deliberate, not a stale
+  # rename: this repository became sigul-docker-k8s, but GHCR does not
+  # rename packages a repository has already published, and the v0.1.6
+  # images these digests pin exist only under the old path. The
+  # release rewrites these to the current repository's path when it
+  # packages the chart (build-scripts/pin-chart-images.py), so a
+  # released chart always points at that release's own images. Change
+  # this only when bumping the baseline to a tag published under the
+  # new path.
   # yamllint disable rule:line-length
   bridge:
     repository: ghcr.io/lfreleng-actions/sigul-sign-docker/bridge

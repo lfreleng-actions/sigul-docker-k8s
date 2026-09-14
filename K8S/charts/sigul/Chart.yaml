@@ -15,7 +15,7 @@ keywords:
   - signing
   - gpg
   - security
-home: https://github.com/lfreleng-actions/sigul-sign-docker
+home: https://github.com/lfreleng-actions/sigul-docker-k8s
 maintainers:
   - name: The Linux Foundation Release Engineering
     email: releng@linuxfoundation.org
