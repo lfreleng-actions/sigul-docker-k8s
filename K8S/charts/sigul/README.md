@@ -102,6 +102,31 @@ templates as comments):
   Jobs alive at once, and interleaved writes to the CA/P12/password
   Secrets would produce a mixed trust domain. The loser exits and its
   Job backoff retries once the holder has finished.
+
+  The chart renders that Lease (`templates/lease.yaml`) **and the Job
+  creates it itself when it is absent**. Both paths are needed:
+  `coordination.k8s.io/Lease` sits in Argo CD's *core* exclusion list,
+  which is compiled in and cannot be re-enabled through
+  `resource.inclusions`, so under Argo CD the rendered Lease is
+  silently dropped — the Application reports `Synced` while the lock
+  was never created. The Job creates it on `404`, already held, so
+  acquisition stays a single atomic step. Under plain Helm the
+  template is what creates it and the Job takes the ordinary
+  compare-and-set path: Helm submits an unrecognised kind after `Job`,
+  so the Job re-polls a `404` briefly before creating anything, and
+  stamps Helm's own ownership metadata on the Lease if it does.
+
+  That metadata rescues the *next* install, not the one in flight.
+  Helm fixes its adoption set before it creates anything, so a Lease
+  that appears after that preflight still fails the install in
+  progress with `AlreadyExists`. Reaching it takes a fresh install
+  whose own create is delayed past the wait window, and it costs a
+  retry rather than the trust domain: the lock itself is correct and
+  the bootstrap proceeds, and because the object carries matching
+  ownership annotations the retry adopts it instead of conflicting
+  again. Retry with `helm upgrade --install`, or `helm uninstall` the
+  failed release first — a plain `helm install` refuses a name that
+  is still in use.
 - The Job is an Argo CD **Sync hook** (wave -1) but a plain,
   revisioned Job under Helm - deliberately not a Helm hook, which
   would drag its ConfigMap, RBAC and pre-created Secrets into the
@@ -378,7 +403,7 @@ is the ordinary Service that the uninstall was still deleting.
 `--wait` closes the window by not returning until it is gone; a
 `sleep` only makes it less likely.
 
-A reinstall is a **resume, not a clean slate**. Two kinds of state
+A reinstall is a **resume, not a clean slate**. Three kinds of state
 outlive the release on purpose:
 
 - The PKI and admin Secrets carry `helm.sh/resource-policy: keep`
@@ -390,6 +415,13 @@ outlive the release on purpose:
 - The server PVC comes from a `volumeClaimTemplate`, which Helm never
   tracked, so it survives with the GnuPG home and SQLite database
   intact.
+- The bootstrap lock Lease (`<release>-pki-lock`) carries
+  `helm.sh/resource-policy: keep`, and Argo CD never managed it at all
+  — `coordination.k8s.io/Lease` is in Argo's compiled-in core
+  exclusion list — so it outlives the release on **both** planes. It
+  holds no key material, and a reinstall adopts it and re-acquires it
+  normally, so leaving it costs nothing; step 2 removes it anyway
+  rather than leave an object nobody expects.
 
 The bootstrap Job therefore finds a sealed marker and skips
 generation, which is what makes signing keys survive a reinstall.
@@ -520,7 +552,7 @@ the StatefulSet controller, not by the tool.
 Until `sigul-server` actually exits it holds the signing volume
 mounted and the keys open.
 
-### Step 2: Secrets and claim
+### Step 2: Secrets, claim and lock
 
 Record what backs the claim **before** deleting it. Under a `Delete`
 policy the PV disappears along with the PVC, taking the only pointer
@@ -563,6 +595,17 @@ kubectl -n <namespace> delete secret \
 
 kubectl -n <namespace> delete pvc \
   -l app.kubernetes.io/instance=<release>,app.kubernetes.io/component=server
+```
+
+The bootstrap lock Lease survives both planes (see above), so clear
+it here too. Step 1 already confirmed every pod has exited, which is
+exactly the precondition this needs: removing a Lease that a live
+bootstrap runner still holds would let a second runner start
+alongside it. Do not run this while a `pki-bootstrap` pod exists.
+
+```sh
+kubectl -n <namespace> delete lease \
+  -l app.kubernetes.io/instance=<release>
 ```
 
 ### Step 3: retained PersistentVolume

@@ -40,8 +40,11 @@ die() { printf '[pki-bootstrap] ERROR: %s\n' "$*" >&2; exit 1; }
 # foreground helper long enough to lose the scrub below.
 #
 # k8s_api.py bounds each HTTP request at 30s, but a single subcommand
-# issues at most two sequentially (apply/lock/unlock all do a GET then
-# a PATCH), so the real worst case is ~60s, not 30. 70 leaves slack
+# issues at most two sequentially - apply and unlock do a GET then a
+# PATCH, and lock a bounded read then either a PATCH or, where the
+# chart's Lease never arrived, a POST. The read's retry window is
+# sized to fit inside one request timeout rather than to follow it, so
+# the real worst case stays ~60s, not 30. 70 leaves slack
 # for interpreter start-up without truncating a legitimately slow
 # call; the Job's terminationGracePeriodSeconds is sized above it.
 # Exit 124 on timeout, which the || die callers already treat as
