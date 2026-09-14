@@ -8,18 +8,18 @@ SPDX-FileCopyrightText: 2025 The Linux Foundation
 <!-- markdownlint-disable MD013 -->
 
 [![Linux Foundation](https://img.shields.io/badge/Linux-Foundation-blue)](https://linuxfoundation.org/)
-[![Source Code](https://img.shields.io/badge/GitHub-Source-blue?logo=github&logoColor=white)](https://github.com/lfreleng-actions/sigul-sign-docker)
+[![Source Code](https://img.shields.io/badge/GitHub-Source-blue?logo=github&logoColor=white)](https://github.com/lfreleng-actions/sigul-docker-k8s)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![REUSE status](https://api.reuse.software/badge/github.com/lfreleng-actions/sigul-sign-docker)](https://api.reuse.software/info/github.com/lfreleng-actions/sigul-sign-docker)
-[![Latest Release](https://img.shields.io/github/v/release/lfreleng-actions/sigul-sign-docker?label=Release&include_prereleases&sort=semver)](https://github.com/lfreleng-actions/sigul-sign-docker/releases)
+[![REUSE status](https://api.reuse.software/badge/github.com/lfreleng-actions/sigul-docker-k8s)](https://api.reuse.software/info/github.com/lfreleng-actions/sigul-docker-k8s)
+[![Latest Release](https://img.shields.io/github/v/release/lfreleng-actions/sigul-docker-k8s?label=Release&include_prereleases&sort=semver)](https://github.com/lfreleng-actions/sigul-docker-k8s/releases)
 
-[![Build & Test](https://github.com/lfreleng-actions/sigul-sign-docker/actions/workflows/build-test.yaml/badge.svg?branch=main)](https://github.com/lfreleng-actions/sigul-sign-docker/actions/workflows/build-test.yaml)
+[![Build & Test](https://github.com/lfreleng-actions/sigul-docker-k8s/actions/workflows/build-test.yaml/badge.svg?branch=main)](https://github.com/lfreleng-actions/sigul-docker-k8s/actions/workflows/build-test.yaml)
 [![pre-commit.ci status badge]][pre-commit.ci results page]
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/lfreleng-actions/sigul-sign-docker/badge)](https://scorecard.dev/viewer/?uri=github.com/lfreleng-actions/sigul-sign-docker)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/lfreleng-actions/sigul-docker-k8s/badge)](https://scorecard.dev/viewer/?uri=github.com/lfreleng-actions/sigul-docker-k8s)
 
-[![Client Image](https://img.shields.io/badge/ghcr.io-client-blue?logo=docker&logoColor=white)](https://github.com/lfreleng-actions/sigul-sign-docker/pkgs/container/sigul-sign-docker%2Fclient)
-[![Server Image](https://img.shields.io/badge/ghcr.io-server-blue?logo=docker&logoColor=white)](https://github.com/lfreleng-actions/sigul-sign-docker/pkgs/container/sigul-sign-docker%2Fserver)
-[![Bridge Image](https://img.shields.io/badge/ghcr.io-bridge-blue?logo=docker&logoColor=white)](https://github.com/lfreleng-actions/sigul-sign-docker/pkgs/container/sigul-sign-docker%2Fbridge)
+[![Client Image](https://img.shields.io/badge/ghcr.io-client-blue?logo=docker&logoColor=white)](https://github.com/lfreleng-actions/sigul-docker-k8s/pkgs/container/sigul-sign-docker%2Fclient)
+[![Server Image](https://img.shields.io/badge/ghcr.io-server-blue?logo=docker&logoColor=white)](https://github.com/lfreleng-actions/sigul-docker-k8s/pkgs/container/sigul-sign-docker%2Fserver)
+[![Bridge Image](https://img.shields.io/badge/ghcr.io-bridge-blue?logo=docker&logoColor=white)](https://github.com/lfreleng-actions/sigul-docker-k8s/pkgs/container/sigul-sign-docker%2Fbridge)
 
 <!-- markdownlint-enable MD013 -->
 
@@ -34,6 +34,18 @@ deliverables live in this repository:
    end-to-end test suite — used to validate the action against a live
    Sigul instance and to provide a reproducible local debugging
    environment.
+
+> **Package paths after the repository rename.** This repository was
+> `sigul-sign-docker` until it became `sigul-docker-k8s`. GitHub
+> redirects the old repository URLs, but GHCR package paths are **not**
+> redirected, and renaming a repository does not rename packages it has
+> already published. So everything released up to and including
+> `v2.2.0` stays at `ghcr.io/lfreleng-actions/sigul-sign-docker/...` —
+> the image badges above deliberately still point there. The publishing
+> workflows derive their target from `github.repository`, so the next
+> release will begin populating
+> `ghcr.io/lfreleng-actions/sigul-docker-k8s/...` instead. Consumers
+> pinned to a released tag or digest are unaffected and need no action.
 
 ## Action usage
 
@@ -53,7 +65,7 @@ to skip its own `docker build`.
 ### Sign a single file
 
 ```yaml
-- uses: lfreleng-actions/sigul-sign-docker@v1
+- uses: lfreleng-actions/sigul-docker-k8s@v2.2.0
   with:
       sign-type: 'sign-data'
       sign-object: ${{ github.workspace }}/artifacts/mypackage.tar.gz
@@ -72,7 +84,7 @@ to skip its own `docker build`.
 ### Sign multiple files in a single invocation
 
 ```yaml
-- uses: lfreleng-actions/sigul-sign-docker@v1
+- uses: lfreleng-actions/sigul-docker-k8s@v2.2.0
   with:
       sign-type: 'sign-data'
       sign-object: |
@@ -91,7 +103,7 @@ to skip its own `docker build`.
 ### Sign a git tag
 
 ```yaml
-- uses: lfreleng-actions/sigul-sign-docker@v1
+- uses: lfreleng-actions/sigul-docker-k8s@v2.2.0
   with:
       sign-type: 'sign-git-tag'
       sign-object: 'v1.1' # Existing unsigned annotated tag in the repo
@@ -395,6 +407,6 @@ workflow logs, and — for stack-level bugs — the diagnostic bundle
 from `scripts/collect-sigul-diagnostics.sh --compress` (see
 [Troubleshooting](#troubleshooting)).
 
-[pre-commit.ci results page]: https://results.pre-commit.ci/latest/github/lfreleng-actions/sigul-sign-docker/main
-[pre-commit.ci status badge]: https://results.pre-commit.ci/badge/github/lfreleng-actions/sigul-sign-docker/main.svg
-[gh-issues]: https://github.com/lfreleng-actions/sigul-sign-docker/issues
+[pre-commit.ci results page]: https://results.pre-commit.ci/latest/github/lfreleng-actions/sigul-docker-k8s/main
+[pre-commit.ci status badge]: https://results.pre-commit.ci/badge/github/lfreleng-actions/sigul-docker-k8s/main.svg
+[gh-issues]: https://github.com/lfreleng-actions/sigul-docker-k8s/issues

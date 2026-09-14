@@ -19,7 +19,7 @@ metadata:
 spec:
   project: default  # TODO: dedicated AppProject per platform-team conventions
   source:
-    repoURL: https://github.com/lfreleng-actions/sigul-sign-docker.git
+    repoURL: https://github.com/lfreleng-actions/sigul-docker-k8s.git
     targetRevision: main
     path: K8S/charts/sigul
     helm:
