@@ -38,6 +38,40 @@ die() { printf '[db-init] ERROR: %s\n' "$*" >&2; exit 1; }
 DB="$(grep '^database-path:' "${CONFIG}" | cut -d: -f2 | tr -d ' ')"
 [ -n "${DB}" ] || die "database-path not found in ${CONFIG}"
 
+# Create the directories the daemon's data layout needs.
+#
+# database-path and gnupg-home both live in a subdirectory of the PVC
+# mount rather than at its root (files/conf/server.conf.template),
+# deliberately, so the database survives pod recreation. A freshly
+# provisioned volume is empty, so that subdirectory does not exist on
+# a first boot - and sqlite reports only "unable to open database
+# file", saying nothing about a missing directory, which is a poor
+# clue to work from.
+#
+# This container is the first thing to mount the volume: the optional
+# volume-permissions initContainer adjusts the mount root but creates
+# nothing beneath it, and nss-init does not mount the volume at all.
+# The compose stack does the same work in its entrypoint
+# (scripts/entrypoint-server.sh), which is why the gap only ever
+# showed up under Kubernetes.
+DB_DIR="$(dirname "${DB}")"
+if [ ! -d "${DB_DIR}" ]; then
+    log "Creating ${DB_DIR}"
+    mkdir -p "${DB_DIR}" || die "could not create ${DB_DIR}"
+fi
+
+# The GnuPG home shares that parent and cannot simply inherit from it.
+# The mount root carries the group-writable setgid mode fsGroup
+# expects, and sigul refuses to start against a home directory that is
+# "openable by another user", so create it 0700 explicitly rather than
+# letting the umask and the inherited group decide.
+GNUPG_DIR="$(grep '^gnupg-home:' "${CONFIG}" | cut -d: -f2 | tr -d ' ')"
+if [ -n "${GNUPG_DIR}" ] && [ ! -d "${GNUPG_DIR}" ]; then
+    log "Creating ${GNUPG_DIR}"
+    mkdir -p "${GNUPG_DIR}" || die "could not create ${GNUPG_DIR}"
+    chmod 700 "${GNUPG_DIR}" || die "could not set mode 0700 on ${GNUPG_DIR}"
+fi
+
 # The administrator name is interpolated into a SQL string literal
 # below. The chart validates it at render time (sigul.server.adminUser
 # in _helpers.tpl), but this script must hold on its own: it also runs
