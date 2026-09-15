@@ -49,6 +49,49 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 sigul.linuxfoundation.org/tenant: {{ .Values.tenant | quote }}
 {{- end -}}
 
+{{/* Annotations applied to every pod this chart creates.
+
+     The OpenTelemetry Operator injects auto-instrumentation through a
+     mutating webhook, and the container it adds sets neither
+     allowPrivilegeEscalation=false nor capabilities.drop=["ALL"]. On a
+     namespace enforcing Pod Security "restricted" - which this chart's
+     Application does - the API server then rejects every pod the
+     ReplicaSet, StatefulSet or Job tries to create, with FailedCreate
+     rather than a container error. Nothing in the chart is wrong, and
+     nothing in the chart can be changed to satisfy admission, because
+     the offending container is not ours.
+
+     Opting out is also right on its own terms. Sigul holds a CA private
+     key and the GnuPG home; adding an unaudited sidecar and a JVM or
+     interpreter agent to those pods widens the trust boundary of a
+     signing service for telemetry nobody asked for. The annotations are
+     inert on clusters running no such operator, so the default is safe
+     everywhere.
+
+     Set telemetry.disableAutoInstrumentation=false to let the operator
+     inject after all. Add podAnnotations for any other keys, including
+     the operator's other languages if a cluster enables them. */}}
+{{- define "sigul.podAnnotations" -}}
+{{- $annotations := dict -}}
+{{- if .Values.telemetry.disableAutoInstrumentation -}}
+{{- range $lang := list "java" "python" "dotnet" "nodejs" -}}
+{{- $_ := set $annotations (printf "instrumentation.opentelemetry.io/inject-%s" $lang) "false" -}}
+{{- end -}}
+{{- end -}}
+{{- range $k, $v := .Values.podAnnotations -}}
+{{- $_ := set $annotations $k $v -}}
+{{- end -}}
+{{- /* Values are stringified and quoted: annotation values must be
+       strings, and a bare `--set podAnnotations.foo=true` otherwise
+       renders a YAML boolean that the API server rejects at apply
+       time with a type error rather than at render time. */ -}}
+{{- $lines := list -}}
+{{- range $k, $v := $annotations -}}
+{{- $lines = append $lines (printf "%s: %s" $k ($v | toString | quote)) -}}
+{{- end -}}
+{{- join "\n" $lines -}}
+{{- end -}}
+
 {{/* Image references: digest wins over tag. */}}
 {{- define "sigul.image.bridge" -}}
 {{- if .Values.images.bridge.digest -}}

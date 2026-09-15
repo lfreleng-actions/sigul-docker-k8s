@@ -18,6 +18,31 @@ tenant: opensearch
 imagePullSecrets: []
 #  - name: ghcr-pull
 
+# Extra annotations for every pod this chart creates - bridge, server,
+# admin toolbox and the PKI bootstrap Job. Merged with, and overriding,
+# the telemetry defaults below.
+podAnnotations: {}
+
+telemetry:
+  # Opt every pod out of OpenTelemetry Operator auto-instrumentation.
+  #
+  # Left enabled, that operator's mutating webhook adds a container
+  # setting neither allowPrivilegeEscalation=false nor
+  # capabilities.drop=["ALL"], which a namespace enforcing Pod Security
+  # "restricted" rejects. The workload never starts: pod creation itself
+  # is denied, so the symptom is FailedCreate on the ReplicaSet rather
+  # than anything visible in a container log.
+  #
+  # Independently of that, these pods hold the CA private key and the
+  # GnuPG home, and a signing service is a poor place to run an
+  # unaudited sidecar. The annotations do nothing on clusters without
+  # the operator.
+  #
+  # Covers the four languages the operator injects by default. If a
+  # cluster enables others (inject-go, inject-sdk, inject-nginx,
+  # inject-apache-httpd), add them through podAnnotations above.
+  disableAutoInstrumentation: true
+
 images:
   # Tag and digest track the release that published this chart: the
   # release workflow rewrites both for every component at package

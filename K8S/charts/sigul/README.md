@@ -271,6 +271,43 @@ definitions.
 
 [pss]: https://kubernetes.io/docs/concepts/security/pod-security-standards/
 
+### Mutating webhooks can break `restricted` from outside the chart
+
+A namespace enforcing `restricted` admits only what the *final* pod
+spec contains, and a mutating webhook runs before admission. A webhook
+that injects a container which does not itself set
+`allowPrivilegeEscalation: false` and `capabilities.drop: ["ALL"]`
+therefore makes every pod in the namespace unschedulable, however
+correct the chart's own containers are.
+
+The OpenTelemetry Operator does exactly this:
+
+```text
+FailedCreate  Error creating: pods "…-bridge-686f4c9c94-9qw27" is
+forbidden: violates PodSecurity "restricted:latest":
+allowPrivilegeEscalation != false (container
+"opentelemetry-auto-instrumentation-java" must set
+securityContext.allowPrivilegeEscalation=false)
+```
+
+The symptom is worth recognising, because it points away from the
+cause: the error names a container the chart never declares, and it
+surfaces as `FailedCreate` on the ReplicaSet rather than as a pod that
+starts and fails, so `kubectl logs` has nothing to show.
+
+Every pod this chart creates therefore carries
+`instrumentation.opentelemetry.io/inject-{java,python,dotnet,nodejs}:
+"false"` by default. That is also the right posture independently of
+admission: these pods hold the CA private key and the GnuPG home, and a
+signing service is a poor place to run an unaudited sidecar and a
+language agent. The annotations are inert on clusters running no such
+operator.
+
+Set `telemetry.disableAutoInstrumentation: false` to allow injection,
+and use `podAnnotations` for any other keys — including the operator's
+other languages (`inject-go`, `inject-sdk`, `inject-nginx`,
+`inject-apache-httpd`) should a cluster enable them.
+
 ## Node isolation
 
 Every workload exposes `nodeSelector`, `tolerations` and `affinity`.
