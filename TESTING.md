@@ -147,12 +147,16 @@ Full integration test suite that includes:
 #### With Explicit Configuration
 
 ```bash
+SIGUL_ADMIN_PASSWORD="$(cat test-artifacts/admin-password)" \
 ./scripts/run-client-tests.sh \
     --verbose \
-    --admin-password "auto_generated_ephemeral" \
     --network "sigul-docker_sigul-network" \
     --client-image "sigul-docker-sigul-client-test:latest"
 ```
+
+`run-client-tests.sh` takes the password from the environment; it has no
+`--admin-password` flag. `client-tests.sh` below accepts one, since
+callers invoke it directly rather than through the wrapper.
 
 #### Direct Test Script
 
@@ -161,7 +165,7 @@ Full integration test suite that includes:
     --verbose \
     --network "sigul-docker_sigul-network" \
     --client-image "sigul-docker-sigul-client-test:latest" \
-    --admin-password "auto_generated_ephemeral"
+    --admin-password "$(cat test-artifacts/admin-password)"
 ```
 
 #### Standalone Basic Tests
@@ -301,8 +305,10 @@ The CI workflow integrates the client test suite at
    - Network: `docker network ls --filter "name=sigul"`
    - Client image: `docker images --filter "reference=*sigul*client*"`
 
-5. **Default values** (lowest priority)
-   - Admin password: `auto_generated_ephemeral`
+5. **No default** — the admin password has no fallback value. Each
+   deployment generates its own, so a literal default would fail
+   authentication while appearing to work. When none of the sources
+   above yields one, the scripts stop and say so.
 
 ### Password Synchronization
 

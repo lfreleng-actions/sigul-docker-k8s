@@ -14,7 +14,8 @@
 #   --verbose           Enable verbose output
 #   --network NAME      Docker network name (default: auto-detect)
 #   --client-image IMG  Client image name (default: auto-detect)
-#   --admin-password P  Admin password (default: auto_generated_ephemeral)
+#   --admin-password P  Admin password (default: read from
+#                       test-artifacts/admin-password)
 #   --help              Show this help message
 
 set -euo pipefail
@@ -117,7 +118,8 @@ Options:
     --verbose           Enable verbose output
     --network NAME      Docker network name (default: auto-detect)
     --client-image IMG  Client image name (default: auto-detect)
-    --admin-password P  Admin password (default: auto_generated_ephemeral)
+    --admin-password P  Admin password (default: read from
+                        test-artifacts/admin-password)
     --help              Show this help message
 
 Environment Variables:
@@ -200,9 +202,15 @@ auto_detect_config() {
             ADMIN_PASSWORD=$(cat "${PROJECT_ROOT}/test-artifacts/admin-password")
             verbose "Loaded admin password from test-artifacts/admin-password"
         else
-            # Fall back to default if no other source
-            ADMIN_PASSWORD="auto_generated_ephemeral"
-            verbose "Using default admin password: auto_generated_ephemeral"
+            # No default to fall back to. Every password the stack uses is
+            # generated per deployment, so a literal here would simply
+            # fail authentication against any real server while looking
+            # like a working default.
+            error "No admin password available."
+            error "Run scripts/deploy-sigul-infrastructure.sh (writes"
+            error "test-artifacts/admin-password), or set SIGUL_ADMIN_PASSWORD,"
+            error "or pass --admin-password."
+            return 1
         fi
     else
         verbose "Using admin password from command line"

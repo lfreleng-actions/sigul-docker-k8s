@@ -14,11 +14,27 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 NETWORK="sigul-docker_sigul-network"
 CLIENT_IMAGE="sigul-docker-sigul-client-test"
 CLIENT_NSS_VOLUME="sigul-docker_sigul_client_nss"
 CLIENT_CONFIG_VOLUME="sigul-docker_sigul_client_config"
-ADMIN_PASSWORD="auto_generated_ephemeral"
+
+# Resolve the admin password the deployment generated. There is no
+# default: every password is generated per deployment, so a literal here
+# would fail authentication against any real server while looking like a
+# working default.
+if [ -n "${SIGUL_ADMIN_PASSWORD:-}" ]; then
+    ADMIN_PASSWORD="$SIGUL_ADMIN_PASSWORD"
+elif [ -f "${PROJECT_ROOT}/test-artifacts/admin-password" ]; then
+    ADMIN_PASSWORD="$(cat "${PROJECT_ROOT}/test-artifacts/admin-password")"
+else
+    echo "ERROR: no admin password available." >&2
+    echo "Run scripts/deploy-sigul-infrastructure.sh first; it writes" >&2
+    echo "test-artifacts/admin-password. Or set SIGUL_ADMIN_PASSWORD." >&2
+    exit 1
+fi
 
 # Test counters
 PASSED=0
@@ -225,14 +241,25 @@ fi
 # TEST 10: Batch Mode Input Handling
 # ============================================================================
 test_header "Batch Mode Password Input (NUL-terminated)"
-# Test with explicit NUL terminator
+# Test with explicit NUL terminator using the resolved admin password.
+# This previously hard-coded the docker-compose default fallback, so any
+# deployment supplying a real password failed the test even with a fully
+# working stack - the same defect already fixed in
+# run-integration-tests.sh.
+#
+# The password goes in via 'docker run -e' and is dereferenced inside a
+# single-quoted bash -c, so it is never interpolated on the host. Direct
+# interpolation would break, and could in principle become a shell
+# injection vector, once a generated password contains shell
+# metacharacters.
 OUTPUT=$(docker run --rm \
     --user 1000:1000 \
     --network "$NETWORK" \
+    -e ADMIN_PASSWORD="$ADMIN_PASSWORD" \
     -v "${CLIENT_NSS_VOLUME}:/etc/pki/sigul/client:ro" \
     -v "${CLIENT_CONFIG_VOLUME}:/etc/sigul:ro" \
     "$CLIENT_IMAGE" \
-    bash -c 'printf "auto_generated_ephemeral\0" | sigul --batch -c /etc/sigul/client.conf list-users 2>&1')
+    bash -c 'printf "%s\0" "$ADMIN_PASSWORD" | sigul --batch -c /etc/sigul/client.conf list-users 2>&1')
 
 if echo "$OUTPUT" | grep -q "admin"; then
     pass "Batch mode NUL-terminated password works correctly"

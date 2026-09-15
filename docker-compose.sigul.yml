@@ -36,8 +36,20 @@ services:
     environment:
       # Certificate initialization mode: auto, force, skip
       CERT_INIT_MODE: ${CERT_INIT_MODE:-auto}
-      # NSS Database password for secure operation
-      NSS_PASSWORD: ${NSS_PASSWORD:-auto_generated_ephemeral}
+      # NSS Database password for secure operation.
+      #
+      # No default, and deliberately not a required variable either.
+      # Compose interpolates the whole file for *every* subcommand, so
+      # `${NSS_PASSWORD:?...}` would break `down`, `ps` and `logs` as
+      # well as `up` - teardown paths that have no business knowing a
+      # secret, and which fail silently where they are guarded by
+      # `|| true`. Unset therefore interpolates to empty, and the
+      # containers reject that where it is used: cert-init.sh requires
+      # a non-empty value before it will touch an NSS database.
+      #
+      # Generate one with scripts/deploy-sigul-infrastructure.sh, which
+      # records it in test-artifacts/, or export your own.
+      NSS_PASSWORD: ${NSS_PASSWORD}
       # FQDNs for certificate generation (including client)
       BRIDGE_FQDN: ${BRIDGE_FQDN:-sigul-bridge.example.org}
       SERVER_FQDN: ${SERVER_FQDN:-sigul-server.example.org}
@@ -72,9 +84,9 @@ services:
     hostname: sigul-server.example.org
     environment:
       # NSS Database password for secure operation
-      NSS_PASSWORD: ${NSS_PASSWORD:-auto_generated_ephemeral}
+      NSS_PASSWORD: ${NSS_PASSWORD}
       # Admin user configuration
-      SIGUL_ADMIN_PASSWORD: ${SIGUL_ADMIN_PASSWORD:-auto_generated_ephemeral}
+      SIGUL_ADMIN_PASSWORD: ${SIGUL_ADMIN_PASSWORD}
       SIGUL_ADMIN_USER: ${SIGUL_ADMIN_USER:-admin}
       # Debug mode
       DEBUG: ${DEBUG:-false}
@@ -131,7 +143,7 @@ services:
       SIGUL_BRIDGE_CLIENT_PORT: 44334
       SIGUL_BRIDGE_SERVER_PORT: 44333
       # NSS Database password for secure operation
-      NSS_PASSWORD: ${NSS_PASSWORD:-auto_generated_ephemeral}
+      NSS_PASSWORD: ${NSS_PASSWORD}
       # Debug mode
       DEBUG: ${DEBUG:-false}
       # Toggle gated verbose authentication logging emitted by the
@@ -189,7 +201,7 @@ services:
       SIGUL_BRIDGE_CLIENT_PORT: 44334
       SIGUL_MOCK_MODE: 'false'
       # NSS Database password for secure operation
-      NSS_PASSWORD: ${NSS_PASSWORD:-auto_generated_ephemeral}
+      NSS_PASSWORD: ${NSS_PASSWORD}
       # Debug mode
       DEBUG: ${DEBUG:-false}
       # FQDN for certificate generation

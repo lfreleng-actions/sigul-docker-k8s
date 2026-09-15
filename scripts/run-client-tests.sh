@@ -180,14 +180,26 @@ detect_environment() {
             verbose "Auto-detected network: $NETWORK_NAME"
         fi
 
-        # Try to load password from test-artifacts, fall back to default
+        # Resolve the password the deployment recorded. There is no
+        # default to fall back to: every password is generated per
+        # deployment, so a literal would fail authentication against any
+        # real server while looking like a working default.
+        #
+        # SIGUL_ADMIN_PASSWORD is consulted first, and in the same order
+        # as the CI branch above - the error below tells the caller to
+        # set it, so this branch has to honour it.
         if [[ -z "$ADMIN_PASSWORD" ]]; then
-            if [[ -f "${PROJECT_ROOT}/test-artifacts/admin-password" ]]; then
+            if [[ -n "${SIGUL_ADMIN_PASSWORD:-}" ]]; then
+                ADMIN_PASSWORD="$SIGUL_ADMIN_PASSWORD"
+                verbose "Using admin password from SIGUL_ADMIN_PASSWORD"
+            elif [[ -f "${PROJECT_ROOT}/test-artifacts/admin-password" ]]; then
                 ADMIN_PASSWORD=$(cat "${PROJECT_ROOT}/test-artifacts/admin-password")
                 verbose "Loaded admin password from test-artifacts/admin-password"
             else
-                ADMIN_PASSWORD="auto_generated_ephemeral"
-                verbose "Using default admin password: auto_generated_ephemeral"
+                error "No admin password available."
+                error "Run scripts/deploy-sigul-infrastructure.sh first; it writes"
+                error "test-artifacts/admin-password. Or set SIGUL_ADMIN_PASSWORD."
+                return 1
             fi
         fi
     fi
