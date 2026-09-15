@@ -5,10 +5,23 @@
 # Rendered at pod start by nss-init.sh (envsubst) into an emptyDir;
 # never stored in a ConfigMap because it embeds the NSS password.
 #
-# NOTE: database-path deliberately lives UNDER /var/lib/sigul/server
-# (the PVC mount) - this fixes the compose-stack defect where the
-# SQLite DB landed on the container writable layer and was lost on
-# recreation (EVALUATION.md section 2.5).
+# NOTE: database-path lives UNDER /var/lib/sigul/server, which is both
+# the image's WORKDIR and where the PVC is mounted - this fixes the
+# compose-stack defect where the SQLite DB landed on the container
+# writable layer and was lost on recreation (EVALUATION.md section 2.5).
+#
+# database-path itself is free: the daemon and the image entrypoint
+# both read it from here. gnupg-home is not. The entrypoint prepares
+# its own GnuPG directory from a hard-coded SERVER_DATA_DIR before the
+# daemon launches (scripts/entrypoint-server.sh, which ships in the
+# image the compose stack shares), so gnupg-home must name the same
+# path the entrypoint will create. Point it elsewhere and the
+# entrypoint still prepares /var/lib/sigul/server/gnupg, fails there if
+# that path is not writable, and the daemon never starts - after
+# db-init has already reported success.
+#
+# So move the mount in templates/server-statefulset.yaml, not these
+# values.
 #
 # Variables: NSS_PASSWORD, SERVER_CERT_NICKNAME, BRIDGE_HOSTNAME,
 #            BRIDGE_PORT
