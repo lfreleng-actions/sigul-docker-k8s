@@ -184,6 +184,10 @@ spec:
   {{- end }}
   template:
     metadata:
+      {{- with (include "sigul.podAnnotations" .) }}
+      annotations:
+        {{- . | nindent 8 }}
+      {{- end }}
       labels:
         {{- include "sigul.labels" . | nindent 8 }}
         app.kubernetes.io/component: pki-bootstrap
