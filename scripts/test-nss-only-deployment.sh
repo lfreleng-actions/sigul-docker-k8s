@@ -43,6 +43,10 @@ readonly PROJECT_ROOT
 readonly TEST_DIR="$PROJECT_ROOT/test-nss-only"
 readonly DOCKER_COMPOSE_FILE="$PROJECT_ROOT/docker-compose.sigul.yml"
 
+# Credential generation. Nothing in this repository ships a default.
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/secrets.sh"
+
 # Test configuration
 QUICK_TEST=false
 VERBOSE=false
@@ -116,9 +120,18 @@ setup_test_environment() {
     mkdir -p "$TEST_DIR"
     debug "Created test directory: $TEST_DIR"
 
-    # Set environment variables for testing
-    export NSS_PASSWORD="test_password_123"
-    export SIGUL_ADMIN_PASSWORD="admin_password_123"
+    # Set environment variables for testing.
+    #
+    # Generated per run rather than fixed. A literal here would not stay
+    # a test value: the admin password is hashed into the server's
+    # SQLite database at first boot, so it becomes the real credential
+    # for any stack this script leaves behind - and this is a public
+    # repository.
+    NSS_PASSWORD="$(generate_password 18)"
+    SIGUL_ADMIN_PASSWORD="$(generate_password 12)"
+    mask_secret "$NSS_PASSWORD"
+    mask_secret "$SIGUL_ADMIN_PASSWORD"
+    export NSS_PASSWORD SIGUL_ADMIN_PASSWORD
     export SIGUL_ADMIN_USER="testadmin"
     export DEBUG="true"
 

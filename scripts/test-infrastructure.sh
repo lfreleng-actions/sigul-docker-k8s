@@ -7,6 +7,12 @@
 
 set -euo pipefail
 
+# Credential generation. Nothing in this repository ships a default.
+TEST_INFRA_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEST_INFRA_PROJECT_ROOT="$(dirname "$TEST_INFRA_SCRIPT_DIR")"
+# shellcheck disable=SC1091
+source "${TEST_INFRA_SCRIPT_DIR}/lib/secrets.sh"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -144,6 +150,34 @@ start_stack() {
     platform_id=$(detect_platform)
 
     log_info "Starting Sigul infrastructure stack for platform: $platform_id..."
+
+    # Resolve credentials before starting anything. Reuses whatever a
+    # previous deployment recorded, so a stack started here stays
+    # reachable by the client tests, and a restart against surviving
+    # volumes keeps working - the server database holds the admin
+    # password hash, and the NSS databases their own password. Only a
+    # first run generates, and it records what it generated.
+    #
+    # The control paths below (stop, status, logs, cleanup) deliberately
+    # do not do this: they have no business knowing a secret, and the
+    # compose file interpolates these variables without requiring them.
+    local artifacts="${TEST_INFRA_PROJECT_ROOT}/test-artifacts"
+    if [[ -f "${artifacts}/admin-password" && -f "${artifacts}/nss-password" ]]; then
+        SIGUL_ADMIN_PASSWORD="$(cat "${artifacts}/admin-password")"
+        NSS_PASSWORD="$(cat "${artifacts}/nss-password")"
+        log_info "Reusing credentials recorded in test-artifacts/"
+    else
+        SIGUL_ADMIN_PASSWORD="$(generate_password 12)"
+        NSS_PASSWORD="$(generate_password 18)"
+        mkdir -p "${artifacts}"
+        printf '%s' "$SIGUL_ADMIN_PASSWORD" > "${artifacts}/admin-password"
+        printf '%s' "$NSS_PASSWORD" > "${artifacts}/nss-password"
+        chmod 600 "${artifacts}/admin-password" "${artifacts}/nss-password"
+        log_info "Generated credentials, recorded in test-artifacts/"
+    fi
+    mask_secret "$SIGUL_ADMIN_PASSWORD"
+    mask_secret "$NSS_PASSWORD"
+    export SIGUL_ADMIN_PASSWORD NSS_PASSWORD
 
     # Set environment variables with GitHub Actions compatible image names
     export SIGUL_SKIP_ADMIN_USER="$skip_admin"

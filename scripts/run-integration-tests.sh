@@ -465,10 +465,11 @@ fi
 # ============================================================================
 test_header "Batch Mode Password Input (NUL-terminated)"
 # Test with explicit NUL terminator using the loaded admin password.
-# Historically this test hard-coded the literal string
-# "auto_generated_ephemeral" which is the docker-compose default fallback;
-# any deployment that supplies a real password would always fail this
-# test even with a fully working stack.  Use $ADMIN_PASSWORD instead.
+# Historically this test hard-coded a literal password matching the
+# docker-compose default fallback; any deployment that supplies a real
+# password would always fail this test even with a fully working stack.
+# Use $ADMIN_PASSWORD instead. That fallback no longer exists - compose
+# now requires the variable - so a literal here would fail everywhere.
 #
 # We pass the password via -e ADMIN_PASSWORD rather than interpolating
 # it into the bash -c string.  Direct interpolation would break (and

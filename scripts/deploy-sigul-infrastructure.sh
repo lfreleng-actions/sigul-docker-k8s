@@ -28,6 +28,10 @@ COMPOSE_FILE="${PROJECT_ROOT}/docker-compose.sigul.yml"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/health.sh"
 
+# Credential generation. Nothing in this repository ships a default.
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/secrets.sh"
+
 # Default options
 VERBOSE_MODE=false
 DEBUG_MODE=false
@@ -870,30 +874,68 @@ deploy_sigul_services() {
     export SIGUL_BRIDGE_IMAGE="bridge-${platform_id}-image:test"
     # SIGUL_CLIENT_IMAGE removed from infrastructure deployment (only needed for integration tests)
 
-    # Generate ephemeral admin password BEFORE starting containers
-    log "Setting up ephemeral credentials for deployment..."
+    # Credentials must match the state on the volumes, not the other
+    # way round. entrypoint-server.sh creates the admin user only while
+    # initialising a new database; against one that already exists it
+    # skips creation, so regenerating here would record an artifact that
+    # opens nothing. The NSS password behaves the same way - it unlocks
+    # NSS databases created on the surviving volumes.
+    local admin_file="${PROJECT_ROOT}/test-artifacts/admin-password"
+    local nss_file="${PROJECT_ROOT}/test-artifacts/nss-password"
+    local server_volume="sigul-docker_sigul_server_data"
+    local reusing_state=false
+    if [[ "$FORCE_CLEAN_VOLUMES" != "true" ]] \
+        && docker volume ls -q 2>/dev/null | grep -qx "$server_volume"; then
+        reusing_state=true
+    fi
+
     local ephemeral_admin_password
-    ephemeral_admin_password=$(head -c 12 /dev/urandom | base64)
+    local ephemeral_nss_password
+
+    if [[ "$reusing_state" == "true" ]]; then
+        # Failing here beats overwriting the only record of a password
+        # that the surviving database still expects.
+        if [[ ! -f "$admin_file" || ! -f "$nss_file" ]]; then
+            error "Existing volumes found, but their recorded credentials are missing."
+            error "Expected test-artifacts/admin-password and test-artifacts/nss-password."
+            error "The surviving server database holds the admin password hash, and the"
+            error "NSS databases their own password, so freshly generated values would"
+            error "not open either. Restore those files, or re-run with"
+            error "--force-clean-volumes to discard the volumes and start a new trust"
+            error "domain."
+            exit 1
+        fi
+        ephemeral_admin_password="$(cat "$admin_file")"
+        ephemeral_nss_password="$(cat "$nss_file")"
+        log "Reusing the credentials recorded for the existing volumes"
+    else
+        log "Setting up ephemeral credentials for deployment..."
+        ephemeral_admin_password="$(generate_password 12)"
+        ephemeral_nss_password="$(generate_password 18)"
+
+        # Store passwords for integration tests to use. The admin
+        # password is hashed into the server database at first boot and
+        # Sigul has no re-issue path for it, so this file is the only
+        # copy once the stack is up. Losing it means adding a second
+        # admin from inside a running server.
+        mkdir -p "${PROJECT_ROOT}/test-artifacts"
+        printf '%s' "$ephemeral_admin_password" > "$admin_file"
+        printf '%s' "$ephemeral_nss_password" > "$nss_file"
+        chmod 600 "$admin_file" "$nss_file"
+        log "✅ Passwords saved to test-artifacts/ (not printed; read the files)"
+    fi
+
+    mask_secret "$ephemeral_admin_password"
+    mask_secret "$ephemeral_nss_password"
     export SIGUL_ADMIN_PASSWORD="$ephemeral_admin_password"
+    export NSS_PASSWORD="$ephemeral_nss_password"
     export SIGUL_SKIP_ADMIN_USER="false"
 
-    # Generate ephemeral NSS password as well
-    local ephemeral_nss_password
-    ephemeral_nss_password=$(head -c 18 /dev/urandom | base64)
-    export NSS_PASSWORD="$ephemeral_nss_password"
-
-    verbose "Generated ephemeral credentials for deployment"
-    log "📝 Generated Passwords:"
-    log "   Admin Password: $ephemeral_admin_password"
-    log "   NSS Password: $ephemeral_nss_password"
-
-    # Store passwords for integration tests to use
-    mkdir -p "${PROJECT_ROOT}/test-artifacts"
-    printf '%s' "$ephemeral_admin_password" > "${PROJECT_ROOT}/test-artifacts/admin-password"
-    printf '%s' "$ephemeral_nss_password" > "${PROJECT_ROOT}/test-artifacts/nss-password"
-    chmod 600 "${PROJECT_ROOT}/test-artifacts/admin-password"
-    chmod 600 "${PROJECT_ROOT}/test-artifacts/nss-password"
-    log "✅ Passwords saved to test-artifacts/"
+    verbose "Credentials ready for deployment"
+    # Deliberately not logged. These are masked in GitHub Actions, but a
+    # mask only covers output that follows it and does nothing for a
+    # local terminal, a downloaded raw log or a fork build. The files
+    # above are the record; read them from there.
 
     # Initialize bridge readiness tracking
     initialize_bridge_readiness_tracking
