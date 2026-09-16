@@ -40,24 +40,62 @@ DB="$(grep '^database-path:' "${CONFIG}" | cut -d: -f2 | tr -d ' ')"
 
 # Create the directories the daemon's data layout needs.
 #
-# database-path and gnupg-home both live in a subdirectory of the PVC
-# mount rather than at its root (files/conf/server.conf.template),
-# deliberately, so the database survives pod recreation. A freshly
-# provisioned volume is empty, so that subdirectory does not exist on
-# a first boot - and sqlite reports only "unable to open database
-# file", saying nothing about a missing directory, which is a poor
-# clue to work from.
+# Both paths are read from the chart-rendered config below, not from
+# the image. The PVC is mounted at /var/lib/sigul/server - the image's
+# WORKDIR, deliberately - so database-path sits at the mount root and
+# needs no directory created; gnupg-home is one level below it and
+# does.
 #
-# This container is the first thing to mount the volume: the optional
-# volume-permissions initContainer adjusts the mount root but creates
-# nothing beneath it, and nss-init does not mount the volume at all.
-# The compose stack does the same work in its entrypoint
-# (scripts/entrypoint-server.sh), which is why the gap only ever
-# showed up under Kubernetes.
+# gnupg-home is not freely chosen, though: the image entrypoint
+# prepares its own GnuPG directory from a hard-coded path before the
+# daemon starts, so the value here has to match it. See
+# files/conf/server.conf.template.
+#
+# The DB_DIR branch below is therefore normally a no-op. It stays
+# because it costs nothing and covers a mount placed elsewhere, and
+# because sqlite reports only "unable to open database file" when the
+# directory is missing, which is a poor clue to work from.
 DB_DIR="$(dirname "${DB}")"
 if [ ! -d "${DB_DIR}" ]; then
     log "Creating ${DB_DIR}"
     mkdir -p "${DB_DIR}" || die "could not create ${DB_DIR}"
+fi
+
+# Refuse to run against the pre-2.2.4 on-disk layout.
+#
+# Until this chart mounted the PVC at the data directory it mounted one
+# level higher, so the database and GnuPG home sat in a server/
+# subdirectory OF THE VOLUME. After the move the same configured paths
+# resolve at the volume root, so an upgraded release looks straight
+# past them: it would find no database, generate a new one, and strand
+# a live trust domain and its signing keys one directory below without
+# ever saying so. Stop instead, and say where the data is.
+LEGACY_DIR="${DB_DIR}/server"
+if [ ! -s "${DB}" ] && \
+   { [ -s "${LEGACY_DIR}/$(basename "${DB}")" ] || [ -d "${LEGACY_DIR}/gnupg" ]; }; then
+    printf '[db-init] ERROR: %s\n' \
+        "data from an older chart layout found under ${LEGACY_DIR}" >&2
+    printf '[db-init] %s\n' \
+        "This release mounts the volume at ${DB_DIR}, so the database" \
+        "and GnuPG home now belong directly in it. Continuing would" \
+        "create an empty database alongside the existing one and leave" \
+        "the signing keys unreachable." \
+        "" \
+        "Back the volume up, then move the contents up one level." \
+        "Run this as a single command, as the sigul user, from a pod" \
+        "mounting this volume:" \
+        "" \
+        "  { [ ! -e ${DB_DIR}/gnupg ] || rmdir ${DB_DIR}/gnupg; } \\" \
+        "    && mv ${LEGACY_DIR}/* ${DB_DIR}/ \\" \
+        "    && rmdir ${LEGACY_DIR}" \
+        "" \
+        "It is chained deliberately. A GnuPG home already present at" \
+        "the destination is removed only when empty; rmdir refuses a" \
+        "populated one, and the && then stops the move entirely. Run" \
+        "the mv on its own against a populated destination and it" \
+        "relocates the database while rejecting the GnuPG directory," \
+        "separating a trust domain from its signing keys." >&2
+    exit 1
 fi
 
 # The GnuPG home shares that parent and cannot simply inherit from it.

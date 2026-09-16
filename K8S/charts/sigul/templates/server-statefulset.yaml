@@ -70,7 +70,7 @@ spec:
         - name: volume-permissions
           image: {{ include "sigul.image.server" . }}
           imagePullPolicy: {{ .Values.images.server.pullPolicy }}
-          command: ["/bin/bash", "-c", "chown -R 1000:1000 /var/lib/sigul && chmod 2775 /var/lib/sigul"]
+          command: ["/bin/bash", "-c", "chown -R 1000:1000 /var/lib/sigul/server && chmod 2775 /var/lib/sigul/server"]
           securityContext:
             runAsUser: 0
             runAsNonRoot: false
@@ -92,7 +92,7 @@ spec:
               add: ["CHOWN", "FOWNER", "DAC_OVERRIDE"]
           volumeMounts:
             - name: data
-              mountPath: /var/lib/sigul
+              mountPath: /var/lib/sigul/server
         {{- end }}
         # Gate on bridge READINESS without opening any TCP connection:
         # the headless Service's DNS records exist only while the
@@ -185,8 +185,44 @@ spec:
             - name: scripts
               mountPath: /scripts
               readOnly: true
+            # Mounted at /var/lib/sigul/server, NOT at /var/lib/sigul,
+            # because that path is the image's WORKDIR
+            # (Dockerfile.server). Keep the two equal.
+            #
+            # A container's working directory has to exist, so the
+            # runtime creates it when it does not - as root, mode 0755,
+            # after fsGroup has already run. Mount the volume at the
+            # WORKDIR's parent and that mkdir lands ON the volume:
+            # /var/lib/sigul/server appears root-owned and not
+            # group-writable, and this pod cannot write into it. That is
+            # what killed db-init while it created the GnuPG home.
+            # Mounting AT the WORKDIR means the directory already exists
+            # when the runtime looks, so nothing is created and fsGroup
+            # has made the mount root group-writable.
+            #
+            # Verified rather than assumed: the same image with
+            # workingDir overridden to / leaves the volume empty, and
+            # busybox - which has nothing at this path - creates a
+            # root-owned server/ when its workingDir is set here. The
+            # image's content is irrelevant; the working directory is
+            # what decides. Kubernetes hides image content under a
+            # mount, it does not copy it.
+            #
+            # Docker hides the whole problem, which is why the compose
+            # stack is unaffected: it runs the same image with the same
+            # WORKDIR, but its named-volume copy seeds the volume from
+            # the image and preserves ownership.
+            #
+            # So if Dockerfile.server's WORKDIR ever moves, this mount
+            # moves with it. Do not "tidy" this to /var/lib/sigul, and
+            # do not move the paths in files/conf/server.conf.template
+            # instead: the image entrypoint prepares its own GnuPG
+            # directory from a hard-coded path before the daemon
+            # launches, so it would still look here, fail while
+            # preparing it, and never reach the daemon - after db-init
+            # had already reported success.
             - name: data
-              mountPath: /var/lib/sigul
+              mountPath: /var/lib/sigul/server
             - name: nss
               mountPath: /etc/pki/sigul/server
             - name: config
@@ -257,7 +293,7 @@ spec:
             periodSeconds: 15
           volumeMounts:
             - name: data
-              mountPath: /var/lib/sigul
+              mountPath: /var/lib/sigul/server
             - name: nss
               mountPath: /etc/pki/sigul/server
             - name: config
