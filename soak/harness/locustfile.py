@@ -22,13 +22,16 @@ from __future__ import annotations
 import csv
 import logging
 import os
-import subprocess
+import sys
 import time
 from pathlib import Path
 
 from locust import LoadTestShape, User, between, events, task
 
-CONFIG = os.environ.get("SIGUL_CONFIG", "/etc/sigul/client.conf")
+# Locust puts this file's directory on sys.path, not the package root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from harness.cli import run_sigul  # noqa: E402
+
 OUTPUT_DIR = Path(os.environ.get("SOAK_OUTPUT_DIR", "/results"))
 WORK_DIR = Path("/tmp/soak-work")
 
@@ -90,33 +93,14 @@ def _read_admin_password() -> str:
 def _run_sigul(
     argv: list[str], passwords: list[str], timeout: float
 ) -> tuple[bool, str]:
-    """Run one sigul command, feeding NUL-separated passwords on stdin.
+    """Run one sigul command in its own process group; see harness.cli.
 
-    Returns (succeeded, detail): stdout on success, the last line of
-    stderr on failure. A timeout is reported as a distinct
-    error because it is the interesting one: it means the request never
+    A timeout is the interesting failure: it means the request never
     came back, which under Sigul's serial model implies the whole
     service was blocked, not just this caller.
     """
-    stdin_payload = b"".join(p.encode() + b"\0" for p in passwords)
-    try:
-        proc = subprocess.run(
-            ["sigul", "--batch", "-c", CONFIG, *argv],
-            input=stdin_payload,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return False, f"timeout after {timeout:.0f}s"
-
-    if proc.returncode == 0:
-        return True, proc.stdout.decode("utf-8", errors="replace")
-
-    detail = (proc.stderr or proc.stdout).decode("utf-8", errors="replace")
-    return False, detail.strip().splitlines()[-1][:200] if detail.strip() else (
-        f"exit {proc.returncode}"
-    )
+    outcome = run_sigul(argv, passwords, timeout)
+    return outcome.ok, outcome.detail
 
 
 @events.init.add_listener

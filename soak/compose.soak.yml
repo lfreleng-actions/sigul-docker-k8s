@@ -70,6 +70,10 @@ services:
     # process-level faults. The container is a test harness on a
     # throwaway network and signs nothing.
     user: "0:0"
+    # A reaping PID 1. Faults kill sigul clients mid-request, and each
+    # client has a forwarding child that is orphaned when its parent
+    # dies; without an init those pile up as zombies in the harness.
+    init: true
     environment:
       SOAK_PROFILE: ${SOAK_PROFILE:-pr}
       SOAK_OUTPUT_DIR: /results

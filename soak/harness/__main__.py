@@ -35,6 +35,7 @@ from pathlib import Path
 
 from . import analyze, report
 from .analyze import FaultMeta
+from .cli import run_sigul
 from .faults import build_registry
 from .faults.network import configure_proxies
 from .profiles import PROFILES, Profile
@@ -55,29 +56,21 @@ def log(message: str) -> None:
 STARTUP_BUDGET_SECONDS = 300.0
 
 
-def wait_for_service(config: str, password: str) -> None:
+def wait_for_service(password: str) -> None:
     """Block until one real request succeeds, or give up."""
     deadline = time.monotonic() + STARTUP_BUDGET_SECONDS
     attempt = 0
     while time.monotonic() < deadline:
         attempt += 1
         remaining = deadline - time.monotonic()
-        try:
-            proc = subprocess.run(  # noqa: S603
-                ["sigul", "--batch", "-c", config, "list-users"],
-                input=password.encode() + b"\0",
-                capture_output=True,
-                timeout=min(60.0, max(1.0, remaining)),
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            # A request that hangs is a failed attempt like any other;
-            # it is also the condition this loop most needs to outlast.
-            continue
-        if proc.returncode == 0:
+        outcome = run_sigul(
+            ["list-users"], [password], timeout=min(60.0, max(1.0, remaining))
+        )
+        if outcome.ok:
             log(f"stack is serving (attempt {attempt})")
             return
-        time.sleep(5)
+        if not outcome.timed_out:
+            time.sleep(5)
     raise SystemExit(
         f"stack served no request within {STARTUP_BUDGET_SECONDS:.0f}s; aborting soak"
     )
@@ -109,27 +102,13 @@ def wait_for_load_start(
     raise SystemExit(f"locust did not start within {timeout:.0f}s")
 
 
-def make_probe(requests_csv: Path, config: str, password: str):  # noqa: ANN201
+def make_probe(requests_csv: Path, password: str):  # noqa: ANN201
     """One real request, logged in the same shape as Locust's rows."""
 
     def probe() -> None:
         started = time.perf_counter()
-        try:
-            proc = subprocess.run(  # noqa: S603
-                ["sigul", "--batch", "-c", config, "list-users"],
-                input=password.encode() + b"\0",
-                capture_output=True,
-                timeout=60,
-                check=False,
-            )
-            ok = proc.returncode == 0
-            detail = (
-                ""
-                if ok
-                else proc.stderr.decode("utf-8", errors="replace").strip()[-200:]
-            )
-        except subprocess.TimeoutExpired:
-            ok, detail = False, "timeout after 60s"
+        outcome = run_sigul(["list-users"], [password], timeout=60)
+        ok, detail = outcome.ok, ("" if outcome.ok else outcome.detail)
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         new = not requests_csv.is_file() or requests_csv.stat().st_size == 0
         with requests_csv.open("a", newline="") as handle:
@@ -232,7 +211,6 @@ def run(profile: Profile, output_dir: Path) -> int:
     for stale in ("requests.csv", "samples.csv", "timeline.csv", "locust-started"):
         (output_dir / stale).unlink(missing_ok=True)
 
-    config = os.environ.get("SIGUL_CONFIG", "/etc/sigul/client.conf")
     password = Path("/test-artifacts/admin-password").read_text().strip()
     bridge = os.environ.get("SOAK_BRIDGE_CONTAINER", "sigul-bridge")
     server = os.environ.get("SOAK_SERVER_CONTAINER", "sigul-server")
@@ -244,7 +222,7 @@ def run(profile: Profile, output_dir: Path) -> int:
     )
 
     configure_proxies(bridge)
-    wait_for_service(config, password)
+    wait_for_service(password)
 
     target = DockerTarget()
     registry = build_registry(target)
@@ -275,9 +253,7 @@ def run(profile: Profile, output_dir: Path) -> int:
         # Preflight faults need an idle stack - no request in flight -
         # so they run before the load generator, with probe requests
         # standing in for it during their recovery windows.
-        scheduler.run_preflight(
-            make_probe(output_dir / "requests.csv", config, password)
-        )
+        scheduler.run_preflight(make_probe(output_dir / "requests.csv", password))
         locust = start_locust(profile, output_dir, profile.total_seconds())
         anchor = wait_for_load_start(output_dir / "locust-started", locust)
         scheduler.run_ramp(anchor)
