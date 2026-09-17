@@ -130,11 +130,13 @@ def _fault_result(
     # alone; its stall is reported but cannot be a failure.
     stalled = meta.service_possible_during and stall > stall_bound
     timeline_note = row.get("note", "")
-    # A fault may observe the product failing directly (recorded as
-    # "defect: ..."); that counts like a stall. Anything else in the
-    # note means the harness failed to inject or remove the fault.
-    defect_observed = timeline_note.startswith("defect:")
-    harness_error = bool(timeline_note) and not defect_observed
+    # The note is a list of "; "-separated entries. A fault may observe
+    # the product failing directly ("defect: ..."), which counts like a
+    # stall. Any other entry means the harness failed to inject or
+    # remove the fault, and no product outcome excuses that.
+    entries = [e.strip() for e in timeline_note.split(";") if e.strip()]
+    defect_observed = any(e.startswith("defect:") for e in entries)
+    harness_error = any(not e.startswith("defect:") for e in entries)
 
     if harness_error:
         note = f"harness: {timeline_note}"
@@ -242,6 +244,7 @@ def analyse(
     expectations: dict,
     baseline: dict | None,
     units: tuple[str, ...] = ("sigul-bridge", "sigul-server"),
+    harness_failure: str | None = None,
 ) -> Results:
     run = Run.load(output_dir)
     now = time.time()
@@ -283,6 +286,18 @@ def analyse(
     }
 
     results.invariants = coverage(results, units, run, windows) + invariants(results)
+    # A failure of the harness itself - load generator gone, sampler
+    # stuck - is recorded as the first invariant so the published
+    # report and results.json carry the same verdict the exit status
+    # does, and no expectation can match it.
+    results.invariants.insert(
+        0,
+        Check(
+            "harness ran to completion",
+            harness_failure is None,
+            harness_failure or "load, sampling and fault injection all ran as planned",
+        ),
+    )
     if baseline:
         results.regressions = regressions(results, baseline)
 

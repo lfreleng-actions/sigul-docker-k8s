@@ -50,9 +50,13 @@ class RequestLog:
     """
 
     def __init__(self, path: Path) -> None:
-        self._file = path.open("w", newline="")
+        # The harness may already have written probe rows for the
+        # preflight phase; append to those rather than replace them.
+        existing = path.is_file() and path.stat().st_size > 0
+        self._file = path.open("a" if existing else "w", newline="")
         self._writer = csv.writer(self._file)
-        self._writer.writerow(["epoch", "task", "latency_ms", "ok", "detail"])
+        if not existing:
+            self._writer.writerow(["epoch", "task", "latency_ms", "ok", "detail"])
 
     def record(self, name: str, response_time: float, exception: object) -> None:
         self._writer.writerow(

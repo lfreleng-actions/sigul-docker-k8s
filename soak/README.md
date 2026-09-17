@@ -28,11 +28,13 @@ harness exists to find the others before they find us.
 The `pr` profile, about 30 minutes, looks like this:
 
 ```text
+preflight teardown against a silent peer     the production deadlock, on
+                                              an idle child; recovery is
+                                              measured with probe requests
 ramp      1 → 2 → 4 → 8 clients, 45s each     finds the backlog cliff
-warm      restart server, restart bridge,    recovery measured; done here
-          teardown against a silent peer      so nothing that resets a
-                                              daemon falls inside the
-                                              leak-measurement window
+warm      restart server, restart bridge      recovery measured; done here
+                                              so no restart falls inside
+                                              the leak-measurement window
 baseline  2 min clean load at 3 clients       reference latency, leak start
 faults    8 faults, 16 min in total           the actual test
 cooldown  5 min clean load                    compared against baseline
@@ -79,7 +81,9 @@ ought to shed it; a fault that removes the service outright (frozen
 bridge, blackholed link) is judged on recovery alone.
 
 **Invariants**, absolute: recovery after every fault; RSS trend under
-30 MB/h from a fit over the whole run; descriptors and CLOSE-WAIT
+30 MB/h from a fit over the span from the first baseline sample to
+the last cooldown one (judged only when that span is at least ten
+minutes, and reported otherwise); descriptors and CLOSE-WAIT
 sockets back to where they were in the baseline phase; no zombies; no
 restart of either daemon between baseline and cooldown, since that
 would reset everything the comparison measures; and each daemon

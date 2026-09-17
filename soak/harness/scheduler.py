@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import csv
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from .faults import Fault
@@ -60,7 +61,7 @@ class Scheduler:
 
         missing = [
             slot.fault
-            for slot in profile.warm_faults + profile.faults
+            for slot in profile.preflight_faults + profile.warm_faults + profile.faults
             if slot.fault not in registry
         ]
         if missing:
@@ -88,6 +89,19 @@ class Scheduler:
         self._sleep(self._profile.baseline_seconds)
         self._timeline.record("phase", "baseline", start, time.time())
 
+    def run_preflight(self, probe: Callable[[], None]) -> None:
+        """Faults that need an idle stack, run before the load starts.
+
+        No load generator is running, so recovery is measured by calling
+        `probe` - one real request, logged like any other - every couple
+        of seconds through the recovery window.
+        """
+        if not self._profile.preflight_faults:
+            return
+        start = time.time()
+        self._run_slots(self._profile.preflight_faults, "preflight", probe)
+        self._timeline.record("phase", "preflight", start, time.time())
+
     def run_warm_faults(self) -> None:
         """Restarts and other lifetime-resetting faults, before baseline."""
         if not self._profile.warm_faults:
@@ -101,7 +115,12 @@ class Scheduler:
         self._run_slots(self._profile.faults, "fault")
         self._timeline.record("phase", "faults", start, time.time())
 
-    def _run_slots(self, slots: tuple[FaultSlot, ...], label: str) -> None:
+    def _run_slots(
+        self,
+        slots: tuple[FaultSlot, ...],
+        label: str,
+        probe: Callable[[], None] | None = None,
+    ) -> None:
         for index, slot in enumerate(slots, start=1):
             fault = self._registry[slot.fault]
             self._log(
@@ -133,7 +152,13 @@ class Scheduler:
                 self._active = None
             end = time.time()
             self._timeline.record("fault", fault.name, start, end, note)
-            self._sleep(slot.recovery)
+            if probe is None:
+                self._sleep(slot.recovery)
+            else:
+                deadline = time.time() + slot.recovery
+                while time.time() < deadline:
+                    probe()
+                    self._sleep(min(2.0, max(0.0, deadline - time.time())))
             self._timeline.record("recovery", fault.name, end, time.time())
 
     def run_cooldown(self) -> None:

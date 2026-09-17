@@ -285,10 +285,14 @@ class DockerTarget(Target):
             container.unpause()  # type: ignore[attr-defined]
 
     def logs_since(self, unit: str, seconds: float) -> str:
+        # The SDK reads an integer `since` as an epoch timestamp, not an
+        # age; convert the lookback to one.
+        import time as _time
+
         return (
             self._container(unit)
             .logs(  # type: ignore[attr-defined]
-                since=int(seconds), tail=2000
+                since=int(_time.time() - seconds), tail=2000
             )
             .decode("utf-8", errors="replace")
         )

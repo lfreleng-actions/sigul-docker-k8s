@@ -24,6 +24,7 @@ Exit status is the verdict, so CI can gate on it directly.
 from __future__ import annotations
 
 import contextlib
+import csv
 import json
 import os
 import signal
@@ -82,14 +83,19 @@ def wait_for_service(config: str, password: str) -> None:
     )
 
 
+def _line_count(path: Path) -> int:
+    return sum(1 for _ in path.open()) if path.is_file() else 0
+
+
 def wait_for_first_request(
-    requests_csv: Path, locust: subprocess.Popen, timeout: float = 600.0
+    requests_csv: Path, locust: subprocess.Popen, already: int, timeout: float = 600.0
 ) -> None:
     """Hold the timeline until Locust has actually sent a request.
 
     Locust's init creates the signing key on a fresh stack, which can
     take a while; starting the ramp clock before that would count key
-    generation as load. Locust exiting first is a failure to start.
+    generation as load. `already` is the number of rows the preflight
+    probes left in the log. Locust exiting first is a failure to start.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -97,11 +103,51 @@ def wait_for_first_request(
             raise SystemExit(
                 f"locust exited during startup with status {locust.returncode}"
             )
-        if requests_csv.is_file() and sum(1 for _ in requests_csv.open()) > 1:
+        if _line_count(requests_csv) > max(already, 1):
             log("load generator is sending requests")
             return
         time.sleep(1)
     raise SystemExit(f"locust sent no request within {timeout:.0f}s")
+
+
+def make_probe(requests_csv: Path, config: str, password: str):  # noqa: ANN201
+    """One real request, logged in the same shape as Locust's rows."""
+
+    def probe() -> None:
+        started = time.perf_counter()
+        try:
+            proc = subprocess.run(  # noqa: S603
+                ["sigul", "--batch", "-c", config, "list-users"],
+                input=password.encode() + b"\0",
+                capture_output=True,
+                timeout=60,
+                check=False,
+            )
+            ok = proc.returncode == 0
+            detail = (
+                ""
+                if ok
+                else proc.stderr.decode("utf-8", errors="replace").strip()[-200:]
+            )
+        except subprocess.TimeoutExpired:
+            ok, detail = False, "timeout after 60s"
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        new = not requests_csv.is_file() or requests_csv.stat().st_size == 0
+        with requests_csv.open("a", newline="") as handle:
+            writer = csv.writer(handle)
+            if new:
+                writer.writerow(["epoch", "task", "latency_ms", "ok", "detail"])
+            writer.writerow(
+                [
+                    f"{time.time():.3f}",
+                    "probe_list_users",
+                    f"{elapsed_ms:.1f}",
+                    int(ok),
+                    detail,
+                ]
+            )
+
+    return probe
 
 
 def start_locust(
@@ -138,6 +184,50 @@ def start_locust(
     return subprocess.Popen(argv, env=env)  # noqa: S603
 
 
+def _restore_stack(
+    scheduler: Scheduler, target: DockerTarget, units: tuple[str, ...]
+) -> None:
+    """Best-effort restoration on an interrupted run.
+
+    A proxy or daemon we cannot reach is not something the interrupt
+    path can fix, so every step here is allowed to fail quietly.
+    """
+    scheduler.abort()
+    with contextlib.suppress(Exception):
+        from .faults.network import client as toxiproxy
+
+        toxiproxy().reset()
+    for unit in (
+        *units,
+        os.environ.get("SOAK_SERVER_PEER_CONTAINER", "sigul-toxiproxy"),
+    ):
+        with contextlib.suppress(Exception):
+            target.thaw(unit)
+
+
+def _stop_load(locust: subprocess.Popen | None) -> str | None:
+    """Stop Locust and reap it. Returns a failure description, if any.
+
+    Locust ending before we asked it to means the advertised load was
+    absent for part of the run; whatever it recorded up to then cannot
+    support a verdict.
+    """
+    log("stopping load")
+    if locust is None:
+        return "load generator never started"
+    if locust.poll() is not None:
+        return f"load generator exited early with status {locust.returncode}"
+    locust.send_signal(signal.SIGINT)
+    try:
+        locust.wait(timeout=60)
+    except subprocess.TimeoutExpired:
+        locust.kill()
+        # Reap, so requests.csv has no writer left when the analyser
+        # opens it.
+        locust.wait()
+    return None
+
+
 def run(profile: Profile, output_dir: Path) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     for stale in ("requests.csv", "samples.csv", "timeline.csv"):
@@ -150,7 +240,8 @@ def run(profile: Profile, output_dir: Path) -> int:
 
     log(f"profile {profile.name}: {profile.description}")
     log(
-        f"planned duration {profile.total_seconds() / 60:.1f} min, {len(profile.faults)} faults"
+        f"planned duration {profile.total_seconds() / 60:.1f} min, "
+        f"{len(profile.warm_faults) + len(profile.faults)} faults"
     )
 
     configure_proxies(bridge)
@@ -180,10 +271,17 @@ def run(profile: Profile, output_dir: Path) -> int:
     signal.signal(signal.SIGTERM, on_signal)
 
     sampler.start()
-    locust = start_locust(profile, output_dir, profile.total_seconds())
     started = time.time()
     try:
-        wait_for_first_request(output_dir / "requests.csv", locust)
+        # Preflight faults need an idle stack - no request in flight -
+        # so they run before the load generator, with probe requests
+        # standing in for it during their recovery windows.
+        scheduler.run_preflight(
+            make_probe(output_dir / "requests.csv", config, password)
+        )
+        probe_rows = _line_count(output_dir / "requests.csv")
+        locust = start_locust(profile, output_dir, profile.total_seconds())
+        wait_for_first_request(output_dir / "requests.csv", locust, probe_rows)
         scheduler.run_ramp()
         scheduler.run_warm_faults()
         scheduler.run_baseline()
@@ -191,37 +289,8 @@ def run(profile: Profile, output_dir: Path) -> int:
         scheduler.run_cooldown()
     finally:
         if interrupted:
-            scheduler.abort()
-            # Best-effort restoration on the way out: a proxy or daemon
-            # we cannot reach is not something the interrupt path can fix.
-            with contextlib.suppress(Exception):
-                from .faults.network import client as toxiproxy
-
-                toxiproxy().reset()
-            for unit in (
-                bridge,
-                server,
-                os.environ.get("SOAK_SERVER_PEER_CONTAINER", "sigul-toxiproxy"),
-            ):
-                with contextlib.suppress(Exception):
-                    target.thaw(unit)
-        log("stopping load")
-        load_ok = True
-        if locust.poll() is None:
-            locust.send_signal(signal.SIGINT)
-            try:
-                locust.wait(timeout=60)
-            except subprocess.TimeoutExpired:
-                locust.kill()
-                # Reap, so requests.csv has no writer left when the
-                # analyser opens it.
-                locust.wait()
-        else:
-            # Locust ending before we asked it to means the advertised
-            # load was absent for part of the run; whatever it recorded
-            # up to then cannot support a verdict.
-            load_ok = False
-            log(f"locust exited early with status {locust.returncode}")
+            _restore_stack(scheduler, target, (bridge, server))
+        failure = _stop_load(locust)
         # Stop the sampler before the timeline is closed so a stuck
         # sampler surfaces here, as a run failure, rather than as a
         # concurrent reader/writer during analysis.
@@ -229,21 +298,22 @@ def run(profile: Profile, output_dir: Path) -> int:
             sampler.stop()
         except RuntimeError as exc:
             log(str(exc))
-            load_ok = False
+            failure = failure or str(exc)
         timeline.record("phase", "run", started, time.time())
         timeline.close()
         if sampler.errors:
             log(f"sampler: {sampler.errors} readings skipped (units restarting/frozen)")
 
-    status = analyse_and_report(profile.name, output_dir, registry)
-    if not load_ok:
-        log("verdict: FAIL (load generator exited early or sampler did not stop)")
-        return 1
-    return status
+    return analyse_and_report(
+        profile.name, output_dir, registry, harness_failure=failure
+    )
 
 
 def analyse_and_report(
-    profile_name: str, output_dir: Path, registry: dict | None = None
+    profile_name: str,
+    output_dir: Path,
+    registry: dict | None = None,
+    harness_failure: str | None = None,
 ) -> int:
     if registry is None:
         registry = build_registry(DockerTarget())
@@ -269,7 +339,13 @@ def analyse_and_report(
         os.environ.get("SOAK_SERVER_CONTAINER", "sigul-server"),
     )
     results = analyze.analyse(
-        output_dir, profile_name, fault_meta, expectations, baseline, units
+        output_dir,
+        profile_name,
+        fault_meta,
+        expectations,
+        baseline,
+        units,
+        harness_failure,
     )
     analyze.write_results(results, output_dir)
     text = report.write_report(results, output_dir)

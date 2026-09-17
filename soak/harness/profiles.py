@@ -53,6 +53,16 @@ class Profile:
     ramp_steps: tuple[int, ...] = (1, 2, 4, 8)
     ramp_step_seconds: float = 45.0
 
+    #: Faults run before the load generator starts, against an idle
+    #: stack. The production deadlock struck an idle server child - one
+    #: with no request in flight - and the fix deliberately refuses to
+    #: abandon a connection that still has data to deliver, so the
+    #: fault must find the child idle to be testing the right thing.
+    #: Recovery is measured with the harness's own probe requests.
+    preflight_faults: tuple[FaultSlot, ...] = (
+        FaultSlot("server_teardown_vs_silent_peer", 0, 20),
+    )
+
     #: Faults run after the ramp and before the baseline. Restarts go
     #: here: a restart resets memory, descriptors and sockets, so one
     #: anywhere between baseline and cooldown would make the leak
@@ -60,9 +70,6 @@ class Profile:
     warm_faults: tuple[FaultSlot, ...] = (
         FaultSlot("proc_restart_server", 0, 60),
         FaultSlot("proc_restart_bridge", 0, 60),
-        # Verifies its own outcome and restarts the server if the
-        # teardown wedged, so it too belongs before the baseline.
-        FaultSlot("server_teardown_vs_silent_peer", 0, 60),
     )
 
     #: Clean load before any faults, used as the within-run reference
@@ -95,7 +102,10 @@ class Profile:
 
     def total_seconds(self) -> float:
         ramp = len(self.ramp_steps) * self.ramp_step_seconds
-        faults = sum(f.duration + f.recovery for f in self.warm_faults + self.faults)
+        faults = sum(
+            f.duration + f.recovery
+            for f in self.preflight_faults + self.warm_faults + self.faults
+        )
         return ramp + self.baseline_seconds + faults + self.cooldown_seconds
 
 
@@ -127,10 +137,7 @@ SMOKE = Profile(
     ramp_step_seconds=15.0,
     baseline_seconds=30.0,
     steady_users=2,
-    warm_faults=(
-        FaultSlot("proc_restart_server", 0, 30),
-        FaultSlot("server_teardown_vs_silent_peer", 0, 30),
-    ),
+    warm_faults=(FaultSlot("proc_restart_server", 0, 30),),
     faults=(FaultSlot("client_connect_and_hang", 20, 20),),
     cooldown_seconds=30.0,
 )

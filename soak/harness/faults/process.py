@@ -214,6 +214,7 @@ class ServerTeardownAgainstSilentPeer(_ProcessFault):
         # ProductDefect raised from start().
         if self._child_alive():
             self._target.restart(SERVER)
+            self._target.restart(BRIDGE)
 
 
 PROCESS_FAULTS: tuple[type[_ProcessFault], ...] = (
