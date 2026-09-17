@@ -17,12 +17,18 @@ for an established connection rather than a live process.
 from __future__ import annotations
 
 import os
+import time
 
 from ..target import Target
 from .base import Fault
 
 BRIDGE = os.environ.get("SOAK_BRIDGE_CONTAINER", "sigul-bridge")
 SERVER = os.environ.get("SOAK_SERVER_CONTAINER", "sigul-server")
+
+#: How long a server child may take to abandon a teardown against a
+#: peer that never closes: patch 06's five-second linger, its ten-second
+#: reap fallback, and slack for a loaded runner.
+TEARDOWN_BOUND_SECONDS = 25.0
 
 
 class _ProcessFault(Fault):
@@ -161,6 +167,27 @@ class ServerTeardownAgainstSilentPeer(_ProcessFault):
             raise RuntimeError(f"no idle server child found (parent={parent!r})")
         self._target.freeze(self.unit)
         self._target.run_in(SERVER, ["kill", "-ALRM", child], timeout=15)
+
+        # The fault verifies its own outcome. With the peer still frozen
+        # the child can only exit by giving up on it, which is exactly
+        # what patch 06 bounds. A child still there after the linger,
+        # the reap timeout and some slack is the deadlock, and is
+        # reported here as a harness-level failure so it cannot be
+        # rescued by whatever happens once the peer thaws.
+        deadline = time.monotonic() + TEARDOWN_BOUND_SECONDS
+        while time.monotonic() < deadline:
+            alive = self._target.run_in(
+                SERVER,
+                ["sh", "-c", f"kill -0 {child} 2>/dev/null && echo yes || echo no"],
+                timeout=15,
+            ).strip()
+            if alive == "no":
+                return
+            time.sleep(0.5)
+        raise RuntimeError(
+            f"server child {child} still blocked in teardown "
+            f"{TEARDOWN_BOUND_SECONDS:.0f}s after its alarm - the patch 06 deadlock"
+        )
 
     def stop(self) -> None:
         self._target.thaw(self.unit)

@@ -214,14 +214,25 @@ class DockerTarget(Target):
         # KB until the exec ends; a blocked sampler would cost the run.
         container = self._container(unit)
         result: list[Any] = []
-        worker = threading.Thread(
-            target=lambda: result.append(
-                container.exec_run(["timeout", str(int(timeout)), *argv], demux=False)
-            ),
-            daemon=True,
-        )
+        failure: list[BaseException] = []
+
+        def call() -> None:
+            try:
+                result.append(
+                    container.exec_run(
+                        ["timeout", str(int(timeout)), *argv], demux=False
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - re-raised on the caller's thread
+                failure.append(exc)
+
+        worker = threading.Thread(target=call, daemon=True)
         worker.start()
         worker.join(timeout + 5)
+        if failure:
+            # A refused exec (container not running, say) is an answer,
+            # not a hang; report it straight away.
+            raise RuntimeError(f"exec in {unit} failed: {failure[0]}") from failure[0]
         if worker.is_alive() or not result:
             raise TimeoutError(f"exec in {unit} exceeded {timeout:.0f}s")
         code = result[0].exit_code

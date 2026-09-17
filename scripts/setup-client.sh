@@ -86,15 +86,17 @@ trap 'docker rm -f "$INIT_CONTAINER" >/dev/null 2>&1 || true' EXIT
 sleep 3
 docker exec "$INIT_CONTAINER" /usr/local/bin/init-client-certs.sh 2>&1 | tail -1
 
-# user-name: admin - without it sigul falls back to getpass.getuser(),
-# which inside the container is the sigul user, not the admin the
-# server database knows, and every request fails AUTHENTICATION_FAILED.
+# user-name - without it sigul falls back to getpass.getuser(), which
+# inside the container is the sigul user, not the admin the server
+# database knows, and every request fails AUTHENTICATION_FAILED. Track
+# the same variable the server was deployed with.
+ADMIN_USER="${SIGUL_ADMIN_USER:-admin}"
 docker exec --user root "$INIT_CONTAINER" bash -c "cat > /etc/sigul/client.conf <<EOF
 [client]
 bridge-hostname: sigul-bridge.example.org
 bridge-port: 44334
 server-hostname: sigul-server.example.org
-user-name: admin
+user-name: ${ADMIN_USER}
 
 [gnupg]
 gnupg-bin: /usr/bin/gpg2
