@@ -3,9 +3,13 @@
     "Known defects on current code, per profile. A fault or invariant",
     "listed here is expected to fail; the run reports it as XFAIL and",
     "stays green. If it starts passing the run reports XPASS and FAILS,",
-    "so the entry is removed and the issue closed. Every entry must name",
-    "the issue that tracks the defect. Optional max_recovery_seconds and",
+    "so the entry is removed and the issue closed. Every entry names the",
+    "issue that tracks the defect. Optional max_recovery_seconds and",
     "max_stall_seconds override the default bounds for a fault.",
+    "",
+    "For faults the expectation covers the stall during the window only;",
+    "failing to recover after the window, or a harness error injecting",
+    "the fault, always fails the run.",
     "",
     "Profiles differ in window length, so a defect that trips the stall",
     "bound in a 60s window (pr, nightly) may not in a 20s one (smoke)."
@@ -15,7 +19,7 @@
     "invariants": {
       "sigul-server: no zombie processes": {
         "expect": "fail",
-        "issue": "gpg helper processes spawned during signing are orphaned to PID 1, which never reaps them; ~10 zombies per signing request - issue to be filed"
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/14"
       }
     }
   },
@@ -23,25 +27,25 @@
     "faults": {
       "client_connect_and_hang": {
         "expect": "fail",
-        "issue": "bridge blocks in force_handshake() with no deadline; one silent TCP connection stops all signing for as long as it stays open (measured: 0 requests served in 60s) - issue to be filed"
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/11"
       },
       "client_handshake_then_hang": {
         "expect": "fail",
-        "issue": "an authenticated client frozen mid-upload holds the bridge's single slot indefinitely; no read deadline on the bridge or server side (measured: 0 requests served in 60s) - issue to be filed"
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/12"
       },
       "client_backlog_flood": {
         "expect": "fail",
-        "issue": "listen backlog of 5 on the client port, drained only between server pairings; 20 idle connections stall the service and the poisoned backlog takes ~25s to drain afterwards - issue to be filed"
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/13"
       }
     },
     "invariants": {
       "sigul-server: no zombie processes": {
         "expect": "fail",
-        "issue": "gpg helper processes spawned during signing are orphaned to PID 1, which never reaps them; ~10 zombies per signing request (measured: 7423 after 28 min), bounded only by the pod pids limit of ~12k - issue to be filed"
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/14"
       },
       "sigul-server: RSS growth < 40 MB": {
         "expect": "fail",
-        "issue": "kernel task structures for the zombies above are charged to the container (measured: +53 MB over 28 min, ~7 KB per zombie); expected to clear with the zombie fix"
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/14"
       }
     }
   },
@@ -49,37 +53,37 @@
     "faults": {
       "client_connect_and_hang": {
         "expect": "fail",
-        "issue": "as pr"
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/11"
       },
       "client_handshake_then_hang": {
         "expect": "fail",
-        "issue": "as pr"
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/12"
       },
       "client_backlog_flood": {
         "expect": "fail",
-        "issue": "as pr"
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/13"
       },
       "client_slow_loris": {
         "expect": "fail",
-        "issue": "no per-read deadline on the bridge's client handshake; unverified until the first nightly run"
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/11 (same defect class; unverified until the first nightly run)"
       },
       "client_half_close_hang": {
         "expect": "fail",
-        "issue": "half-closed client holds the slot; unverified until the first nightly run"
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/11 (same defect class; unverified until the first nightly run)"
       },
       "client_stop_mid_sign": {
         "expect": "fail",
-        "issue": "as client_handshake_then_hang, with the client resumed afterwards"
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/12"
       }
     },
     "invariants": {
       "sigul-server: no zombie processes": {
         "expect": "fail",
-        "issue": "as pr"
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/14"
       },
       "sigul-server: RSS growth < 40 MB": {
         "expect": "fail",
-        "issue": "as pr"
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/14"
       }
     }
   }

@@ -16,9 +16,8 @@ generator or the analysis.
 
 from __future__ import annotations
 
+import threading
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FuturesTimeout
 from dataclasses import dataclass
 from typing import Any
 
@@ -165,10 +164,16 @@ class Target(ABC):
 class DockerTarget(Target):
     """A stack running under Docker Compose on the local daemon."""
 
+    #: Ceiling on any single Docker API call other than exec (see
+    #: run_in). Long enough for a `restart` - stop grace of 10s plus
+    #: start - short enough that an unresponsive daemon costs the
+    #: sampler one reading rather than the rest of the run.
+    API_TIMEOUT_SECONDS = 30
+
     def __init__(self) -> None:
         import docker
 
-        self._client = docker.from_env()
+        self._client = docker.from_env(timeout=self.API_TIMEOUT_SECONDS)
         self._containers: dict[str, Any] = {}
 
     def _container(self, unit: str) -> Any:  # docker SDK Container
@@ -179,17 +184,27 @@ class DockerTarget(Target):
         return container
 
     def run_in(self, unit: str, argv: list[str], timeout: float = 30.0) -> str:
-        # exec_run has no timeout of its own. Run it on a worker so a
-        # container that stops answering cannot hang the sampler - the
-        # failure mode this whole suite exists to catch.
+        # Two bounds, because neither alone is enough. The Docker SDK
+        # reads exec output straight from the socket, so the HTTP
+        # timeout does not apply to a command that produces nothing;
+        # and a frozen container may not run `timeout` at all. So: the
+        # command is wrapped in coreutils `timeout` inside the
+        # container, and the call itself runs on a daemon thread that
+        # is abandoned if it overruns. An abandoned thread costs a few
+        # KB until the exec ends; a blocked sampler would cost the run.
         container = self._container(unit)
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(container.exec_run, argv, demux=False)  # type: ignore[attr-defined]
-            try:
-                result = future.result(timeout=timeout)
-            except FuturesTimeout as exc:
-                raise TimeoutError(f"exec in {unit} exceeded {timeout}s") from exc
-        output = result.output
+        result: list[Any] = []
+        worker = threading.Thread(
+            target=lambda: result.append(
+                container.exec_run(["timeout", str(int(timeout)), *argv], demux=False)
+            ),
+            daemon=True,
+        )
+        worker.start()
+        worker.join(timeout + 5)
+        if worker.is_alive() or not result:
+            raise TimeoutError(f"exec in {unit} exceeded {timeout:.0f}s")
+        output = result[0].output
         return (
             output.decode("utf-8", errors="replace")
             if isinstance(output, bytes)

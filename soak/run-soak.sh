@@ -89,8 +89,15 @@ compose up -d --no-deps --force-recreate sigul-server >/dev/null
 sleep 10
 
 # 4. Build the runner on top of the client image and run the profile.
+#    Keep the previous run's results alongside rather than overwriting
+#    them; an A/B comparison needs both.
 mkdir -p soak/results
-rm -f soak/results/*.csv soak/results/*.json soak/results/*.md soak/results/*.png soak/results/*.html
+if [[ -f soak/results/results.json ]]; then
+    previous="soak/results-$(date -u +%Y%m%dT%H%M%SZ)"
+    mv soak/results "$previous"
+    mkdir -p soak/results
+    log "previous results moved to $previous"
+fi
 log "building runner"
 compose build --quiet soak-runner
 log "running profile $PROFILE"

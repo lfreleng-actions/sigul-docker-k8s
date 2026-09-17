@@ -88,7 +88,8 @@ def _run_sigul(
 ) -> tuple[bool, str]:
     """Run one sigul command, feeding NUL-separated passwords on stdin.
 
-    Returns (succeeded, detail). A timeout is reported as a distinct
+    Returns (succeeded, detail): stdout on success, the last line of
+    stderr on failure. A timeout is reported as a distinct
     error because it is the interesting one: it means the request never
     came back, which under Sigul's serial model implies the whole
     service was blocked, not just this caller.
@@ -106,7 +107,7 @@ def _run_sigul(
         return False, f"timeout after {timeout:.0f}s"
 
     if proc.returncode == 0:
-        return True, ""
+        return True, proc.stdout.decode("utf-8", errors="replace")
 
     detail = (proc.stderr or proc.stdout).decode("utf-8", errors="replace")
     return False, detail.strip().splitlines()[-1][:200] if detail.strip() else (

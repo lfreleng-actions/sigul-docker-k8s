@@ -56,6 +56,14 @@ class Fault(ABC):
         """End the fault and remove all trace of it. Must be idempotent."""
 
 
+class ToxiproxyError(RuntimeError):
+    """An HTTP error from the Toxiproxy control API."""
+
+    def __init__(self, status: int, method: str, path: str, detail: str) -> None:
+        super().__init__(f"toxiproxy {method} {path}: {status} {detail}")
+        self.status = status
+
+
 class ToxiproxyClient:
     """Minimal Toxiproxy control client.
 
@@ -80,7 +88,7 @@ class ToxiproxyClient:
                 return json.loads(payload) if payload else {}
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"toxiproxy {method} {path}: {detail}") from exc
+            raise ToxiproxyError(exc.code, method, path, detail) from exc
 
     def ensure_proxy(self, name: str, listen: str, upstream: str) -> None:
         """Create a proxy, tolerating one that already exists."""
@@ -90,8 +98,8 @@ class ToxiproxyClient:
                 "/proxies",
                 {"name": name, "listen": listen, "upstream": upstream, "enabled": True},
             )
-        except RuntimeError as exc:
-            if "already exists" not in str(exc):
+        except ToxiproxyError as exc:
+            if exc.status != 409:
                 raise
 
     def add_toxic(
@@ -116,11 +124,16 @@ class ToxiproxyClient:
         )
 
     def remove_toxic(self, proxy: str, name: str) -> None:
+        """Remove a toxic. Tolerates one that is already gone, nothing else.
+
+        Any other failure propagates: a toxic left active after its
+        window would silently contaminate every measurement after it.
+        """
         try:
             self._call("DELETE", f"/proxies/{proxy}/toxics/{name}")
-        except RuntimeError:
-            # Already gone, or the proxy was reset underneath us.
-            pass
+        except ToxiproxyError as exc:
+            if exc.status != 404:
+                raise
 
     def reset(self) -> None:
         """Drop every toxic on every proxy."""

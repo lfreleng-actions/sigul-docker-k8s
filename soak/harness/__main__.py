@@ -193,8 +193,12 @@ def analyse_and_report(
     if baseline is None:
         log(f"no baseline at {baseline_path.name}; regression checks skipped")
 
+    units = (
+        os.environ.get("SOAK_BRIDGE_CONTAINER", "sigul-bridge"),
+        os.environ.get("SOAK_SERVER_CONTAINER", "sigul-server"),
+    )
     results = analyze.analyse(
-        output_dir, profile_name, fault_meta, expectations, baseline
+        output_dir, profile_name, fault_meta, expectations, baseline, units
     )
     analyze.write_results(results, output_dir)
     text = report.write_report(results, output_dir)

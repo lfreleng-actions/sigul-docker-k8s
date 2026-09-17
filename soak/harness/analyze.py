@@ -73,10 +73,20 @@ MAX_RSS_GROWTH_MB = 40.0
 MAX_FD_DRIFT = 4
 MAX_CLOSE_WAIT_END = 1
 
-#: Regression tolerances against the committed baseline.
+#: Regression tolerances against the committed baseline. p95 may grow
+#: by 50% or by 250 ms, whichever is larger: the floor stops a 300 ms
+#: control-plane call failing the run over 150 ms of scheduler noise
+#: on a shared CI host, and the ratio governs everything slower.
 P95_TOLERANCE_RATIO = 1.5
-P95_TOLERANCE_MS = 250.0
+P95_TOLERANCE_FLOOR_MS = 250.0
 SUCCESS_RATE_TOLERANCE = 0.05
+
+#: Monitoring coverage: a unit must have been sampled for at least this
+#: fraction of the run's ticks for its resource invariants to mean
+#: anything. Restarts and freezes legitimately cost a few readings;
+#: losing half of them means the sampler was not working.
+MIN_SAMPLE_COVERAGE = 0.5
+SAMPLE_INTERVAL_SECONDS = 5.0
 
 
 def _phase_stats(run: Run) -> dict[str, dict[str, TaskStats]]:
@@ -135,15 +145,16 @@ def _fault_result(
     stall_bound = float(expectation.get("max_stall_seconds", default_stall))
 
     recovered = recovery is not None and recovery <= max_recovery
-    healthy = recovered and stall <= stall_bound
+    stalled = stall > stall_bound
+    harness_error = bool(row.get("note"))
 
-    if row.get("note"):
+    if harness_error:
         note = f"harness: {row['note']}"
     elif recovery is None:
         note = "no successful request after the fault ended"
     elif not recovered:
         note = f"recovered after {recovery:.1f}s (bound {max_recovery:.0f}s)"
-    elif stall > stall_bound:
+    elif stalled:
         note = (
             f"service stalled for {stall:.1f}s (bound {stall_bound:.0f}s); "
             f"recovered {recovery:.1f}s after the fault ended"
@@ -153,14 +164,16 @@ def _fault_result(
     if expectation.get("issue"):
         note += f" [expected {expected}: {expectation['issue']}]"
 
-    if healthy and expected == "pass":
-        verdict = "pass"
-    elif not healthy and expected == "fail":
-        verdict = "xfail"
-    elif healthy and expected == "fail":
-        verdict = "xpass"
-    else:
+    # An expectation covers the stall only. Failing to recover once the
+    # fault has ended, or the harness failing to inject or remove the
+    # fault, is never an expected outcome: the first is the deadlock
+    # class this suite exists to catch, the second invalidates the run.
+    if harness_error or not recovered:
         verdict = "fail"
+    elif stalled:
+        verdict = "xfail" if expected == "fail" else "fail"
+    else:
+        verdict = "xpass" if expected == "fail" else "pass"
 
     return FaultResult(
         name=name,
@@ -205,6 +218,27 @@ def _unit_resources(rows: list[dict[str, str]]) -> UnitResources:
         zombies_max=max(int(r["zombies"]) for r in rows),
         samples=len(rows),
     )
+
+
+def _coverage(results: Results, units: tuple[str, ...]) -> list[Check]:
+    """Every monitored unit must have been sampled for most of the run.
+
+    Resource invariants are only generated for units with samples, so
+    without this a sampler that silently failed would make every leak
+    check vanish and the run pass on no evidence.
+    """
+    expected = max(1, int((results.ended - results.started) / SAMPLE_INTERVAL_SECONDS))
+    checks: list[Check] = []
+    for unit in units:
+        got = results.resources[unit].samples if unit in results.resources else 0
+        checks.append(
+            Check(
+                f"{unit}: monitored for the whole run",
+                got >= expected * MIN_SAMPLE_COVERAGE,
+                f"{got} of ~{expected} samples",
+            )
+        )
+    return checks
 
 
 def _invariants(results: Results) -> list[Check]:
@@ -269,10 +303,14 @@ def _regressions(results: Results, baseline: dict) -> list[Check]:
             ref = reference.get(task)
             if not ref or stats.count < 5:
                 continue
-            limit = ref["p95_ms"] * P95_TOLERANCE_RATIO + P95_TOLERANCE_MS
+            limit = max(
+                ref["p95_ms"] * P95_TOLERANCE_RATIO,
+                ref["p95_ms"] + P95_TOLERANCE_FLOOR_MS,
+            )
             checks.append(
                 Check(
-                    f"{phase}/{task}: p95 within +{(P95_TOLERANCE_RATIO - 1):.0%} of baseline",
+                    f"{phase}/{task}: p95 within +{(P95_TOLERANCE_RATIO - 1):.0%} "
+                    f"or +{P95_TOLERANCE_FLOOR_MS:.0f} ms of baseline",
                     stats.p95_ms <= limit,
                     f"{stats.p95_ms:.0f} ms vs baseline {ref['p95_ms']:.0f} ms",
                 )
@@ -294,6 +332,7 @@ def analyse(
     fault_meta: dict[str, FaultMeta],
     expectations: dict,
     baseline: dict | None,
+    units: tuple[str, ...] = ("sigul-bridge", "sigul-server"),
 ) -> Results:
     run = Run.load(output_dir)
     now = time.time()
@@ -321,7 +360,7 @@ def analyse(
         by_unit[row["unit"]].append(row)
     results.resources = {unit: _unit_resources(rows) for unit, rows in by_unit.items()}
 
-    results.invariants = _invariants(results)
+    results.invariants = _coverage(results, units) + _invariants(results)
     if baseline:
         results.regressions = _regressions(results, baseline)
 
