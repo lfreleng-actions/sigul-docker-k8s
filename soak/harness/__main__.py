@@ -218,7 +218,7 @@ def run(profile: Profile, output_dir: Path) -> int:
     log(f"profile {profile.name}: {profile.description}")
     log(
         f"planned duration {profile.total_seconds() / 60:.1f} min, "
-        f"{len(profile.warm_faults) + len(profile.faults)} faults"
+        f"{len(profile.preflight_faults) + len(profile.warm_faults) + len(profile.faults)} faults"
     )
 
     configure_proxies(bridge)

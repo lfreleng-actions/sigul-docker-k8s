@@ -156,14 +156,16 @@ class Scheduler:
                 self._active = None
             end = time.time()
             self._timeline.record("fault", fault.name, start, end, note)
+            recovery_end = end + slot.recovery
             if probe is None:
                 self._sleep(slot.recovery)
             else:
-                deadline = time.time() + slot.recovery
-                while time.time() < deadline:
+                while time.time() < recovery_end:
                     probe()
-                    self._sleep(min(2.0, max(0.0, deadline - time.time())))
-            self._timeline.record("recovery", fault.name, end, time.time())
+                    self._sleep(min(2.0, max(0.0, recovery_end - time.time())))
+            # The configured window, not the clock: a probe that returns
+            # late must not stretch the window it is judged against.
+            self._timeline.record("recovery", fault.name, end, recovery_end)
 
     def run_cooldown(self) -> None:
         start = time.time()
