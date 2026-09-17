@@ -49,6 +49,14 @@ class Fault(ABC):
     #: explains itself without needing the source.
     implication: str = ""
 
+    #: When the disturbance actually began, if start() had setup to do
+    #: first. A fault that blocks in start() waiting for the right
+    #: moment - a client that must be mid-upload before it is frozen -
+    #: sets this as it delivers the blow, so the scheduler can date the
+    #: window from then rather than from the call. None means start()
+    #: was the disturbance.
+    activated_at: float | None = None
+
     #: Whether honest clients could, in principle, still be served
     #: while this fault is active. True for a misbehaving client - the
     #: bridge ought to shed it and serve the others - so a stall during

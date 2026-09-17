@@ -155,7 +155,10 @@ class Scheduler:
             finally:
                 self._active = None
             end = time.time()
-            self._timeline.record("fault", fault.name, start, end, note)
+            # Date the window from the disturbance, not the call: a fault
+            # that had to wait for the right moment reports when it struck.
+            activated = fault.activated_at or start
+            self._timeline.record("fault", fault.name, activated, end, note)
             recovery_end = end + slot.recovery
             if probe is None:
                 self._sleep(slot.recovery)
