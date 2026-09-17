@@ -430,6 +430,41 @@ rather than never; a silent connection parked on the server port
 delays a restarted server's pairing by one deadline rather than
 forever. The soak harness's `client_connect_and_hang` fault, marked
 expected-fail against issue #11, passes.
+
+### 10-fix-bridge-listen-backlog.patch
+
+**Status:** IMPORTANT - without it a burst of concurrent clients is
+partly refused, and the `sigul` CLI does not retry
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** Bridge
+
+**Problem:**
+`create_listen_sock()` calls `listen()` with the python-nss default
+backlog of five. The bridge accepts one connection at a time, and
+only between requests, so everything that arrives while it is busy
+waits in that queue. Six CI jobs signing together overflow it: the
+kernel drops the excess SYNs, the clients' kernels retry with
+exponential backoff, and after a few retries `connect()` fails
+outright with nothing to tell the client it was merely early.
+
+Measured: twelve concurrent `list-users` clients against the default
+produced seven `TcpExtListenDrops`; the clients survived only because
+the kernel's SYN retries happened to fit inside the CLI's timeout.
+
+**Fix:**
+`listen(128)` on both listening sockets. Nothing about the workload
+changes - the bridge still serves one client at a time - except that
+a burst waits its turn instead of being turned away. Twelve and thirty
+concurrent clients against the patched bridge: zero drops, all served,
+in six and eight seconds respectively.
+
+A large backlog does mean that connections which will never complete
+a handshake now queue rather than being dropped; each costs one
+handshake deadline (patch 09) when its turn comes. That is the
+trade-off the soak harness's `client_backlog_flood` fault measures,
+and it remains marked expected-fail against issue #13 until
+handshakes are taken off the accept loop's critical path.
+
 ## Applying Patches
 
 The Docker build process automatically applies these patches:
