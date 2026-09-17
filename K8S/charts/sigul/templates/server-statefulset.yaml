@@ -271,14 +271,40 @@ spec:
                 - "pgrep -f '/usr/share/sigul/serve[r]\\.py' >/dev/null"
             periodSeconds: 5
             failureThreshold: 60
+          # Liveness deliberately asks the same question as readiness,
+          # not merely "does a process exist".
+          #
+          # A process-existence check cannot see this service fail. When
+          # a double-TLS teardown wedges, the daemon and its children
+          # are all still present - they are blocked in waitpid() and
+          # poll() - so pgrep succeeds while nothing reconnects to the
+          # bridge and every request returns "Unexpected EOF in NSPR".
+          # Observed in production: readiness failed 1387 times over
+          # 5h19m, liveness passed throughout, restartCount stayed 0,
+          # and the service answered nothing for six hours.
+          #
+          # Checking the bridge connection instead makes a wedge
+          # self-healing within roughly two minutes, for any cause,
+          # including ones not yet diagnosed. patches/06 removes the
+          # known deadlock; this is the backstop for the rest.
+          #
+          # failureThreshold is deliberately looser than readiness: a
+          # restart is disruptive, so tolerate a longer gap before
+          # resorting to one. The daemon reconnects within a second of
+          # a normal teardown, so six consecutive failures (~2 min)
+          # means genuinely stuck, not merely between connections.
           livenessProbe:
             exec:
               command:
                 - /bin/bash
                 - -c
-                - "pgrep -f '/usr/share/sigul/serve[r]\\.py' >/dev/null"
-            periodSeconds: 10
-            failureThreshold: 5
+                - "ss -Htn state established '( dport = :{{ .Values.bridge.ports.server }} )' | grep -q ."
+            # Liveness gets more startup grace than readiness (10s):
+            # the daemon must be given time to make its first connection
+            # before a failure counts towards a restart.
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 6
           # Truest readiness signal: an ESTABLISHED connection to the
           # bridge's server-facing port.
           readinessProbe:

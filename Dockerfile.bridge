@@ -191,6 +191,10 @@ USER root
 # Set entrypoint - sigul direct invocation
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 
-# Health check - verify bridge is listening on port 44333
+# Health check - verify the bridge is listening on both ports.
+# Never probe the bridge by connecting to it: it accepts on 44333 only
+# while no server is paired, so bare connects queue in a backlog of
+# five until real peers are SYN-dropped, and each one it does accept
+# fails the TLS handshake. Read listen state instead.
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 \
-    CMD nc -z localhost 44333 || exit 1
+    CMD ss -tln | grep -q ':44333 ' && ss -tln | grep -q ':44334 ' || exit 1

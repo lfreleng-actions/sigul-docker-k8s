@@ -1,0 +1,109 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Close the bridge's server socket on every exit path, and notice a
+# server that dies while the bridge waits for a client. See
+# patches/README.md for the full rationale and production evidence.
+#
+--- a/src/bridge.py
++++ b/src/bridge.py
+@@ -1423,13 +1423,49 @@
+         '''Drop per-connection state.'''
+         if self.__handler is not None:
+             self.__handler.close()
++
++
++def _wait_for_client_or_server_loss(server_sock, client_listen_sock):
++    '''Block until a client connects or the paired server goes away.
++
++    Return True when a client connection is pending on client_listen_sock,
++    False when server_sock reported readiness first - which, for a
++    server that has completed its outer handshake and is waiting for a
++    client, can only mean it has closed or failed, because it sends
++    nothing until the client arrives.
++
++    A bare client_listen_sock.accept() cannot do this: it blocks with no
++    knowledge of server_sock, so a server that dies during the wait is
++    only discovered when a client finally connects and is handed the
++    corpse. It also means the server's FIN sits unread, so the bridge
++    never closes its half and the server's teardown - if unbounded -
++    waits forever on a FIN that never comes.
++
++    '''
++    # Readability is the only interest to request; NSPR reports errors
++    # and hangups in the output flags regardless, and any event on the
++    # server socket means the server is gone.
++    descs = [
++        (client_listen_sock, nss.io.PR_POLL_READ),
++        (server_sock, nss.io.PR_POLL_READ),
++    ]
++    while True:
++        res = nss.io.Socket.poll(descs, nss.io.PR_INTERVAL_NO_TIMEOUT)
++        client_ready, server_event = res[0], res[1]
++        if server_event:
++            _adbg('Server socket reported %r while waiting for a client',
++                  server_event)
++            return False
++        if client_ready & nss.io.PR_POLL_READ:
++            return True
+
+
+ def bridge_one_request(config, server_listen_sock, client_listen_sock):
+     '''Forward one request and reply.'''
+
++    server_sock = None
++    client_sock = None
+     try:
+-        client_sock = None
+         logging.debug('Waiting for the server to connect')
+         (server_sock, server_addr) = server_listen_sock.accept()
+         _adbg('Server-side TCP accept from %r', server_addr)
+@@ -1455,17 +1491,18 @@
+         logging.debug('Server authenticated: %s', server_cert.subject_common_name)
+         _adbg('Server peer cert CN=%r', server_cert.subject_common_name)
+
+-        try:
+-            logging.debug('Waiting for the client to connect')
+-            (client_sock, client_addr) = client_listen_sock.accept()
+-            _adbg('Client-side TCP accept from %r', client_addr)
+-            try:
+-                BridgeConnection.handle_connection(config, client_sock,
+-                                                   server_sock)
+-            finally:
+-                client_sock.close()
+-        finally:
+-            server_sock.close()
++        logging.debug('Waiting for the client to connect')
++        if not _wait_for_client_or_server_loss(server_sock,
++                                               client_listen_sock):
++            # The server left before any client arrived. Drop it and go
++            # back to waiting for a fresh server rather than handing the
++            # next client a dead connection.
++            logging.info('Server connection lost while waiting for a client; '
++                         'discarding it')
++            return
++        (client_sock, client_addr) = client_listen_sock.accept()
++        _adbg('Client-side TCP accept from %r', client_addr)
++        BridgeConnection.handle_connection(config, client_sock, server_sock)
+     # Python 3.10 made this a deprecated alias of TimeoutError so it's only a matter of
+     # time before they remove this alias and break everyone. Replace this with TimeoutError
+     # when upgrading to support Python 3.10+
+@@ -1489,6 +1526,20 @@
+             logging.info('NSPR I/O error: %s', str(e), exc_info=True)
+     except BridgeError as e:
+         logging.warning(str(e))
++    finally:
++        # Close on EVERY exit, including a failed server handshake or a
++        # missing server certificate. Previously only the client-wait
++        # block was covered, so a server that failed its handshake was
++        # accepted, rejected and then never closed - leaking one socket
++        # per attempt, each left in CLOSE-WAIT with the peer's final
++        # bytes unread. Unread bytes and an unsent FIN are also what
++        # keep the peer's own teardown waiting.
++        for sock in (client_sock, server_sock):
++            if sock is not None:
++                try:
++                    sock.close()
++                except Exception as e:
++                    _adbg('Ignoring error closing socket: %r', e)
+     logging.debug('Request handling finished')

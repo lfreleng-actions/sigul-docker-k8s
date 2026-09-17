@@ -168,7 +168,12 @@ services:
       - "44333:44333"
       - "44334:44334"
     healthcheck:
-      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/localhost/44333' 2>/dev/null || exit 1"]
+      # Never probe the bridge by connecting to it. It accepts on 44333
+      # only while it has no server paired, so bare connects queue in
+      # a backlog of five until real peers are SYN-dropped, and each
+      # one it does accept fails the TLS handshake. Check listen state
+      # instead, as the Helm chart's probes do.
+      test: ["CMD-SHELL", "ss -tln | grep -q ':44333 ' && ss -tln | grep -q ':44334 '"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -239,7 +244,8 @@ services:
     image: alpine:3.19
     container_name: sigul-bridge-monitor
     hostname: bridge-monitor
-    user: "1000:1000"
+    # Runs as root: the monitor talks to the Docker socket, which is
+    # root-equivalent regardless, and apk needs it for the install below.
     environment:
       MONITOR_TARGET: bridge
       MONITOR_INTERVAL: 30
@@ -259,9 +265,8 @@ services:
       - sigul-bridge
     command: |
       sh -c "
-        apk add --no-cache jq netcat-openbsd curl
-        chmod +x /scripts/sigul-monitor.sh
-        exec /scripts/sigul-monitor.sh --target bridge --debug
+        apk add --no-cache bash jq curl docker-cli
+        exec bash /scripts/sigul-monitor.sh --target bridge --debug
       "
 
   # Server Monitor Sidecar (Passive Monitor v2)
@@ -269,7 +274,6 @@ services:
     image: alpine:3.19
     container_name: sigul-server-monitor
     hostname: server-monitor
-    user: "1000:1000"
     environment:
       MONITOR_TARGET: server
       MONITOR_INTERVAL: 30
@@ -289,9 +293,8 @@ services:
       - sigul-server
     command: |
       sh -c "
-        apk add --no-cache jq netcat-openbsd curl
-        chmod +x /scripts/sigul-monitor.sh
-        exec /scripts/sigul-monitor.sh --target server --debug
+        apk add --no-cache bash jq curl docker-cli
+        exec bash /scripts/sigul-monitor.sh --target server --debug
       "
 
   # Sigul Infrastructure Health Monitor
@@ -308,7 +311,7 @@ services:
     restart: unless-stopped
     command: |
       sh -c "
-        apk add --no-cache curl netcat-openbsd jq
+        apk add --no-cache curl jq docker-cli
         echo '[$(date)] Sigul Infrastructure Health Monitor Started'
 
         while true; do
@@ -323,21 +326,25 @@ services:
             echo '❌ FAIL'
           fi
 
-          # Sigul Bridge Health Check (NSS + Network)
-          echo -n '  Sigul Bridge (NSS + Network): '
-          if nc -z sigul-bridge 44334 2>/dev/null; then
-            echo '✅ OK (Network)'
+          # Sigul Bridge Health Check (listen state, never a connection:
+          # a bare connect to 44334 is accepted as a client, fails TLS,
+          # and tears down the paired server connection)
+          echo -n '  Sigul Bridge (listening on 44333 and 44334): '
+          if docker exec sigul-bridge ss -tln 2>/dev/null | grep -q ':44333 ' && \
+             docker exec sigul-bridge ss -tln 2>/dev/null | grep -q ':44334 '; then
+            echo '✅ OK'
           else
-            echo '❌ FAIL (Network)'
+            echo '❌ FAIL'
           fi
 
           # Container Status Check
           echo '  Container Status:'
           docker ps --filter 'name=sigul' --format '    {{.Names}}: {{.Status}}' 2>/dev/null || echo '    Unable to check container status'
 
-          # Network Connectivity Test
-          echo -n '  Inter-service Network: '
-          if nc -z sigul-bridge 44334 2>/dev/null; then
+          # Inter-service connectivity: the server holds an established
+          # connection to the bridge whenever it is ready to serve.
+          echo -n '  Inter-service Network (server paired with bridge): '
+          if docker exec sigul-server ss -Htn state established '( dport = :44333 )' 2>/dev/null | grep -q .; then
             echo '✅ OK'
           else
             echo '❌ FAIL'

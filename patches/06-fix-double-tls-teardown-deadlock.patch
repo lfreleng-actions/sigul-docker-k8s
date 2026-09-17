@@ -1,0 +1,182 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Bound double-TLS teardown so an unresponsive peer cannot wedge the
+# daemon. See patches/README.md for the full rationale and the
+# production evidence.
+#
+--- a/src/double_tls.py
++++ b/src/double_tls.py
+@@ -18,8 +18,10 @@
+
+ import logging
+ import os
++import signal
+ import six
+ import socket
++import time
+
+ import nss.error
+ import nss.io
+@@ -112,6 +114,38 @@
+
+ _POLL_PROBLEM = nss.io.PR_POLL_ERR | nss.io.PR_POLL_HUP
+
++# Teardown bounds for the DoubleTLSClient forwarding child.
++#
++# An idle forwarding loop legitimately blocks for hours: a server child
++# sits in poll() waiting for a request that may not arrive until the
++# next CI job. So the child only becomes impatient once the LOCAL side
++# has gone away - at that point the only thing left to wait for is the
++# peer closing its half, and a peer that never does must not pin the
++# process forever.
++#
++# Without this, a peer left in CLOSE-WAIT deadlocks three processes:
++# the forwarding child blocks in poll(), the connection owner blocks in
++# waitpid() inside outer_close(), and the daemon's main loop blocks in
++# waitpid() on that. The service then answers nothing further while
++# still looking alive, because the process is present and the socket
++# is merely half-closed.
++#
++# The linger is short because there is nothing of value to wait for: a
++# live peer sends its FIN within milliseconds of receiving ours, and
++# anything that arrives after the local side has closed is dropped.
++# The wait exists so a healthy close stays clean, not to recover data.
++_SHUTDOWN_LINGER_SECONDS = 5
++_SHUTDOWN_POLL_TICK_SECONDS = 1
++
++# How long outer_close() waits for the forwarding child to exit on its
++# own before killing it. This must exceed the linger plus one poll
++# tick: the child's own bound above is the graceful path - it closes
++# its sockets and exits normally - and the kill here is the fallback
++# for a child stuck somewhere other than the poll loop. The child holds
++# no state worth preserving either way: it forwards bytes between
++# sockets that are, by this point, closed.
++_CHILD_EXIT_TIMEOUT_SECONDS = 10
++
+ _chunk_inner_mask = 1 << 31
+
+
+@@ -157,23 +191,45 @@
+         raise NotImplementedError
+
+     @staticmethod
+-    def forward_two_way(buf_1, buf_2):
++    def forward_two_way(buf_1, buf_2, shutdown_linger=None):
+         '''Forward data in parallel using buf_1 and buf_2.
+
+         Stop when neither is active.
+
++        If shutdown_linger is not None, also stop that many seconds after
++        buf_1 goes inactive, whether or not buf_2 has. Only pass it where
++        buf_1 inactive means the local side has closed and nothing more
++        of value can arrive - the DoubleTLSClient forwarding child. The
++        bridge's inner-stream forwarding must not use it: there buf_1
++        inactive merely means the client finished its half of the inner
++        session, and the server's half is still legitimately in flight.
++
+         '''
+         # The poll loop is simply two unidirectional forwarding poll loops
+         # combined into one.
++        linger_deadline = None
+         while buf_1._active or buf_2._active:
+             poll_descs = {}
+             buf_1._prepare_poll(poll_descs)
+             buf_2._prepare_poll(poll_descs)
++
++            # Once buf_1 goes inactive with a linger requested, the only
++            # remaining work is waiting for the peer to close. Bound that
++            # wait; leave the ordinary idle case blocking indefinitely as
++            # before.
++            if shutdown_linger is None or buf_1._active:
++                linger_deadline = None
++                timeout = nss.io.PR_INTERVAL_NO_TIMEOUT
++            else:
++                if linger_deadline is None:
++                    linger_deadline = time.monotonic() + shutdown_linger
++                timeout = nss.io.seconds_to_interval(
++                    _SHUTDOWN_POLL_TICK_SECONDS)
+
+             _debug('Poll: %s',
+                    ', '.join(['{0!s}:{1!s}'.format(_id(o), v)
+                               for (o, v) in six.iteritems(poll_descs)]))
+-            _nspr_poll(poll_descs, nss.io.PR_INTERVAL_NO_TIMEOUT)
++            _nspr_poll(poll_descs, timeout)
+             _debug('-> %s', ', '.join(['{0!s}:{1!s}'.format(_id(o), v)
+                                        for (o, v) in
+                                        six.iteritems(poll_descs)]))
+@@ -193,6 +249,13 @@
+             # Shut down the sending ends on EOF
+             buf_1._check_shutdown()
+             buf_2._check_shutdown()
++
++            if (linger_deadline is not None
++                    and time.monotonic() >= linger_deadline):
++                logging.debug('Peer did not close its half within %d s after '
++                              'local shutdown; abandoning the connection',
++                              shutdown_linger)
++                break
+
+
+ class _CombiningBuffer(_ForwardingBuffer):
+@@ -721,7 +784,37 @@
+             self.__inner.close()
+         self.__inner_pipe.close()
+         # Close notify may yet come on self.__inner_pipe, just ignore it.
++
++    def __reap_child(self):
++        '''Wait for the forwarding child, killing it if it overstays.
++
++        Return its wait status.
++
++        '''
++        deadline = time.monotonic() + _CHILD_EXIT_TIMEOUT_SECONDS
++        while True:
++            (pid, status) = os.waitpid(self.__child_pid, os.WNOHANG)
++            if pid != 0:
++                return status
++            if time.monotonic() >= deadline:
++                break
++            time.sleep(0.05)
+
++        # The child is wedged - historically in poll(), waiting for a
++        # peer that never closed its half of the connection. Blocking
++        # here would take the whole daemon down with it, because the
++        # caller's own parent is in turn waiting on the caller.
++        logging.warning('Forwarding child %d did not exit within %d s; '
++                        'killing it', self.__child_pid,
++                        _CHILD_EXIT_TIMEOUT_SECONDS)
++        try:
++            os.kill(self.__child_pid, signal.SIGKILL)
++        except OSError:
++            # Raced with the child exiting; the waitpid below still reaps it.
++            pass
++        (_, status) = os.waitpid(self.__child_pid, 0)
++        return status
++
+     def outer_close(self):
+         '''Close the outer TLS session.
+
+@@ -731,7 +824,7 @@
+         '''
+         self.__inner_pipe.close()
+         self.__outer_pipe.close()
+-        (_, status) = os.waitpid(self.__child_pid, 0)
++        status = self.__reap_child()
+         if status != 0:
+             logging.debug('Child exited with status %d', status)
+         if os.WIFEXITED(status):
+@@ -812,7 +905,12 @@
+             socket_fd.set_socket_option(nss.io.PR_SockOpt_Nonblocking, True)
+             buf_1 = _CombiningBuffer(inner_pipe_fd, outer_pipe_fd, socket_fd)
+             buf_2 = _SplittingBuffer(socket_fd, inner_pipe_fd, outer_pipe_fd)
+-            _ForwardingBuffer.forward_two_way(buf_1, buf_2)
++            # buf_1 inactive here means the parent has closed both pipes
++            # and our shutdown has gone to the peer, so a peer that never
++            # closes must not keep this child - and everything waiting on
++            # it - alive.
++            _ForwardingBuffer.forward_two_way(buf_1, buf_2,
++                                              _SHUTDOWN_LINGER_SECONDS)
+             inner_pipe_fd.close()
+             outer_pipe_fd.close()
+             socket_fd.close()

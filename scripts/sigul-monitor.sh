@@ -20,8 +20,8 @@
 set -euo pipefail
 
 # Script configuration
-readonly SCRIPT_NAME
 SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_NAME
 readonly VERSION="1.0.0"
 
 # Default configuration
@@ -333,18 +333,21 @@ collect_network_info() {
             fi
             network_info=$(echo "$network_info" | jq --argjson listening "$listening_44334" '.listening44334 = $listening')
 
-            # Test external connectivity
-            local external_reachable="false"
-            if nc -z localhost 44334 2>/dev/null; then
-                external_reachable="true"
+            # Whether a server is paired. Never test this by connecting:
+            # a bare connect to 44334 is accepted as a client, fails TLS,
+            # and tears down the paired server connection.
+            local server_paired="false"
+            if docker exec "$SIGUL_CONTAINER_NAME" ss -Htn state established "( sport = :44333 )" 2>/dev/null | grep -q .; then
+                server_paired="true"
             fi
-            network_info=$(echo "$network_info" | jq --argjson reachable "$external_reachable" '.externalReachable = $reachable')
+            network_info=$(echo "$network_info" | jq --argjson paired "$server_paired" '.serverPaired = $paired')
             ;;
 
         "server")
-            # Server doesn't expose external ports, check internal connectivity to bridge
+            # Server doesn't expose external ports; it is ready when it
+            # holds an established connection to the bridge.
             local bridge_reachable="false"
-            if docker exec "$SIGUL_CONTAINER_NAME" nc -z sigul-bridge 44334 2>/dev/null; then
+            if docker exec "$SIGUL_CONTAINER_NAME" ss -Htn state established "( dport = :44333 )" 2>/dev/null | grep -q .; then
                 bridge_reachable="true"
             fi
             network_info=$(echo "$network_info" | jq --argjson reachable "$bridge_reachable" '.bridgeReachable = $reachable')
@@ -363,7 +366,7 @@ get_heartbeat_filename() {
 
 # Emit heartbeat JSON
 emit_heartbeat() {
-    ((HEARTBEAT_COUNT++))
+    HEARTBEAT_COUNT=$((HEARTBEAT_COUNT + 1))
 
     local heartbeat_file
     heartbeat_file=$(get_heartbeat_filename)

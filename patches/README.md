@@ -199,6 +199,153 @@ F44 ABI mismatch and tells them to either rebuild
   until the upstream `rpm-head-signing` package gains support
   for the RPM 6 ABI.
 
+### 06-fix-double-tls-teardown-deadlock.patch
+
+**Status:** CRITICAL - without it the server stops serving after a
+connection is torn down, while still appearing healthy
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** Server (and any `DoubleTLSClient` user)
+
+**Problem:**
+Teardown of a double-TLS connection waits on the peer without any
+bound, in two places:
+
+- `_ForwardingBuffer.forward_two_way()` polls with
+  `PR_INTERVAL_NO_TIMEOUT`, and `_SplittingBuffer._active` stays true
+  until the peer's socket reports EOF.
+- `DoubleTLSClient.outer_close()` then calls `os.waitpid(pid, 0)` on
+  the forwarding child, also unbounded.
+
+A peer that receives our `FIN` but never sends its own therefore pins
+three processes: the forwarding child in `poll()`, the connection owner
+in `waitpid()`, and the daemon's main loop in `waitpid()` on that. The
+main loop never forks a replacement child, so nothing reconnects to the
+bridge and every later request fails with `Unexpected EOF in NSPR`.
+
+Observed in production: the server sat in exactly this state for six
+hours after serving one request. The socket to the bridge was in
+`FIN-WAIT-2`, the bridge held the other half in `CLOSE-WAIT`, and
+`/proc/*/wchan` showed `do_wait`, `do_wait`, `poll_schedule_timeout`.
+The process was still present, so a process-existence liveness check
+kept passing throughout.
+
+Upstream's own backstop does not cover this. The
+`signal.alarm(CHILD_TIMEOUT_SECS)` set in `server.py` is what starts
+the teardown in the first place (see the trigger note below), and once
+the child is blocked in `waitpid()` nothing else fires: `SigPnd: 0`
+after six hours simply means the one-shot alarm had already been
+delivered and consumed.
+
+**Fix:**
+Bound both waits, and only during teardown of the forwarding child:
+
+- `forward_two_way()` gains an optional `shutdown_linger`. Only
+  `DoubleTLSClient.__child()` passes it: there `buf_1` going inactive
+  means the pipes are gone and our shutdown has been forwarded, so the
+  loop switches to a one-second poll tick and gives the peer
+  `_SHUTDOWN_LINGER_SECONDS` (five) to close before abandoning the
+  connection. While the local side is still open it blocks
+  indefinitely as before, so an idle daemon still waits hours for the
+  next request. The linger is short because nothing of value can
+  arrive once the local side is gone; it exists so a healthy close
+  stays clean.
+- The bridge's `bridge_inner_stream()` shares the primitive but does
+  not pass a linger. There `buf_1` inactive means only that the client
+  has finished its half of the inner session while the server's half
+  is still in flight; a linger applied there would abandon live
+  requests.
+- `outer_close()` reaps through `WNOHANG` up to
+  `_CHILD_EXIT_TIMEOUT_SECONDS` (ten), then `SIGKILL`s the forwarding
+  child. This bound exceeds the linger plus a tick on purpose: the
+  child's own linger is the graceful path, and the kill is the
+  fallback for a child stuck somewhere other than the poll loop. The
+  child holds no state worth preserving either way.
+
+Preserving the unbounded idle case is the constraint that shapes this
+patch: a blanket timeout would be a worse bug than the one it fixes.
+
+**Test:** `test/test_double_tls_teardown.py`, which drives the real
+code with a peer that never closes. Against unpatched sigul the first
+check reports `STILL BLOCKED`; against patched it returns at the linger
+bound, while the idle check confirms indefinite waiting still works
+and a bridge-shaped call without a linger keeps waiting too. A further
+check forks a real forwarding child and closes it through the real
+`outer_close()`, asserting the child exits on its own before the kill
+fires; a source check pins that `__child()` is the one caller passing
+the linger.
+
+`scripts/run-lifecycle-tests.sh` phase 4 then reproduces the
+production deadlock on the live stack: it freezes the bridge so it
+cannot close, and fires the server child's hourly alarm early. Against
+v2.2.4 the child is still wedged in `waitpid()` thirty seconds later
+and the next request fails with `Unexpected EOF in NSPR`; against the
+patched images it abandons the connection within the linger, a
+replacement connects, and the next request succeeds.
+
+**Trigger, for the record:** `server.py` arms `signal.alarm(3600)` in
+every forked child at fork time, whether or not a request ever
+arrives. An idle child therefore tears its connection down after an
+hour. With an unpatched bridge that teardown is never answered (see
+07), and with an unpatched server it never completes. Production
+served one request and then wedged while idle, which this explains
+without any network fault.
+
+### 07-fix-bridge-server-socket-lifecycle.patch
+
+**Status:** CRITICAL - without it the bridge leaks a socket per failed
+server handshake and hands dead server connections to clients
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** Bridge
+
+**Problem:**
+`bridge_one_request()` accepts one server connection, then blocks in a
+bare `client_listen_sock.accept()` until a client arrives. Two defects
+follow from that shape:
+
+- The server socket is closed only inside the client-wait block. A
+  server that fails its outer TLS handshake, or presents no
+  certificate, is accepted, rejected and then never closed. Each such
+  attempt leaks one socket, left in `CLOSE-WAIT` with the peer's final
+  bytes unread, for the life of the bridge process. Anything that can
+  reach the server port - a scanner, a misconfigured peer, a
+  crash-looping server - can grow this without bound.
+- While waiting for a client the bridge has no knowledge of the server
+  socket. A server that dies during that wait, which in production can
+  last hours, is only discovered when a client finally connects and is
+  paired with the corpse; that client fails with `Unexpected EOF`. The
+  server's `FIN` also sits unread, so the bridge never closes its half.
+  This is the other side of patch 06: an unpatched server's teardown
+  waits forever on exactly that missing close.
+
+Observed in production: the bridge held three `CLOSE-WAIT` sockets on
+the server port, one with 98 unread bytes, alongside
+`Unexpected EOF on outer stream` and `_InnerBridgingBuffer: data
+dropped` in its log, while the server sat in the patch 06 deadlock.
+
+**Fix:**
+
+- Replace the bare `accept()` with `_wait_for_client_or_server_loss()`,
+  an NSPR poll on both `client_listen_sock` and `server_sock`. A server
+  that has completed its handshake sends nothing until a client
+  arrives, so any readiness on its socket means it has closed or
+  failed. The bridge logs, discards it and returns to waiting for a
+  fresh server instead of pairing the next client with a dead one.
+- Close both sockets in a `finally` that covers every exit path of
+  `bridge_one_request()`, including the handshake and certificate
+  failures the old structure skipped.
+
+The poll stays unbounded: the bridge must still wait indefinitely for
+the next client, exactly as before. Only what it notices while waiting
+changes.
+
+**Test:** `scripts/run-lifecycle-tests.sh`, run against the compose
+stack after the signing tests. It asserts on socket and process
+tables, not log text: five bogus TLS handshakes on the server port
+must leave no new `CLOSE-WAIT` sockets, and a server restart while the
+bridge waits for a client must leave none either, with the first
+request after the restart succeeding. Against unpatched sigul the
+handshake phase leaks one socket per attempt.
+
 ## Applying Patches
 
 The Docker build process automatically applies these patches:
