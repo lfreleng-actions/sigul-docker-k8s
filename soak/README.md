@@ -36,7 +36,7 @@ warm      restart server, restart bridge      recovery measured; done here
                                               so no restart falls inside
                                               the leak-measurement window
 baseline  2 min clean load at 3 clients       reference latency, leak start
-faults    8 faults, 16 min in total           the actual test
+faults    8 faults, ~15 min in total          the actual test
 cooldown  5 min clean load                    compared against baseline
 ```
 

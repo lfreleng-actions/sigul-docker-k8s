@@ -177,9 +177,11 @@ class ServerTeardownAgainstSilentPeer(_ProcessFault):
         # The fault verifies its own outcome. With the peer still frozen
         # the child can only exit by giving up on it, which is exactly
         # what patch 06 bounds. A child still there after the linger,
-        # the reap timeout and some slack is the deadlock, and is
-        # reported here as a harness-level failure so it cannot be
-        # rescued by whatever happens once the peer thaws.
+        # the reap timeout and some slack is the deadlock, raised as a
+        # ProductDefect: a known product failure an expectation may
+        # name, judged before the peer thaws so nothing that happens
+        # afterwards can rescue it. Failures to inject or clean up
+        # remain ordinary errors and fail the run unconditionally.
         deadline = time.monotonic() + TEARDOWN_BOUND_SECONDS
         while time.monotonic() < deadline:
             alive = self._target.run_in(
