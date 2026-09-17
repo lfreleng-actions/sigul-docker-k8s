@@ -272,6 +272,7 @@ def _unit_resources(
         close_wait_end=int(tail[-1]["close_wait"]),
         fin_wait_2_max=max(int(r["fin_wait_2"]) for r in rows),
         zombies_max=max(int(r["zombies"]) for r in rows),
+        zombies_end=int(tail[-1]["zombies"]),
         samples=len(rows),
         restarts_in_window=max(0, len(lifetimes) - 1),
         span_seconds=round(span_hi - span_lo, 1),

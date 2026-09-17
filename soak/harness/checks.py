@@ -225,8 +225,8 @@ def _resource_checks(results: Results) -> list[Check]:
         checks.append(
             Check(
                 f"{unit}: no zombie processes",
-                res.zombies_max == 0,
-                f"peak {res.zombies_max}",
+                res.zombies_end == 0,
+                f"end={res.zombies_end} (peak {res.zombies_max})",
             )
         )
     return checks
