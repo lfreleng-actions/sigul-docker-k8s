@@ -25,10 +25,6 @@
   },
   "pr": {
     "faults": {
-      "client_connect_and_hang": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/11"
-      },
       "client_handshake_then_hang": {
         "expect": "fail",
         "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/12"
@@ -51,10 +47,6 @@
   },
   "nightly": {
     "faults": {
-      "client_connect_and_hang": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/11"
-      },
       "client_handshake_then_hang": {
         "expect": "fail",
         "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/12"
@@ -62,14 +54,6 @@
       "client_backlog_flood": {
         "expect": "fail",
         "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/13"
-      },
-      "client_slow_loris": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/11 (same defect class; unverified until the first nightly run)"
-      },
-      "client_half_close_hang": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/11 (same defect class; unverified until the first nightly run)"
       },
       "client_stop_mid_sign": {
         "expect": "fail",

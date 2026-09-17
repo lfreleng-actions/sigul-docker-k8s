@@ -1,0 +1,73 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Bound the TLS handshake the bridge runs on every accepted peer, so a
+# connection that never completes one cannot hold the bridge's single
+# slot. See patches/README.md for the rationale and measurements.
+#
+--- a/src/bridge.py
++++ b/src/bridge.py
+@@ -121,6 +121,30 @@
+             except configparser.NoOptionError:
+                 group = None
+             self.koji_fas_groups[v] = group
++
++
++# Deadline for a peer to complete its TLS handshake once accepted. The
++# bridge serves one client at a time, so a peer that connects and then
++# says nothing holds the only slot there is for as long as it likes: a
++# port scanner, a health check that opens a bare TCP connection, or a
++# client suspended between connect() and its ClientHello. A real Sigul
++# peer finishes the handshake in well under a second even across a WAN;
++# five seconds is ten times that. The clock starts at accept(), so time
++# spent queued in the listen backlog does not count against the peer.
++_HANDSHAKE_TIMEOUT_SECONDS = 5
++
++
++def _handshake_with_deadline(sock, role):
++    '''Complete the TLS handshake on sock or raise NSPRError.
++
++    On timeout NSPR raises PR_IO_TIMEOUT_ERROR, which the caller's
++    existing NSPRError handling turns into a closed socket and a return
++    to the accept loop.
++
++    '''
++    sock.force_handshake_timeout(
++        nss.io.seconds_to_interval(_HANDSHAKE_TIMEOUT_SECONDS))
++    logging.debug('%s TLS handshake completed', role)
+
+
+ def create_listen_sock(config, port):
+@@ -1257,7 +1281,7 @@
+     @staticmethod
+     def handle_connection(config, client_sock, server_sock):
+         '''Handle a single connection using client_sock and server_sock.'''
+-        client_sock.force_handshake()
++        _handshake_with_deadline(client_sock, 'Client')
+         cert = client_sock.get_peer_certificate()
+         if cert is None:
+             raise ForwardingError('No client certificate')
+@@ -1476,8 +1500,7 @@
+         # This is particularly problematic in containerized environments where
+         # connection timing is less predictable.
+         try:
+-            server_sock.force_handshake()
+-            logging.debug('Server TLS handshake completed')
++            _handshake_with_deadline(server_sock, 'Server')
+         except Exception as e:
+             logging.error('Server TLS handshake failed: %s', e)
+             _adbg('Server TLS handshake EXCEPTION: %r', e)
+@@ -1522,6 +1545,13 @@
+         if e.errno == nss.error.SEC_ERROR_EXPIRED_CERTIFICATE:
+             logging.warning("Peer's certificate has expired, rejecting "
+                             "connection")
++        elif e.errno == nss.error.PR_IO_TIMEOUT_ERROR:
++            # A peer that connected and never finished its handshake.
++            # Named plainly, without a traceback: it is the expected
++            # outcome for a scanner or a bare TCP health check, and the
++            # thing to look for when clients report slow service.
++            logging.warning('Peer did not complete its TLS handshake within '
++                            '%d s; dropping it', _HANDSHAKE_TIMEOUT_SECONDS)
+         else:
+             logging.info('NSPR I/O error: %s', str(e), exc_info=True)
+     except BridgeError as e:
