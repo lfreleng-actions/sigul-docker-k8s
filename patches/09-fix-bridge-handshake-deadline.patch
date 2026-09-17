@@ -7,7 +7,15 @@
 #
 --- a/src/bridge.py
 +++ b/src/bridge.py
-@@ -121,6 +121,30 @@
+@@ -28,6 +28,7 @@
+ import six.moves.configparser as configparser
+ import socket
+ import sys
++import time
+ import tempfile
+ import threading
+
+@@ -121,6 +122,57 @@
              except configparser.NoOptionError:
                  group = None
              self.koji_fas_groups[v] = group
@@ -15,30 +23,57 @@
 +
 +# Deadline for a peer to complete its TLS handshake once accepted. The
 +# bridge serves one client at a time, so a peer that connects and then
-+# says nothing holds the only slot there is for as long as it likes: a
-+# port scanner, a health check that opens a bare TCP connection, or a
-+# client suspended between connect() and its ClientHello. A real Sigul
-+# peer finishes the handshake in well under a second even across a WAN;
-+# five seconds is ten times that. The clock starts at accept(), so time
-+# spent queued in the listen backlog does not count against the peer.
++# says nothing - or trickles a byte a second - holds the only slot there
++# is for as long as it likes: a port scanner, a health check that opens
++# a bare TCP connection, a client suspended between connect() and its
++# ClientHello. A real Sigul peer finishes the handshake in well under a
++# second even across a WAN; five seconds is ten times that. The clock
++# starts at accept(), so time spent queued in the listen backlog does
++# not count against the peer.
 +_HANDSHAKE_TIMEOUT_SECONDS = 5
 +
 +
 +def _handshake_with_deadline(sock, role):
-+    '''Complete the TLS handshake on sock or raise NSPRError.
++    '''Complete the TLS handshake on sock within the deadline.
 +
-+    On timeout NSPR raises PR_IO_TIMEOUT_ERROR, which the caller's
-+    existing NSPRError handling turns into a closed socket and a return
-+    to the accept loop.
++    Raise NSPRError with PR_IO_TIMEOUT_ERROR if it does not finish in
++    time. This is a wall-clock bound on the whole handshake, not a
++    per-read one: SSL_ForceHandshakeWithTimeout() only limits each
++    individual read, so a peer sending one byte a second would pass it
++    indefinitely. Instead the socket is switched to non-blocking, the
++    handshake is driven a step at a time, and between steps the socket
++    is polled for whatever NSS is waiting on, with the remaining time as
++    the poll timeout. Blocking mode is restored afterwards, on every
++    path, because everything downstream expects it.
 +
 +    '''
-+    sock.force_handshake_timeout(
-+        nss.io.seconds_to_interval(_HANDSHAKE_TIMEOUT_SECONDS))
++    deadline = time.monotonic() + _HANDSHAKE_TIMEOUT_SECONDS
++    sock.set_socket_option(nss.io.PR_SockOpt_Nonblocking, True)
++    try:
++        while True:
++            try:
++                sock.force_handshake()
++                break
++            except nss.error.NSPRError as e:
++                if e.errno != nss.error.PR_WOULD_BLOCK_ERROR:
++                    raise
++            remaining = deadline - time.monotonic()
++            if remaining <= 0:
++                raise nss.error.NSPRError(
++                    'TLS handshake not completed within %d s'
++                    % _HANDSHAKE_TIMEOUT_SECONDS,
++                    nss.error.PR_IO_TIMEOUT_ERROR)
++            # NSS may be waiting to read or to write; ask for both.
++            nss.io.Socket.poll(
++                [(sock, nss.io.PR_POLL_READ | nss.io.PR_POLL_WRITE)],
++                nss.io.milliseconds_to_interval(int(remaining * 1000) + 1))
++    finally:
++        sock.set_socket_option(nss.io.PR_SockOpt_Nonblocking, False)
 +    logging.debug('%s TLS handshake completed', role)
 
 
  def create_listen_sock(config, port):
-@@ -1257,7 +1281,7 @@
+@@ -1257,7 +1309,7 @@
      @staticmethod
      def handle_connection(config, client_sock, server_sock):
          '''Handle a single connection using client_sock and server_sock.'''
@@ -47,7 +82,7 @@
          cert = client_sock.get_peer_certificate()
          if cert is None:
              raise ForwardingError('No client certificate')
-@@ -1476,8 +1500,7 @@
+@@ -1476,8 +1528,7 @@
          # This is particularly problematic in containerized environments where
          # connection timing is less predictable.
          try:
@@ -57,7 +92,7 @@
          except Exception as e:
              logging.error('Server TLS handshake failed: %s', e)
              _adbg('Server TLS handshake EXCEPTION: %r', e)
-@@ -1522,6 +1545,13 @@
+@@ -1522,6 +1573,13 @@
          if e.errno == nss.error.SEC_ERROR_EXPIRED_CERTIFICATE:
              logging.warning("Peer's certificate has expired, rejecting "
                              "connection")

@@ -414,13 +414,20 @@ port, **0 requests served in 60 s**; service resumed only when they
 closed.
 
 **Fix:**
-Both handshakes go through `force_handshake_timeout()` with a
-five-second deadline. A real Sigul peer completes the handshake in
-well under a second even across a WAN, and the clock starts at
-`accept()`, so time queued in the listen backlog does not count. On
-expiry NSPR raises `PR_IO_TIMEOUT_ERROR`; the bridge logs a plain
-`Peer stopped responding ...; dropping it` warning naming both this
-deadline and patch 11's, and, through the patch 07 cleanup, closes the
+Both handshakes go through `_handshake_with_deadline()`, a wall-clock
+bound of five seconds on the whole handshake. NSS's own
+`force_handshake_timeout()` is not enough: it limits each individual
+read, so a peer trickling one byte a second passes it indefinitely -
+measured, an honest request behind such a peer was still waiting at
+sixty seconds. Instead the socket is switched to non-blocking, the
+handshake is driven a step at a time, and between steps the socket is
+polled with the remaining time; blocking mode is restored on every
+path. A real Sigul peer completes the handshake in well under a second
+even across a WAN, and the clock starts at `accept()`, so time queued
+in the listen backlog does not count. On expiry the bridge raises
+`PR_IO_TIMEOUT_ERROR`, logs a plain `Peer stopped responding ...;
+dropping it` warning naming both this deadline and patch 11's, and,
+through the patch 07 cleanup, closes the
 peer and returns to its accept loop. When
 the dropped peer was a client, the paired server connection is closed
 with it and the server reconnects within a second, as for any other
@@ -428,9 +435,10 @@ rejected client.
 
 **Test:** with two silent connections parked on the client port, an
 honest `list-users` is now served after nine seconds (two deadlines)
-rather than never; a silent connection parked on the server port
-delays a restarted server's pairing by one deadline rather than
-forever. The soak harness's `client_connect_and_hang` fault, marked
+rather than never; behind a one-byte-a-second slow-loris it is served
+after two; a silent connection parked on the server port delays a
+restarted server's pairing by one deadline rather than forever. The
+soak harness's `client_connect_and_hang` fault, previously marked
 expected-fail against issue #11, passes.
 
 ### 10-fix-bridge-listen-backlog.patch
