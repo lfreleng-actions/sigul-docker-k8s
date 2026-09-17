@@ -208,7 +208,14 @@ def run(profile: Profile, output_dir: Path) -> int:
             # up to then cannot support a verdict.
             load_ok = False
             log(f"locust exited early with status {locust.returncode}")
-        sampler.stop()
+        # Stop the sampler before the timeline is closed so a stuck
+        # sampler surfaces here, as a run failure, rather than as a
+        # concurrent reader/writer during analysis.
+        try:
+            sampler.stop()
+        except RuntimeError as exc:
+            log(str(exc))
+            load_ok = False
         timeline.record("phase", "run", started, time.time())
         timeline.close()
         if sampler.errors:
@@ -216,7 +223,7 @@ def run(profile: Profile, output_dir: Path) -> int:
 
     status = analyse_and_report(profile.name, output_dir, registry)
     if not load_ok:
-        log("verdict: FAIL (load generator exited early)")
+        log("verdict: FAIL (load generator exited early or sampler did not stop)")
         return 1
     return status
 

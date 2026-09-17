@@ -53,9 +53,19 @@ INIT_CONTAINER="sigul-client-init"
 echo "network=${NETWORK_NAME} bridge-nss=${BRIDGE_NSS_VOLUME}"
 
 docker rm -f "$INIT_CONTAINER" >/dev/null 2>&1 || true
-docker volume rm "$CLIENT_NSS_VOLUME" "$CLIENT_CONFIG_VOLUME" >/dev/null 2>&1 || true
-docker volume create "$CLIENT_NSS_VOLUME" >/dev/null
-docker volume create "$CLIENT_CONFIG_VOLUME" >/dev/null
+# Rebuild from empty. A volume that exists but cannot be removed is
+# still attached to something; carrying on would hand that container's
+# old certificate database to every suite, so stop instead.
+for volume in "$CLIENT_NSS_VOLUME" "$CLIENT_CONFIG_VOLUME"; do
+    if docker volume inspect "$volume" >/dev/null 2>&1; then
+        if ! docker volume rm "$volume" >/dev/null 2>&1; then
+            echo "ERROR: cannot remove volume $volume - still in use?" >&2
+            docker ps -a --filter "volume=$volume" --format '  {{.Names}} ({{.Status}})' >&2
+            exit 1
+        fi
+    fi
+    docker volume create "$volume" >/dev/null
+done
 
 # UID 1000 is the in-image sigul user.
 docker run --rm \

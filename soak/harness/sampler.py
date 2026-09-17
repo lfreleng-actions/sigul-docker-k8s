@@ -39,6 +39,12 @@ COLUMNS = (
 )
 
 
+#: Long enough for a whole tick of readings to fail on the target's
+#: API bound: two units, each with several calls that may each take
+#: DockerTarget.API_TIMEOUT_SECONDS.
+STOP_TIMEOUT_SECONDS = 180.0
+
+
 class Sampler:
     def __init__(
         self,
@@ -61,9 +67,21 @@ class Sampler:
         self._thread.start()
 
     def stop(self) -> None:
+        """Stop sampling and wait for the writer to have closed the file.
+
+        One in-flight reading may take up to the target's full API bound
+        to fail, and the loop finishes the units of the current tick
+        before it checks the stop flag. Wait long enough for that, and
+        report loudly if the thread is still alive afterwards: analysis
+        reading a file the sampler still has open is not acceptable.
+        """
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(timeout=self._interval * 3)
+            self._thread.join(timeout=STOP_TIMEOUT_SECONDS)
+            if self._thread.is_alive():
+                raise RuntimeError(
+                    f"sampler thread still running {STOP_TIMEOUT_SECONDS:.0f}s after stop()"
+                )
 
     def _run(self) -> None:
         with self._output.open("w", newline="") as handle:
@@ -72,6 +90,8 @@ class Sampler:
             while not self._stop.is_set():
                 tick = time.time()
                 for unit in self._units:
+                    if self._stop.is_set():
+                        break
                     row = self._sample(unit, tick)
                     if row is not None:
                         writer.writerow(row)
