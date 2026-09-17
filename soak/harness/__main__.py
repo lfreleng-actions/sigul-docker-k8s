@@ -139,7 +139,11 @@ def start_locust(
     env["SOAK_RAMP_STEPS"] = ",".join(str(s) for s in profile.ramp_steps)
     env["SOAK_RAMP_STEP_SECONDS"] = str(profile.ramp_step_seconds)
     env["SOAK_STEADY_USERS"] = str(profile.steady_users)
-    env["SOAK_TOTAL_SECONDS"] = str(duration + 60)
+    # The scheduler stops Locust when the run is over; this is only a
+    # safety ceiling for a harness that dies without doing so. Fault
+    # setup and cleanup are synchronous and uncounted in the plan, so
+    # the ceiling is well clear of any plausible overrun.
+    env["SOAK_TOTAL_SECONDS"] = str(duration * 2 + 3600)
 
     argv = [
         "locust",

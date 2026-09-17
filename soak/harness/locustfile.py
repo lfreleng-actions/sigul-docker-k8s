@@ -250,7 +250,9 @@ class ProfileShape(LoadTestShape):
     )
     step_seconds = float(os.environ.get("SOAK_RAMP_STEP_SECONDS", "45"))
     steady = int(os.environ.get("SOAK_STEADY_USERS", "3"))
-    total = float(os.environ.get("SOAK_TOTAL_SECONDS", "1800"))
+    #: Safety ceiling only. The harness ends the run by signalling
+    #: Locust; this stops a runaway generator if the harness cannot.
+    total = float(os.environ.get("SOAK_TOTAL_SECONDS", "86400"))
 
     def tick(self):  # noqa: ANN201 - locust API
         elapsed = self.get_run_time()
