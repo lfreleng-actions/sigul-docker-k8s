@@ -229,23 +229,37 @@ hours after serving one request. The socket to the bridge was in
 The process was still present, so a process-existence liveness check
 kept passing throughout.
 
-Upstream's own backstop does not cover this: the
-`signal.alarm(CHILD_TIMEOUT_SECS)` set in `server.py` had not fired
-after six hours (`SigPnd: 0`).
+Upstream's own backstop does not cover this. The
+`signal.alarm(CHILD_TIMEOUT_SECS)` set in `server.py` is what starts
+the teardown in the first place (see the trigger note below), and once
+the child is blocked in `waitpid()` nothing else fires: `SigPnd: 0`
+after six hours simply means the one-shot alarm had already been
+delivered and consumed.
 
 **Fix:**
-Bound both waits, and only during teardown:
+Bound both waits, and only during teardown of the forwarding child:
 
-- `forward_two_way()` keeps blocking indefinitely while the local side
-  is still open, so an idle daemon still waits hours for the next
-  request. Once the local side closes - `buf_1` goes inactive, meaning
-  the pipes are gone and our shutdown has been forwarded - it switches
-  to a one-second poll tick and gives the peer
-  `_SHUTDOWN_LINGER_SECONDS` to close before abandoning the connection.
+- `forward_two_way()` gains an optional `shutdown_linger`. Only
+  `DoubleTLSClient.__child()` passes it: there `buf_1` going inactive
+  means the pipes are gone and our shutdown has been forwarded, so the
+  loop switches to a one-second poll tick and gives the peer
+  `_SHUTDOWN_LINGER_SECONDS` (five) to close before abandoning the
+  connection. While the local side is still open it blocks
+  indefinitely as before, so an idle daemon still waits hours for the
+  next request. The linger is short because nothing of value can
+  arrive once the local side is gone; it exists so a healthy close
+  stays clean.
+- The bridge's `bridge_inner_stream()` shares the primitive but does
+  not pass a linger. There `buf_1` inactive means only that the client
+  has finished its half of the inner session while the server's half
+  is still in flight; a linger applied there would abandon live
+  requests.
 - `outer_close()` reaps through `WNOHANG` up to
-  `_CHILD_EXIT_TIMEOUT_SECONDS`, then `SIGKILL`s the forwarding child.
-  The child holds no state worth preserving; by that point it is
-  forwarding between closed sockets.
+  `_CHILD_EXIT_TIMEOUT_SECONDS` (ten), then `SIGKILL`s the forwarding
+  child. This bound exceeds the linger plus a tick on purpose: the
+  child's own linger is the graceful path, and the kill is the
+  fallback for a child stuck somewhere other than the poll loop. The
+  child holds no state worth preserving either way.
 
 Preserving the unbounded idle case is the constraint that shapes this
 patch: a blanket timeout would be a worse bug than the one it fixes.
@@ -253,7 +267,28 @@ patch: a blanket timeout would be a worse bug than the one it fixes.
 **Test:** `test/test_double_tls_teardown.py`, which drives the real
 code with a peer that never closes. Against unpatched sigul the first
 check reports `STILL BLOCKED`; against patched it returns at the linger
-bound, while the idle check confirms indefinite waiting still works.
+bound, while the idle check confirms indefinite waiting still works
+and a bridge-shaped call without a linger keeps waiting too. A further
+check forks a real forwarding child and closes it through the real
+`outer_close()`, asserting the child exits on its own before the kill
+fires; a source check pins that `__child()` is the one caller passing
+the linger.
+
+`scripts/run-lifecycle-tests.sh` phase 4 then reproduces the
+production deadlock on the live stack: it freezes the bridge so it
+cannot close, and fires the server child's hourly alarm early. Against
+v2.2.4 the child is still wedged in `waitpid()` thirty seconds later
+and the next request fails with `Unexpected EOF in NSPR`; against the
+patched images it abandons the connection within the linger, a
+replacement connects, and the next request succeeds.
+
+**Trigger, for the record:** `server.py` arms `signal.alarm(3600)` in
+every forked child at fork time, whether or not a request ever
+arrives. An idle child therefore tears its connection down after an
+hour. With an unpatched bridge that teardown is never answered (see
+07), and with an unpatched server it never completes. Production
+served one request and then wedged while idle, which this explains
+without any network fault.
 
 ### 07-fix-bridge-server-socket-lifecycle.patch
 

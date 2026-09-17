@@ -1169,10 +1169,12 @@ jobs:
           # nothing for six hours while every health signal passed.
           #
           # Exercises sequential requests (the server must re-arm),
-          # failed handshakes (must not leak sockets), and the
-          # production sequence - server dies while the bridge waits
-          # for a client - asserting on socket and process state rather
-          # than log text. Covers patches/06 and patches/07.
+          # failed handshakes (must not leak sockets), a server lost
+          # while the bridge waits for a client, and the production
+          # deadlock itself - the bridge frozen so it cannot close while
+          # the server child's hourly alarm fires - asserting on socket
+          # and process state rather than log text. Covers patches/06
+          # and patches/07 on the live stack.
           chmod +x scripts/run-lifecycle-tests.sh
           ./scripts/run-lifecycle-tests.sh
 
@@ -1199,11 +1201,17 @@ jobs:
           # The signing suite above cannot catch this: it opens a fresh
           # connection per invocation and never exercises a teardown
           # against an unresponsive peer.
+          #
+          # --entrypoint is essential: the image's entrypoint ignores
+          # its arguments and starts the daemon instead, and exits 0
+          # when it cannot - so without it this step passes while
+          # running nothing.
           docker run --rm \
             --user 1000:1000 \
             -v "${PWD}/test:/test:ro" \
+            --entrypoint python3 \
             "${SIGUL_SERVER_IMAGE}" \
-            python3 /test/test_double_tls_teardown.py
+            /test/test_double_tls_teardown.py
 
       - name: 'Capture Sigul daemon logs and container diagnostics'
         if: always()

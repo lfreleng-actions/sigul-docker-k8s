@@ -344,15 +344,19 @@ failing CI run as the source of truth.
   Dockerfile, change all three (`Dockerfile.{client,server,bridge}`)
   consistently — they share a base image and most of their package
   set.
-- **Test changes** — the two end-to-end suites are
+- **Test changes** — the three end-to-end suites are
   [`scripts/run-integration-tests.sh`](./scripts/run-integration-tests.sh)
-  (control plane: list-users, list-keys, double-TLS handshake, etc.)
-  and
+  (control plane: list-users, list-keys, double-TLS handshake, etc.),
   [`scripts/run-signing-tests.sh`](./scripts/run-signing-tests.sh)
   (key lifecycle, sign-text/data/rpm/rpms, user and key-access
-  lifecycle, with each output independently verified by gpg or rpm).
-  New tests should fit into the existing `phase`/`testcase`/`pass`/
-  `fail` shape and remain idempotent against repeated runs.
+  lifecycle, with each output independently verified by gpg or rpm)
+  and
+  [`scripts/run-lifecycle-tests.sh`](./scripts/run-lifecycle-tests.sh)
+  (connection lifecycle: re-arming between requests, failed
+  handshakes, a server lost while the bridge waits; asserts on socket
+  and process tables). New tests should fit into the existing
+  `phase`/`testcase`/`pass`/`fail` shape and remain idempotent against
+  repeated runs.
 - **Workflow / CI changes** — [`build-test.yaml`](./.github/workflows/build-test.yaml)
   is the only workflow that exercises the stack end-to-end; iterate
   on it via `workflow_dispatch` with `publish_ghcr: false` until
@@ -369,9 +373,10 @@ failing CI run as the source of truth.
 1. Build the three images for your host architecture (see
    [Bringing up the stack locally](#bringing-up-the-stack-locally)).
 2. Bring the stack up with `scripts/deploy-sigul-infrastructure.sh`.
-3. Run `scripts/run-integration-tests.sh` and
-   `scripts/run-signing-tests.sh`; both should exit `0` with all tests
-   passing.
+3. Run `scripts/run-integration-tests.sh`,
+   `scripts/run-signing-tests.sh` and `scripts/run-lifecycle-tests.sh`;
+   all should exit `0` with all tests passing. The lifecycle suite
+   restarts the server container, so run it last.
 4. If you changed the action surface, run a manual
    `workflow_dispatch` of `Sigul Build/Test 🐳` with
    `publish_ghcr: false` to confirm both `linux/amd64` and

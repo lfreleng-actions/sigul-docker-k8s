@@ -284,7 +284,7 @@ spec:
           # and the service answered nothing for six hours.
           #
           # Checking the bridge connection instead makes a wedge
-          # self-healing within roughly a minute, for any cause,
+          # self-healing within roughly two minutes, for any cause,
           # including ones not yet diagnosed. patches/06 removes the
           # known deadlock; this is the backstop for the rest.
           #
@@ -299,8 +299,9 @@ spec:
                 - /bin/bash
                 - -c
                 - "ss -Htn state established '( dport = :{{ .Values.bridge.ports.server }} )' | grep -q ."
-            # Matches the readiness delay: the daemon must be given time
-            # to make its first connection before a failure counts.
+            # Liveness gets more startup grace than readiness (10s):
+            # the daemon must be given time to make its first connection
+            # before a failure counts towards a restart.
             initialDelaySeconds: 60
             periodSeconds: 20
             failureThreshold: 6

@@ -28,7 +28,9 @@
 # it is upstream code this repository only patches, so its members are
 # untyped by nature.
 
+import inspect
 import os
+import re
 import sys
 import threading
 import time
@@ -46,6 +48,7 @@ FAILURES: list[str] = []
 # Bounds the patch introduces. Fall back to generous values so the
 # checks still execute - and fail honestly - against unpatched code.
 LINGER = getattr(double_tls, "_SHUTDOWN_LINGER_SECONDS", 30)
+TICK = getattr(double_tls, "_SHUTDOWN_POLL_TICK_SECONDS", 1)
 CHILD_TIMEOUT = getattr(double_tls, "_CHILD_EXIT_TIMEOUT_SECONDS", 10)
 PATCHED = hasattr(double_tls, "_SHUTDOWN_LINGER_SECONDS")
 
@@ -58,20 +61,48 @@ def check(label: str, got: object, want: object) -> None:
 
 
 def run_bounded(fn: Callable[[], None], limit: float) -> float | None:
-    """Run fn in a thread. Return elapsed seconds, or None if it hung."""
+    """Run fn in a thread. Return elapsed seconds, or None if it hung.
+
+    An exception from fn is re-raised here, so a function that exits by
+    raising cannot pass as one that returned.
+    """
     done = threading.Event()
+    failure: list[BaseException] = []
 
     def wrapper() -> None:
         try:
             fn()
+        except BaseException as e:
+            failure.append(e)
         finally:
             done.set()
 
     started = time.monotonic()
-    threading.Thread(target=wrapper, daemon=True).start()
+    thread = threading.Thread(target=wrapper, daemon=True)
+    thread.start()
     if not done.wait(limit):
         return None
-    return time.monotonic() - started
+    elapsed = time.monotonic() - started
+    thread.join(5)
+    _wait_single_threaded()
+    if failure:
+        raise failure[0]
+    return elapsed
+
+
+def _wait_single_threaded() -> None:
+    """Wait for the last worker's OS thread to finish leaving.
+
+    join() returns before the thread has fully exited, and the checks
+    that fork() next warn about forking a multi-threaded process.
+    """
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline:
+        with open("/proc/self/status") as f:
+            threads = [line for line in f if line.startswith("Threads:")]
+        if threads and threads[0].split()[1] == "1":
+            return
+        time.sleep(0.01)
 
 
 @final
@@ -101,11 +132,19 @@ class _Buffer:
         pass
 
 
+def _forward(buf_1: _Buffer, buf_2: _Buffer, linger: int | None) -> None:
+    """Call forward_two_way() with the linger where the signature allows it."""
+    if PATCHED:
+        double_tls._ForwardingBuffer.forward_two_way(buf_1, buf_2, linger)
+    else:
+        double_tls._ForwardingBuffer.forward_two_way(buf_1, buf_2)
+
+
 def test_teardown_is_bounded() -> None:
     """Local side closed + peer that never closes must not block forever."""
 
     def body() -> None:
-        double_tls._ForwardingBuffer.forward_two_way(_Buffer(False), _Buffer(True))
+        _forward(_Buffer(False), _Buffer(True), LINGER)
 
     elapsed = run_bounded(body, LINGER + 20)
     check("forward_two_way returns after local shutdown", elapsed is not None, True)
@@ -115,11 +154,31 @@ def test_teardown_is_bounded() -> None:
         print(f"     STILL BLOCKED after {LINGER + 20}s - this is the deadlock")
 
 
+def test_bridge_forwarding_has_no_linger() -> None:
+    """Without a linger requested, one side inactive must not end the loop.
+
+    The bridge's inner-stream forwarding shares this primitive, and there
+    buf_1 inactive means only that the client has finished its half of
+    the inner session while the server's half is still in flight. A
+    linger applied unconditionally would abandon live requests.
+    """
+
+    def body() -> None:
+        _forward(_Buffer(False), _Buffer(True), None)
+
+    elapsed = run_bounded(body, LINGER + 5)
+    check("forwarding without linger keeps waiting", elapsed is None, True)
+    if elapsed is None:
+        print(f"     still polling after {LINGER + 5}s, as the bridge needs")
+    else:
+        print(f"     RETURNED after {elapsed:.1f}s - the bridge would drop requests")
+
+
 def test_idle_still_blocks() -> None:
     """An idle connection must keep waiting; the daemon idles for hours."""
 
     def body() -> None:
-        double_tls._ForwardingBuffer.forward_two_way(_Buffer(True), _Buffer(True))
+        _forward(_Buffer(True), _Buffer(True), LINGER)
 
     elapsed = run_bounded(body, LINGER + 10)
     check("idle loop keeps waiting", elapsed is None, True)
@@ -170,14 +229,104 @@ def test_wedged_child_is_reaped() -> None:
         check("child reaped", True, True)
 
 
+def test_linger_completes_before_kill() -> None:
+    """The graceful bound must fire before the kill, on the real path.
+
+    outer_close() closes the local pipes and immediately reaps. The
+    forwarding child's linger is its chance to close cleanly; if the
+    reap timeout were shorter, every teardown against a silent peer
+    would end in SIGKILL and the linger would never run in production.
+    """
+    if not hasattr(double_tls.DoubleTLSClient, "_DoubleTLSClient__reap_child"):
+        check("reap timeout exceeds linger", False, True)
+        print("     unpatched: no bounds to compare")
+        return
+
+    check("reap timeout exceeds linger + tick", CHILD_TIMEOUT > LINGER + TICK, True)
+
+    # The real outer_close(): closes both pipes, reaps, inspects status.
+    client = double_tls.DoubleTLSClient.__new__(double_tls.DoubleTLSClient)
+    client._DoubleTLSClient__inner_pipe = _ClosablePipe()
+    client._DoubleTLSClient__outer_pipe = _ClosablePipe()
+    pid = os.fork()
+    if pid == 0:
+        try:
+            # What __child() does once outer_close() has shut the pipes:
+            # local side inactive, peer never closes.
+            _forward(_Buffer(False), _Buffer(True), LINGER)
+        finally:
+            os._exit(0)
+    client._DoubleTLSClient__child_pid = pid
+
+    def body() -> None:
+        client.outer_close()
+
+    elapsed = run_bounded(body, CHILD_TIMEOUT + 15)
+    check("outer_close returns", elapsed is not None, True)
+    if elapsed is None:
+        try:
+            os.kill(pid, 9)
+            _ = os.waitpid(pid, 0)
+        except OSError:
+            pass
+        return
+    print(
+        f"     returned after {elapsed:.1f}s (linger {LINGER}s, kill at {CHILD_TIMEOUT}s)"
+    )
+    check("child exited before the kill deadline", elapsed < CHILD_TIMEOUT, True)
+    try:
+        os.kill(pid, 0)
+        check("child reaped by outer_close", False, True)
+    except OSError:
+        check("child reaped by outer_close", True, True)
+
+
+@final
+class _ClosablePipe:
+    """Stands in for the parent's end of a pipe; outer_close() only closes it."""
+
+    def close(self) -> None:
+        pass
+
+
+def test_child_passes_linger() -> None:
+    """__child() must request the linger; it is the only caller that should.
+
+    Running __child() needs NSS and a TLS peer, so this is a source check.
+    scripts/run-lifecycle-tests.sh phase 4 covers the same wiring
+    behaviourally against the live stack.
+    """
+    if not PATCHED:
+        check("__child() requests the shutdown linger", False, True)
+        print("     unpatched: forward_two_way() takes no linger")
+        return
+    child_src = inspect.getsource(double_tls.DoubleTLSClient._DoubleTLSClient__child)
+    call = re.search(r"forward_two_way\((.*?)\)", child_src, re.S)
+    args = call.group(1) if call else ""
+    check(
+        "__child() requests the shutdown linger",
+        "_SHUTDOWN_LINGER_SECONDS" in args,
+        True,
+    )
+    bridge_src = inspect.getsource(double_tls.bridge_inner_stream)
+    call = re.search(r"forward_two_way\((.*?)\)", bridge_src, re.S)
+    args = call.group(1) if call else ""
+    check("bridge_inner_stream() requests no linger", "LINGER" not in args, True)
+
+
 def main() -> int:
     print("double-TLS teardown regression tests")
     state = "PATCHED" if PATCHED else "UNPATCHED"
     print(f"double_tls: {state}  (linger={LINGER}s, child-exit={CHILD_TIMEOUT}s)")
     print()
+    # The checks that leave a thread parked in poll() for the rest of
+    # the run go last, after the fork-based ones.
     test_teardown_is_bounded()
-    test_idle_still_blocks()
     test_wedged_child_is_reaped()
+    test_linger_completes_before_kill()
+    test_child_passes_linger()
+    test_bridge_forwarding_has_no_linger()
+    test_idle_still_blocks()
     print()
     if FAILURES:
         print(f"{len(FAILURES)} FAILED: {FAILURES}")
