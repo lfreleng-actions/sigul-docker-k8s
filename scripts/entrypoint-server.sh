@@ -448,8 +448,16 @@ start_server_service() {
         # Check if DEBUG_MODE is enabled
         if [[ "${DEBUG_MODE:-0}" == "1" ]]; then
             warn "DEBUG_MODE enabled - entrypoint will monitor sigul process"
-            # Use su to drop privileges in debug mode
-            exec su -s /bin/bash "$SIGUL_USER" -c "$(declare -f start_server_service_debug); start_server_service_debug"
+            # Drop privileges with setpriv here too, so the monitoring
+            # shell - not su - is PID 1 and reaps what the server cannot
+            # (it is not PID 1 in this mode). The shell functions the
+            # monitor needs are passed in as they were before.
+            sigul_home="$(getent passwd "$SIGUL_USER" | cut -d: -f6)"
+            exec setpriv --reuid="$SIGUL_USER" --regid="$SIGUL_USER" --init-groups \
+                env HOME="${sigul_home:-/var/lib/sigul}" USER="$SIGUL_USER" \
+                    LOGNAME="$SIGUL_USER" SHELL=/bin/bash CONFIG_FILE="$CONFIG_FILE" \
+                    RED="$RED" GREEN="$GREEN" YELLOW="$YELLOW" BLUE="$BLUE" NC="$NC" \
+                    /bin/bash -c "$(declare -f log warn error start_server_service_debug); start_server_service_debug"
         else
             # Drop privileges and exec sigul_server so that the daemon
             # itself becomes PID 1, as it is under the Helm chart.
@@ -523,9 +531,17 @@ start_server_service_debug() {
         local tail_pid=$!
     fi
 
-    # Wait for the sigul process and capture exit code
+    # Wait for the sigul process and capture its exit code. In this mode
+    # the server is not PID 1 - this shell is - so the gpg helpers the
+    # server orphans are reparented here, and this shell must reap them
+    # or they accumulate as zombies exactly as they did before
+    # patches/08. `wait -n` returns on any child; loop until the one we
+    # care about has gone.
     local exit_code=0
-    if wait $sigul_pid; then
+    while kill -0 "$sigul_pid" 2>/dev/null; do
+        wait -n 2>/dev/null || true
+    done
+    if wait "$sigul_pid"; then
         exit_code=$?
         log "Server process exited normally with code: $exit_code"
     else
