@@ -199,6 +199,62 @@ F44 ABI mismatch and tells them to either rebuild
   until the upstream `rpm-head-signing` package gains support
   for the RPM 6 ABI.
 
+### 06-fix-double-tls-teardown-deadlock.patch
+
+**Status:** CRITICAL - without it the server stops serving after a
+connection is torn down, while still appearing healthy
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** Server (and any `DoubleTLSClient` user)
+
+**Problem:**
+Teardown of a double-TLS connection waits on the peer without any
+bound, in two places:
+
+- `_ForwardingBuffer.forward_two_way()` polls with
+  `PR_INTERVAL_NO_TIMEOUT`, and `_SplittingBuffer._active` stays true
+  until the peer's socket reports EOF.
+- `DoubleTLSClient.outer_close()` then calls `os.waitpid(pid, 0)` on
+  the forwarding child, also unbounded.
+
+A peer that receives our `FIN` but never sends its own therefore pins
+three processes: the forwarding child in `poll()`, the connection owner
+in `waitpid()`, and the daemon's main loop in `waitpid()` on that. The
+main loop never forks a replacement child, so nothing reconnects to the
+bridge and every later request fails with `Unexpected EOF in NSPR`.
+
+Observed in production: the server sat in exactly this state for six
+hours after serving one request. The socket to the bridge was in
+`FIN-WAIT-2`, the bridge held the other half in `CLOSE-WAIT`, and
+`/proc/*/wchan` showed `do_wait`, `do_wait`, `poll_schedule_timeout`.
+The process was still present, so a process-existence liveness check
+kept passing throughout.
+
+Upstream's own backstop does not cover this: the
+`signal.alarm(CHILD_TIMEOUT_SECS)` set in `server.py` had not fired
+after six hours (`SigPnd: 0`).
+
+**Fix:**
+Bound both waits, and only during teardown:
+
+- `forward_two_way()` keeps blocking indefinitely while the local side
+  is still open, so an idle daemon still waits hours for the next
+  request. Once the local side closes - `buf_1` goes inactive, meaning
+  the pipes are gone and our shutdown has been forwarded - it switches
+  to a one-second poll tick and gives the peer
+  `_SHUTDOWN_LINGER_SECONDS` to close before abandoning the connection.
+- `outer_close()` reaps through `WNOHANG` up to
+  `_CHILD_EXIT_TIMEOUT_SECONDS`, then `SIGKILL`s the forwarding child.
+  The child holds no state worth preserving; by that point it is
+  forwarding between closed sockets.
+
+Preserving the unbounded idle case is the constraint that shapes this
+patch: a blanket timeout would be a worse bug than the one it fixes.
+
+**Test:** `test/test_double_tls_teardown.py`, which drives the real
+code with a peer that never closes. Against unpatched sigul the first
+check reports `STILL BLOCKED`; against patched it returns at the linger
+bound, while the idle check confirms indefinite waiting still works.
+
 ## Applying Patches
 
 The Docker build process automatically applies these patches:
