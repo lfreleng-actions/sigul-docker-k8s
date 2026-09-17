@@ -225,9 +225,6 @@ def run(profile: Profile, output_dir: Path) -> int:
         f"{len(profile.preflight_faults) + len(profile.warm_faults) + len(profile.faults)} faults"
     )
 
-    configure_proxies(bridge)
-    wait_for_service(password)
-
     target = DockerTarget()
     registry = build_registry(target)
     timeline = Timeline(output_dir / "timeline.csv")
@@ -251,9 +248,14 @@ def run(profile: Profile, output_dir: Path) -> int:
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
 
-    sampler.start()
     started = time.time()
+    startup_failure: str | None = None
     try:
+        # Readiness runs inside the reporting path, so a stack that never
+        # serves still produces report.md and results.json saying why.
+        configure_proxies(bridge)
+        wait_for_service(password)
+        sampler.start()
         # Preflight faults need an idle stack - no request in flight -
         # so they run before the load generator, with probe requests
         # standing in for it during their recovery windows.
@@ -265,18 +267,29 @@ def run(profile: Profile, output_dir: Path) -> int:
         scheduler.run_baseline()
         scheduler.run_faults()
         scheduler.run_cooldown()
+    except SystemExit as exc:
+        # Startup failures raise SystemExit with a message (readiness,
+        # Locust never starting). Those become a reported harness
+        # failure; a plain status code, such as the interrupt's, is
+        # re-raised after cleanup.
+        if isinstance(exc.code, str):
+            startup_failure = exc.code
+        else:
+            raise
     finally:
         if interrupted:
             _restore_stack(scheduler, target, (bridge, server))
-        failure = _stop_load(locust)
-        # Stop the sampler before the timeline is closed so a stuck
-        # sampler surfaces here, as a run failure, rather than as a
-        # concurrent reader/writer during analysis.
+        failure = _stop_load(locust) if startup_failure is None else startup_failure
+        # Stop the sampler before the timeline is closed. If its writer
+        # is still alive there is no safe way to read samples.csv, so
+        # the run ends here with the failure logged rather than with a
+        # report built on a file still being written.
         try:
             sampler.stop()
         except RuntimeError as exc:
             log(str(exc))
-            failure = failure or str(exc)
+            timeline.close()
+            raise SystemExit(1) from exc
         timeline.record("phase", "run", started, time.time())
         timeline.close()
         if sampler.errors:

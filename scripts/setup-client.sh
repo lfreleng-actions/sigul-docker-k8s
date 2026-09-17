@@ -39,10 +39,15 @@ if [[ -z "$NETWORK_NAME" ]]; then
     exit 1
 fi
 
-BRIDGE_NSS_VOLUME="$(docker volume ls --format '{{.Name}}' \
-    | grep -E 'bridge.*nss|sigul.*bridge.*nss' | head -1)"
+# The volume the running bridge actually has mounted at its NSS path,
+# not whichever volume on the host happens to match a name pattern: a
+# second checkout or a stale project would otherwise hand the client a
+# certificate from the wrong trust domain.
+BRIDGE_NSS_VOLUME="$(docker inspect sigul-bridge \
+    --format '{{range .Mounts}}{{if eq .Destination "/etc/pki/sigul/bridge"}}{{.Name}}{{end}}{{end}}' \
+    2>/dev/null || true)"
 if [[ -z "$BRIDGE_NSS_VOLUME" ]]; then
-    echo "ERROR: bridge NSS volume not found" >&2
+    echo "ERROR: no running sigul-bridge with an NSS volume at /etc/pki/sigul/bridge" >&2
     exit 1
 fi
 
