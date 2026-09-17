@@ -16,12 +16,7 @@
   ],
   "smoke": {
     "faults": {},
-    "invariants": {
-      "sigul-server: no zombie processes": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/14"
-      }
-    }
+    "invariants": {}
   },
   "pr": {
     "faults": {
@@ -34,16 +29,7 @@
         "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/13 (backlog raised to 128 in patch 10; twenty silent connections now each cost one patch 09 handshake deadline in turn rather than being SYN-dropped - still a stall until handshakes leave the accept loop's critical path)"
       }
     },
-    "invariants": {
-      "sigul-server: no zombie processes": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/14"
-      },
-      "sigul-server: RSS trend < 30 MB/h": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/14 (kernel task structures for the zombies, ~7 KB each, charged to the container)"
-      }
-    }
+    "invariants": {}
   },
   "nightly": {
     "faults": {
@@ -60,15 +46,6 @@
         "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/12 - patch 11 sheds a silent mid-request peer after 120 s; the bound is that plus slack"
       }
     },
-    "invariants": {
-      "sigul-server: no zombie processes": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/14"
-      },
-      "sigul-server: RSS trend < 30 MB/h": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/14 (kernel task structures for the zombies, ~7 KB each, charged to the container)"
-      }
-    }
+    "invariants": {}
   }
 }

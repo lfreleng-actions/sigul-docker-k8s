@@ -457,9 +457,11 @@ start_server_service() {
             # setpriv rather than su: su stays resident as the parent of
             # the daemon and, as PID 1, never reaps the processes that
             # are orphaned beneath it. The server reaps those itself
-            # (patches/08), but only when it is PID 1. --reset-env sets
-            # HOME, USER, LOGNAME and SHELL from the passwd entry, as su
-            # did.
+            # (patches/08), but only when it is PID 1. su also set HOME,
+            # USER, LOGNAME and SHELL from the passwd entry while passing
+            # the rest of the environment through - SIGUL_DEBUG_AUTH
+            # among it, which patches/02 reads - so do exactly that
+            # rather than resetting the environment wholesale.
             #
             # Logging: -vv enables DEBUG level logging
             #   - Without flags: WARNING level only (errors/warnings)
@@ -469,8 +471,11 @@ start_server_service() {
             # Output goes to both:
             #   - Console (stdout/stderr) - captured by 'docker logs'
             #   - Log file (/var/log/sigul_server.log)
+            sigul_home="$(getent passwd "$SIGUL_USER" | cut -d: -f6)"
             exec setpriv --reuid="$SIGUL_USER" --regid="$SIGUL_USER" --init-groups \
-                --reset-env /usr/sbin/sigul_server -c "$CONFIG_FILE" -vv
+                env HOME="${sigul_home:-/var/lib/sigul}" USER="$SIGUL_USER" \
+                    LOGNAME="$SIGUL_USER" SHELL=/bin/bash \
+                    /usr/sbin/sigul_server -c "$CONFIG_FILE" -vv
         fi
     else
         # Already running as non-root user

@@ -384,7 +384,8 @@ This only helps when the server is PID 1. Under the Helm chart it is.
 Under Compose `scripts/entrypoint-server.sh` used `su`, which stayed
 resident as the daemon's parent and reaped nothing; it now drops
 privileges with `setpriv` so the daemon is PID 1 there too, matching
-the chart.
+the chart. The environment is passed through as `su` passed it, with
+`HOME`, `USER`, `LOGNAME` and `SHELL` set from the passwd entry.
 
 **Test:** the soak harness's `sigul-server: no zombie processes` and
 `RSS trend` invariants, previously marked expected-fail against
@@ -417,9 +418,10 @@ Both handshakes go through `force_handshake_timeout()` with a
 five-second deadline. A real Sigul peer completes the handshake in
 well under a second even across a WAN, and the clock starts at
 `accept()`, so time queued in the listen backlog does not count. On
-expiry NSPR raises `PR_IO_TIMEOUT_ERROR`; the bridge logs `Peer did not
-complete its TLS handshake within 5 s; dropping it` and, through the
-patch 07 cleanup, closes the peer and returns to its accept loop. When
+expiry NSPR raises `PR_IO_TIMEOUT_ERROR`; the bridge logs a plain
+`Peer stopped responding ...; dropping it` warning naming both this
+deadline and patch 11's, and, through the patch 07 cleanup, closes the
+peer and returns to its accept loop. When
 the dropped peer was a client, the paired server connection is closed
 with it and the server reconnects within a second, as for any other
 rejected client.
