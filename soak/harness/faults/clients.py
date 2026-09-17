@@ -195,8 +195,12 @@ class GarbageHandshake(_RawClientFault):
     def _misbehave(self) -> None:
         sock = _connect()
         sock.sendall(os.urandom(random.randint(1, 512)))  # noqa: S311
-        # The bridge may reset us before answering; either is a valid
-        # outcome for garbage, and the point is only to be rejected.
+        # The bridge may reset us, answer, or - if the bytes happened to
+        # look like a partial record - wait for more. Any of those is a
+        # valid outcome for garbage; what matters is that this socket
+        # is closed and retried rather than left open into the next
+        # window.
+        sock.settimeout(3.0)
         with contextlib.suppress(OSError):
             sock.recv(1024)
         sock.close()

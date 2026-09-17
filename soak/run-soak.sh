@@ -16,11 +16,16 @@
 
 set -euo pipefail
 
-PROFILE="${1:-smoke}"
+PROFILE=""
 KEEP=false
 for arg in "$@"; do
-    [[ "$arg" == "--keep" ]] && KEEP=true
+    case "$arg" in
+        --keep) KEEP=true ;;
+        smoke|pr|nightly) PROFILE="$arg" ;;
+        *) echo "usage: $0 [smoke|pr|nightly] [--keep]" >&2; exit 2 ;;
+    esac
 done
+PROFILE="${PROFILE:-smoke}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"

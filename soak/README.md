@@ -108,6 +108,9 @@ docker tag ghcr.io/lfreleng-actions/sigul-docker-k8s/server:v2.2.4 server-linux-
 ./soak/run-soak.sh nightly    # hours: everything, repeated
 ```
 
+`./soak/run-soak.sh --keep` runs the default `smoke` profile; the
+profile and `--keep` may be given in either order.
+
 `run-soak.sh` deploys the stack with `scripts/deploy-sigul-infrastructure.sh`,
 provisions the client with `scripts/setup-client.sh`, brings up
 Toxiproxy, re-points the server through it, builds the runner image on

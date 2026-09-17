@@ -130,31 +130,21 @@ def run(profile: Profile, output_dir: Path) -> int:
     sampler = Sampler(target, (bridge, server), output_dir / "samples.csv")
 
     locust: subprocess.Popen | None = None
+    interrupted = False
 
-    def shutdown(*_args) -> None:
+    def on_signal(*_args) -> None:
+        # Only flag and unwind; every teardown step lives in the finally
+        # below so there is exactly one shutdown path. Later signals
+        # while that runs are ignored rather than re-entering it.
+        nonlocal interrupted
+        if interrupted:
+            return
+        interrupted = True
         log("interrupted; cleaning up")
-        scheduler.abort()
-        # Best-effort restoration on the way out: a proxy or daemon we
-        # cannot reach is not something the interrupt path can fix.
-        with contextlib.suppress(Exception):
-            from .faults.network import client as toxiproxy
-
-            toxiproxy().reset()
-        for unit in (
-            bridge,
-            server,
-            os.environ.get("SOAK_SERVER_PEER_CONTAINER", "sigul-toxiproxy"),
-        ):
-            with contextlib.suppress(Exception):
-                target.thaw(unit)
-        if locust is not None and locust.poll() is None:
-            locust.send_signal(signal.SIGINT)
-        sampler.stop()
-        timeline.close()
         raise SystemExit(130)
 
-    signal.signal(signal.SIGINT, shutdown)
-    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, on_signal)
+    signal.signal(signal.SIGTERM, on_signal)
 
     sampler.start()
     locust = start_locust(profile, output_dir, profile.total_seconds())
@@ -165,6 +155,21 @@ def run(profile: Profile, output_dir: Path) -> int:
         scheduler.run_faults()
         scheduler.run_cooldown()
     finally:
+        if interrupted:
+            scheduler.abort()
+            # Best-effort restoration on the way out: a proxy or daemon
+            # we cannot reach is not something the interrupt path can fix.
+            with contextlib.suppress(Exception):
+                from .faults.network import client as toxiproxy
+
+                toxiproxy().reset()
+            for unit in (
+                bridge,
+                server,
+                os.environ.get("SOAK_SERVER_PEER_CONTAINER", "sigul-toxiproxy"),
+            ):
+                with contextlib.suppress(Exception):
+                    target.thaw(unit)
         log("stopping load")
         load_ok = True
         if locust.poll() is None:

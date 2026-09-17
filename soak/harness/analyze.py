@@ -42,6 +42,7 @@ from collections import defaultdict
 from dataclasses import asdict
 from pathlib import Path
 
+from .checks import coverage, invariants, regressions
 from .models import Check, FaultMeta, FaultResult, Results, TaskStats, UnitResources
 from .stats import Run, slope_per_hour, task_stats
 
@@ -62,36 +63,6 @@ DEFAULT_MAX_STALL_SECONDS = 30.0
 #: service outright and only recovery can be judged.
 STALL_SLACK_SECONDS = 15.0
 
-#: Steepest RSS trend tolerated, from a least-squares fit over every
-#: sample. A fit is the right detector for a linear leak: it uses the
-#: whole run rather than two endpoints, and its units do not change
-#: with the profile's length. Observed without a leak: within +/-10
-#: MB/h on the bridge. Observed with the zombie leak: +50 to +270 MB/h.
-MAX_RSS_SLOPE_MB_PER_HOUR = 30.0
-
-#: Descriptor growth tolerated between the baseline and cooldown phase
-#: means. Samples land mid-request, and a request in flight holds
-#: around a dozen descriptors on the server, so phase means of a few
-#: dozen samples wobble by several either way. The leak this catches
-#: was +105 on the bridge in twenty minutes; a fall is never a leak.
-MAX_FD_GROWTH = 10
-MAX_CLOSE_WAIT_END = 1
-
-#: Regression tolerances against the committed baseline. p95 may grow
-#: by 50% or by 250 ms, whichever is larger: the floor stops a 300 ms
-#: control-plane call failing the run over 150 ms of scheduler noise
-#: on a shared CI host, and the ratio governs everything slower.
-P95_TOLERANCE_RATIO = 1.5
-P95_TOLERANCE_FLOOR_MS = 250.0
-SUCCESS_RATE_TOLERANCE = 0.05
-
-#: Monitoring coverage: a unit must have been sampled for at least this
-#: fraction of the run's ticks for its resource invariants to mean
-#: anything. Restarts and freezes legitimately cost a few readings;
-#: losing half of them means the sampler was not working.
-MIN_SAMPLE_COVERAGE = 0.5
-SAMPLE_INTERVAL_SECONDS = 5.0
-
 
 def _phase_stats(run: Run) -> dict[str, dict[str, TaskStats]]:
     phases = {
@@ -106,16 +77,22 @@ def _phase_stats(run: Run) -> dict[str, dict[str, TaskStats]]:
 
 
 def _longest_stall(
-    run: Run, start: float, end: float, run_end: float
+    run: Run, start: float, end: float, recovery_end: float
 ) -> tuple[float | None, float]:
-    """Recovery time after `end`, and the widest success gap from `start`."""
-    first_after = next((t for t in run.successes if t >= end), None)
+    """Recovery time after `end`, and the widest success gap from `start`.
+
+    Recovery is only credited within the fault's own recovery window.
+    A success that arrives after the next fault has begun belongs to
+    that fault's story, not this one's; without the bound a wedge could
+    be marked recovered by a request served minutes later.
+    """
+    first_after = next((t for t in run.successes if end <= t <= recovery_end), None)
     recovery = (first_after - end) if first_after is not None else None
 
     # Anchors run from the fault's start to the first success after it
     # ends. The start is clamped to the fault itself: time without
     # requests before the fault began is not the fault's doing.
-    window_end = first_after if first_after is not None else max(end, run_end)
+    window_end = first_after if first_after is not None else recovery_end
     anchors = [start] + [t for t in run.successes if start <= t <= window_end]
     if first_after is None:
         anchors.append(window_end)
@@ -130,12 +107,12 @@ def _fault_result(
     row: dict[str, str],
     meta: FaultMeta,
     expectation: dict,
-    run_end: float,
+    recovery_end: float,
 ) -> FaultResult:
     name = row["name"]
     start, end = float(row["start_epoch"]), float(row["end_epoch"])
     during = run.between(start, end)
-    recovery, stall = _longest_stall(run, start, end, run_end)
+    recovery, stall = _longest_stall(run, start, end, recovery_end)
 
     expected = expectation.get("expect", "pass")
     max_recovery = float(
@@ -242,112 +219,6 @@ def _unit_resources(
     )
 
 
-def _coverage(results: Results, units: tuple[str, ...]) -> list[Check]:
-    """Every monitored unit must have been sampled for most of the run.
-
-    Resource invariants are only generated for units with samples, so
-    without this a sampler that silently failed would make every leak
-    check vanish and the run pass on no evidence.
-    """
-    expected = max(1, int((results.ended - results.started) / SAMPLE_INTERVAL_SECONDS))
-    checks: list[Check] = []
-    for unit in units:
-        got = results.resources[unit].samples if unit in results.resources else 0
-        checks.append(
-            Check(
-                f"{unit}: monitored for the whole run",
-                got >= expected * MIN_SAMPLE_COVERAGE,
-                f"{got} of ~{expected} samples",
-            )
-        )
-    return checks
-
-
-def _invariants(results: Results) -> list[Check]:
-    checks: list[Check] = []
-    unexpected = [f for f in results.faults if f.verdict == "fail"]
-    stale = [f for f in results.faults if f.verdict == "xpass"]
-    checks.append(
-        Check(
-            "service recovers after every fault",
-            not unexpected,
-            "; ".join(f"{f.name}: {f.note}" for f in unexpected)
-            or "all recovered within bounds",
-        )
-    )
-    checks.append(
-        Check(
-            "no stale expected-fail markers",
-            not stale,
-            "; ".join(f"{f.name} now recovers - remove its expectation" for f in stale)
-            or "none",
-        )
-    )
-    for unit, res in results.resources.items():
-        checks.append(
-            Check(
-                f"{unit}: RSS trend < {MAX_RSS_SLOPE_MB_PER_HOUR:.0f} MB/h",
-                res.rss_slope_mb_per_hour < MAX_RSS_SLOPE_MB_PER_HOUR,
-                f"{res.rss_slope_mb_per_hour:+.1f} MB/h "
-                f"(baseline {res.rss_start_mb} MB, cooldown {res.rss_end_mb} MB)",
-            )
-        )
-        checks.append(
-            Check(
-                f"{unit}: open descriptors return to baseline",
-                res.fds_end - res.fds_start <= MAX_FD_GROWTH,
-                f"{res.fds_start} -> {res.fds_end} (bound +{MAX_FD_GROWTH})",
-            )
-        )
-        checks.append(
-            Check(
-                f"{unit}: no CLOSE-WAIT sockets left behind",
-                res.close_wait_end <= MAX_CLOSE_WAIT_END,
-                f"end={res.close_wait_end} (peak {res.close_wait_max})",
-            )
-        )
-        checks.append(
-            Check(
-                f"{unit}: no zombie processes",
-                res.zombies_max == 0,
-                f"peak {res.zombies_max}",
-            )
-        )
-    return checks
-
-
-def _regressions(results: Results, baseline: dict) -> list[Check]:
-    checks: list[Check] = []
-    baseline_phases = baseline.get("phases", {})
-    for phase in ("baseline", "cooldown"):
-        reference = baseline_phases.get(phase, {})
-        for task, stats in results.phases.get(phase, {}).items():
-            ref = reference.get(task)
-            if not ref or stats.count < 5:
-                continue
-            limit = max(
-                ref["p95_ms"] * P95_TOLERANCE_RATIO,
-                ref["p95_ms"] + P95_TOLERANCE_FLOOR_MS,
-            )
-            checks.append(
-                Check(
-                    f"{phase}/{task}: p95 within +{(P95_TOLERANCE_RATIO - 1):.0%} "
-                    f"or +{P95_TOLERANCE_FLOOR_MS:.0f} ms of baseline",
-                    stats.p95_ms <= limit,
-                    f"{stats.p95_ms:.0f} ms vs baseline {ref['p95_ms']:.0f} ms",
-                )
-            )
-            ref_rate = ref["ok"] / ref["count"] if ref["count"] else 1.0
-            checks.append(
-                Check(
-                    f"{phase}/{task}: success rate within {SUCCESS_RATE_TOLERANCE:.0%} of baseline",
-                    stats.success_rate >= ref_rate - SUCCESS_RATE_TOLERANCE,
-                    f"{stats.success_rate:.1%} vs baseline {ref_rate:.1%}",
-                )
-            )
-    return checks
-
-
 def analyse(
     output_dir: Path,
     profile_name: str,
@@ -365,15 +236,21 @@ def analyse(
     results.phases = _phase_stats(run)
 
     fault_expectations = expectations.get("faults", {})
+    recovery_windows = {
+        (r["name"], float(r["start_epoch"])): float(r["end_epoch"])
+        for r in run.timeline
+        if r["kind"] == "recovery"
+    }
     for row in run.timeline:
         if row["kind"] == "fault":
+            fault_end = float(row["end_epoch"])
             results.faults.append(
                 _fault_result(
                     run,
                     row,
                     fault_meta.get(row["name"], FaultMeta()),
                     fault_expectations.get(row["name"], {}),
-                    ended,
+                    recovery_windows.get((row["name"], fault_end), ended),
                 )
             )
 
@@ -389,9 +266,9 @@ def analyse(
         unit: _unit_resources(rows, windows) for unit, rows in by_unit.items()
     }
 
-    results.invariants = _coverage(results, units) + _invariants(results)
+    results.invariants = coverage(results, units, run, windows) + invariants(results)
     if baseline:
-        results.regressions = _regressions(results, baseline)
+        results.regressions = regressions(results, baseline)
 
     invariant_expectations = expectations.get("invariants", {})
     for check in results.invariants + results.regressions:
