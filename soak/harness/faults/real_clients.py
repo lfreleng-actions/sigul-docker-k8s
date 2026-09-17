@@ -67,6 +67,7 @@ class _RealClientFault(Fault):
         self._stop.clear()
         self._injected.clear()
         self._failure = None
+        self.activated_at = None
         self._thread = threading.Thread(target=self._loop, name=self.name, daemon=True)
         self._thread.start()
         # Return only once the signal has actually been delivered, so
@@ -125,6 +126,7 @@ class _RealClientFault(Fault):
                 # wanted, nothing more to do.
                 with contextlib.suppress(ProcessLookupError):
                     os.killpg(proc.pid, self.interrupt)
+                self.activated_at = time.time()
                 self._injected.set()
             # One interrupted request per window, held until stop().
             self._stop.wait(3600)
