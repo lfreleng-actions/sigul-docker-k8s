@@ -149,8 +149,13 @@ def _fault_result(
     recovery, stall = _longest_stall(run, start, end, recovery_end)
 
     expected = expectation.get("expect", "pass")
-    max_recovery = float(
-        expectation.get("max_recovery_seconds", DEFAULT_MAX_RECOVERY_SECONDS)
+    # The recovery window is also the observation window: a success can
+    # only be seen inside it. The effective bound is therefore the
+    # configured bound or the window, whichever is shorter, and that is
+    # what the report shows.
+    max_recovery = min(
+        float(expectation.get("max_recovery_seconds", DEFAULT_MAX_RECOVERY_SECONDS)),
+        recovery_end - end,
     )
     default_stall = (
         DEFAULT_MAX_STALL_SECONDS

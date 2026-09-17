@@ -32,10 +32,11 @@ class FaultSlot:
     #: complete when start() returns, such as a restart, so the
     #: recovery clock begins the moment the disturbance ends.
     duration: float = 60.0
-    #: Seconds of clean running afterwards. Recovery time is measured
-    #: from the end of the fault to the next successful request, so
-    #: this must be comfortably longer than the worst tolerable
-    #: recovery or the measurement is censored rather than failed.
+    #: Seconds of clean running afterwards. This is also the window in
+    #: which recovery can be observed, so the effective recovery bound
+    #: is the smaller of the configured bound and this. Profiles that
+    #: judge recovery keep it at least as long as the default bound;
+    #: the smoke profile keeps it short and accepts the tighter bound.
     recovery: float = 60.0
 
 
@@ -60,7 +61,7 @@ class Profile:
     #: fault must find the child idle to be testing the right thing.
     #: Recovery is measured with the harness's own probe requests.
     preflight_faults: tuple[FaultSlot, ...] = (
-        FaultSlot("server_teardown_vs_silent_peer", 0, 20),
+        FaultSlot("server_teardown_vs_silent_peer", 0, 60),
     )
 
     #: Faults run after the ramp and before the baseline. Restarts go
@@ -114,10 +115,10 @@ class Profile:
 # reproduce the known production incident are placed mid-run where the
 # stack has been under load long enough for state to have accumulated.
 _PR_FAULTS: tuple[FaultSlot, ...] = (
-    FaultSlot("client_connect_and_hang", 60, 45),
+    FaultSlot("client_connect_and_hang", 60, 60),
     FaultSlot("client_handshake_then_hang", 60, 60),
-    FaultSlot("client_abrupt_reset", 45, 45),
-    FaultSlot("net_latency_client", 60, 30),
+    FaultSlot("client_abrupt_reset", 45, 60),
+    FaultSlot("net_latency_client", 60, 60),
     FaultSlot("client_backlog_flood", 45, 60),
     FaultSlot("net_blackhole_server_link", 90, 90),
     FaultSlot("proc_freeze_bridge", 45, 60),
@@ -140,7 +141,7 @@ SMOKE = Profile(
     baseline_seconds=30.0,
     steady_users=2,
     warm_faults=(FaultSlot("proc_restart_server", 0, 30),),
-    faults=(FaultSlot("client_connect_and_hang", 20, 20),),
+    faults=(FaultSlot("client_connect_and_hang", 20, 30),),
     cooldown_seconds=30.0,
 )
 
@@ -149,7 +150,7 @@ NIGHTLY = Profile(
     description="Overnight soak: every fault, repeated, with long leak-detection windows.",
     ramp_steps=(1, 2, 4, 8, 12),
     ramp_step_seconds=60.0,
-    preflight_faults=(FaultSlot("server_teardown_vs_silent_peer", 0, 20),) * 6,
+    preflight_faults=(FaultSlot("server_teardown_vs_silent_peer", 0, 60),) * 6,
     warm_faults=(
         FaultSlot("proc_restart_server", 0, 60),
         FaultSlot("proc_restart_bridge", 0, 60),
@@ -162,10 +163,10 @@ NIGHTLY = Profile(
         + (
             FaultSlot("client_slow_loris", 120, 60),
             FaultSlot("client_half_close_hang", 60, 60),
-            FaultSlot("client_garbage_handshake", 60, 45),
+            FaultSlot("client_garbage_handshake", 60, 60),
             FaultSlot("client_stop_mid_sign", 60, 60),
-            FaultSlot("net_bandwidth_squeeze", 90, 45),
-            FaultSlot("net_reset_peer_client", 60, 45),
+            FaultSlot("net_bandwidth_squeeze", 90, 60),
+            FaultSlot("net_reset_peer_client", 60, 60),
             FaultSlot("net_blackhole_client", 60, 60),
             FaultSlot("proc_freeze_server", 45, 60),
         )
