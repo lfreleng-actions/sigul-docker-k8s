@@ -74,14 +74,14 @@ def _resource_table(results: Results) -> list[str]:
     lines = [
         "## Resources",
         "",
-        "| Unit | RSS start | RSS end | Slope | FDs start | FDs end | CLOSE-WAIT peak/end | FIN-WAIT-2 peak | Zombies |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Unit | RSS start | RSS end | Slope | FDs start | FDs end | CLOSE-WAIT peak/end | FIN-WAIT-2 peak | Zombies | Restarts in window |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for unit, r in results.resources.items():
         lines.append(
             f"| `{unit}` | {r.rss_start_mb} MB | {r.rss_end_mb} MB | {r.rss_slope_mb_per_hour:+.1f} MB/h | "
             f"{r.fds_start} | {r.fds_end} | {r.close_wait_max}/{r.close_wait_end} | "
-            f"{r.fin_wait_2_max} | {r.zombies_max} |"
+            f"{r.fin_wait_2_max} | {r.zombies_max} | {r.restarts_in_window} |"
         )
     lines.append("")
     return lines

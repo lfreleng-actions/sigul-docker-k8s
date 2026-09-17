@@ -73,9 +73,11 @@ class _RawClientFault(Fault):
     def __init__(self) -> None:
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
+        self._failures: list[BaseException] = []
 
     def start(self) -> None:
         self._stop.clear()
+        self._failures.clear()
         for index in range(self.clients):
             thread = threading.Thread(
                 target=self._loop, name=f"{self.name}-{index}", daemon=True
@@ -88,6 +90,11 @@ class _RawClientFault(Fault):
         for thread in self._threads:
             thread.join(timeout=15)
         self._threads.clear()
+        # A worker that died of anything but a socket error was not
+        # misbehaving at the bridge for the rest of the window. Say so,
+        # so the window is not recorded as a clean injection.
+        if self._failures:
+            raise RuntimeError(f"{self.name} worker failed: {self._failures[0]!r}")
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -98,6 +105,9 @@ class _RawClientFault(Fault):
                 # when the peer is defending itself. Back off briefly
                 # and try again.
                 self._stop.wait(1.0)
+            except Exception as exc:  # noqa: BLE001 - recorded, raised by stop()
+                self._failures.append(exc)
+                return
 
     def _misbehave(self) -> None:
         raise NotImplementedError
@@ -240,6 +250,7 @@ class _RealClientFault(Fault):
         self._procs: list[subprocess.Popen] = []
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._failure: BaseException | None = None
         self._payload = Path("/tmp/soak-work/blob-fault.bin")
         self._passphrase = os.environ.get("SOAK_KEY_PASSPHRASE", "soak-key-passphrase")
         self._key = os.environ.get("SOAK_KEY_NAME", "soak-test-key")
@@ -278,10 +289,21 @@ class _RealClientFault(Fault):
         return proc
 
     def _loop(self) -> None:
+        try:
+            self._run_once()
+        except Exception as exc:  # noqa: BLE001 - recorded, raised by stop()
+            self._failure = exc
+
+    def _run_once(self) -> None:
         while not self._stop.is_set():
             proc = self._launch()
             self._procs.append(proc)
             self._stop.wait(self.settle)
+            if proc.poll() is not None:
+                raise RuntimeError(
+                    f"client exited with status {proc.returncode} before it could "
+                    "be interrupted; the fault was not injected"
+                )
             if proc.poll() is None:
                 # Exited between poll() and here: already the outcome we
                 # wanted, nothing more to do.
@@ -299,6 +321,7 @@ class _RealClientFault(Fault):
         done here where it would hide that time from the clock.
         """
         self._stop.set()
+        failure, self._failure = self._failure, None
         procs, self._procs = self._procs, []
         for proc in procs:
             with contextlib.suppress(ProcessLookupError):
@@ -310,6 +333,8 @@ class _RealClientFault(Fault):
         if self._thread is not None:
             self._thread.join(timeout=15)
             self._thread = None
+        if failure is not None:
+            raise RuntimeError(f"{self.name}: {failure}")
 
 
 def _reap(procs: list[subprocess.Popen]) -> None:

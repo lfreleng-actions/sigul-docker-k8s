@@ -19,6 +19,7 @@ from __future__ import annotations
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 
@@ -102,6 +103,15 @@ class Target(ABC):
     @abstractmethod
     def logs_since(self, unit: str, seconds: float) -> str:
         """Recent log output, for error-rate accounting."""
+
+    @abstractmethod
+    def started_at(self, unit: str) -> float:
+        """Epoch seconds at which the unit's current lifetime began.
+
+        A change in this value between two samples is a restart. The
+        analyser uses it to make sure leak comparisons never straddle
+        one, and to notice a restart nobody asked for.
+        """
 
     def sockets(self, unit: str) -> SocketCounts:
         """Count TCP states inside a unit.
@@ -271,3 +281,11 @@ class DockerTarget(Target):
             )
             .decode("utf-8", errors="replace")
         )
+
+    def started_at(self, unit: str) -> float:
+        stamp: str = self._container(unit).attrs["State"]["StartedAt"]
+        # Docker gives nanosecond precision and a Z suffix; fromisoformat
+        # wants microseconds at most and an explicit offset.
+        head, _, tail = stamp.partition(".")
+        micros = (tail.rstrip("Z") + "000000")[:6]
+        return datetime.fromisoformat(f"{head}.{micros}+00:00").timestamp()

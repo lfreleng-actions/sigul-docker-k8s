@@ -28,7 +28,9 @@ class FaultSlot:
     """One fault, and the quiet period used to measure recovery."""
 
     fault: str
-    #: Seconds to hold the fault active.
+    #: Seconds to hold the fault active. Zero for a fault that is
+    #: complete when start() returns, such as a restart, so the
+    #: recovery clock begins the moment the disturbance ends.
     duration: float = 60.0
     #: Seconds of clean running afterwards. Recovery time is measured
     #: from the end of the fault to the next successful request, so
@@ -50,6 +52,15 @@ class Profile:
     #: clients, which is a real and undocumented production limit.
     ramp_steps: tuple[int, ...] = (1, 2, 4, 8)
     ramp_step_seconds: float = 45.0
+
+    #: Faults run after the ramp and before the baseline. Restarts go
+    #: here: a restart resets memory, descriptors and sockets, so one
+    #: anywhere between baseline and cooldown would make the leak
+    #: comparison meaningless. Recovery is still measured for them.
+    warm_faults: tuple[FaultSlot, ...] = (
+        FaultSlot("proc_restart_server", 0, 60),
+        FaultSlot("proc_restart_bridge", 0, 60),
+    )
 
     #: Clean load before any faults, used as the within-run reference
     #: for latency and as the start point for leak trends.
@@ -81,7 +92,7 @@ class Profile:
 
     def total_seconds(self) -> float:
         ramp = len(self.ramp_steps) * self.ramp_step_seconds
-        faults = sum(f.duration + f.recovery for f in self.faults)
+        faults = sum(f.duration + f.recovery for f in self.warm_faults + self.faults)
         return ramp + self.baseline_seconds + faults + self.cooldown_seconds
 
 
@@ -99,8 +110,6 @@ _PR_FAULTS: tuple[FaultSlot, ...] = (
     FaultSlot("proc_freeze_bridge", 45, 60),
     FaultSlot("server_teardown_vs_silent_peer", 30, 60),
     FaultSlot("client_kill_mid_sign", 45, 45),
-    FaultSlot("proc_restart_server", 30, 75),
-    FaultSlot("proc_restart_bridge", 30, 75),
 )
 
 PR = Profile(
@@ -116,10 +125,8 @@ SMOKE = Profile(
     ramp_step_seconds=15.0,
     baseline_seconds=30.0,
     steady_users=2,
-    faults=(
-        FaultSlot("client_connect_and_hang", 20, 20),
-        FaultSlot("proc_restart_server", 15, 40),
-    ),
+    warm_faults=(FaultSlot("proc_restart_server", 0, 30),),
+    faults=(FaultSlot("client_connect_and_hang", 20, 20),),
     cooldown_seconds=30.0,
 )
 

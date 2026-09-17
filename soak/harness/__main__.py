@@ -71,6 +71,28 @@ def wait_for_service(config: str, password: str, attempts: int = 60) -> None:
     raise SystemExit("stack never served a request; aborting soak")
 
 
+def wait_for_first_request(
+    requests_csv: Path, locust: subprocess.Popen, timeout: float = 600.0
+) -> None:
+    """Hold the timeline until Locust has actually sent a request.
+
+    Locust's init creates the signing key on a fresh stack, which can
+    take a while; starting the ramp clock before that would count key
+    generation as load. Locust exiting first is a failure to start.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if locust.poll() is not None:
+            raise SystemExit(
+                f"locust exited during startup with status {locust.returncode}"
+            )
+        if requests_csv.is_file() and sum(1 for _ in requests_csv.open()) > 1:
+            log("load generator is sending requests")
+            return
+        time.sleep(1)
+    raise SystemExit(f"locust sent no request within {timeout:.0f}s")
+
+
 def start_locust(
     profile: Profile, output_dir: Path, duration: float
 ) -> subprocess.Popen:
@@ -150,7 +172,9 @@ def run(profile: Profile, output_dir: Path) -> int:
     locust = start_locust(profile, output_dir, profile.total_seconds())
     started = time.time()
     try:
+        wait_for_first_request(output_dir / "requests.csv", locust)
         scheduler.run_ramp()
+        scheduler.run_warm_faults()
         scheduler.run_baseline()
         scheduler.run_faults()
         scheduler.run_cooldown()

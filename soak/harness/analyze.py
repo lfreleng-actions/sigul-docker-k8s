@@ -187,7 +187,10 @@ def _unit_resources(
 
     Start and end figures come from the baseline and cooldown phases -
     both clean load at the same concurrency - so the comparison is like
-    for like. Peaks and the trend fit use every sample.
+    for like. The trend fit covers the span from baseline to cooldown,
+    the period the profile keeps free of restarts; peaks use every
+    sample. A restart inside that span is counted and reported, because
+    it resets everything the comparison measures.
     """
     rows.sort(key=lambda r: float(r["epoch"]))
 
@@ -200,12 +203,16 @@ def _unit_resources(
     tenth = max(1, len(rows) // 10)
     head = within("baseline") or rows[:tenth]
     tail = within("cooldown") or rows[-tenth:]
+    span_lo = float(head[0]["epoch"])
+    span_hi = float(tail[-1]["epoch"])
+    span = [r for r in rows if span_lo <= float(r["epoch"]) <= span_hi]
+    lifetimes = {r.get("started_at", "0") for r in span}
     return UnitResources(
         rss_start_mb=round(_mean_rss_mb(head), 1),
         rss_end_mb=round(_mean_rss_mb(tail), 1),
         rss_slope_mb_per_hour=round(
             slope_per_hour(
-                [(float(r["epoch"]), int(r["rss_bytes"]) / (1 << 20)) for r in rows]
+                [(float(r["epoch"]), int(r["rss_bytes"]) / (1 << 20)) for r in span]
             ),
             2,
         ),
@@ -216,6 +223,7 @@ def _unit_resources(
         fin_wait_2_max=max(int(r["fin_wait_2"]) for r in rows),
         zombies_max=max(int(r["zombies"]) for r in rows),
         samples=len(rows),
+        restarts_in_window=max(0, len(lifetimes) - 1),
     )
 
 

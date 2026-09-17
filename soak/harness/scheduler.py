@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 from .faults import Fault
-from .profiles import Profile
+from .profiles import FaultSlot, Profile
 
 
 class Timeline:
@@ -57,7 +57,11 @@ class Scheduler:
         self._log = log
         self._active: Fault | None = None
 
-        missing = [slot.fault for slot in profile.faults if slot.fault not in registry]
+        missing = [
+            slot.fault
+            for slot in profile.warm_faults + profile.faults
+            if slot.fault not in registry
+        ]
         if missing:
             raise KeyError(f"profile {profile.name!r} names unknown faults: {missing}")
 
@@ -83,13 +87,24 @@ class Scheduler:
         self._sleep(self._profile.baseline_seconds)
         self._timeline.record("phase", "baseline", start, time.time())
 
+    def run_warm_faults(self) -> None:
+        """Restarts and other lifetime-resetting faults, before baseline."""
+        if not self._profile.warm_faults:
+            return
+        start = time.time()
+        self._run_slots(self._profile.warm_faults, "warm")
+        self._timeline.record("phase", "warm", start, time.time())
+
     def run_faults(self) -> None:
-        phase_start = time.time()
-        for index, slot in enumerate(self._profile.faults, start=1):
+        start = time.time()
+        self._run_slots(self._profile.faults, "fault")
+        self._timeline.record("phase", "faults", start, time.time())
+
+    def _run_slots(self, slots: tuple[FaultSlot, ...], label: str) -> None:
+        for index, slot in enumerate(slots, start=1):
             fault = self._registry[slot.fault]
-            total = len(self._profile.faults)
             self._log(
-                f"[fault {index}/{total}] {fault.name}: on for {slot.duration:.0f}s, "
+                f"[{label} {index}/{len(slots)}] {fault.name}: on for {slot.duration:.0f}s, "
                 f"then {slot.recovery:.0f}s recovery - {fault.description}"
             )
             start = time.time()
@@ -100,7 +115,8 @@ class Scheduler:
             except Exception as exc:  # noqa: BLE001 - report, do not abort the run
                 note = f"start failed: {exc!r}"
                 self._log(f"  ! {note}")
-            self._sleep(slot.duration)
+            if slot.duration > 0:
+                self._sleep(slot.duration)
             try:
                 fault.stop()
             except Exception as exc:  # noqa: BLE001
@@ -112,7 +128,6 @@ class Scheduler:
             self._timeline.record("fault", fault.name, start, end, note)
             self._sleep(slot.recovery)
             self._timeline.record("recovery", fault.name, end, time.time())
-        self._timeline.record("phase", "faults", phase_start, time.time())
 
     def run_cooldown(self) -> None:
         start = time.time()

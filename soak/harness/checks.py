@@ -117,6 +117,15 @@ def invariants(results: Results) -> list[Check]:
     for unit, res in results.resources.items():
         checks.append(
             Check(
+                f"{unit}: no restart between baseline and cooldown",
+                res.restarts_in_window == 0,
+                f"{res.restarts_in_window} restart(s) inside the measured window"
+                if res.restarts_in_window
+                else "one container lifetime throughout",
+            )
+        )
+        checks.append(
+            Check(
                 f"{unit}: RSS trend < {MAX_RSS_SLOPE_MB_PER_HOUR:.0f} MB/h",
                 res.rss_slope_mb_per_hour < MAX_RSS_SLOPE_MB_PER_HOUR,
                 f"{res.rss_slope_mb_per_hour:+.1f} MB/h "

@@ -35,6 +35,7 @@ COLUMNS = (
     "fin_wait_2",
     "time_wait",
     "syn_recv",
+    "started_at",
 )
 
 
@@ -86,6 +87,7 @@ class Sampler:
             sockets = self._target.sockets(unit)
             fds = self._target.open_fds(unit)
             zombies = self._target.zombies(unit)
+            started_at = self._target.started_at(unit)
         except Exception:  # noqa: BLE001 - a frozen or restarting unit is expected
             self.errors += 1
             return None
@@ -102,4 +104,5 @@ class Sampler:
             sockets.fin_wait_2,
             sockets.time_wait,
             sockets.syn_recv,
+            f"{started_at:.3f}",
         ]

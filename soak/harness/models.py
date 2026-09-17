@@ -83,6 +83,11 @@ class UnitResources:
     fin_wait_2_max: int
     zombies_max: int
     samples: int
+    #: Distinct container lifetimes seen from the start of the baseline
+    #: phase to the end of cooldown, minus one. Anything but zero means
+    #: the unit restarted inside the measured window, which resets
+    #: memory, descriptors and sockets and invalidates the comparison.
+    restarts_in_window: int = 0
 
 
 @dataclass
