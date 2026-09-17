@@ -15,7 +15,13 @@ from .models import Results
 from .stats import read_csv
 
 _MARKS = {"pass": "✅ pass", "fail": "❌ FAIL", "xfail": "⚠️ xfail", "xpass": "🔁 xpass"}
-_ICONS = {"pass": "✅", "fail": "❌", "xfail": "⚠️ xfail:", "xpass": "🔁 xpass:"}
+_ICONS = {
+    "pass": "✅",
+    "fail": "❌",
+    "xfail": "⚠️ xfail:",
+    "xpass": "🔁 xpass:",
+    "skip": "ℹ️",
+}
 
 
 def _fault_table(results: Results) -> list[str]:

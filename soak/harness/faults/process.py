@@ -20,7 +20,7 @@ import os
 import time
 
 from ..target import Target
-from .base import Fault
+from .base import Fault, ProductDefect
 
 BRIDGE = os.environ.get("SOAK_BRIDGE_CONTAINER", "sigul-bridge")
 SERVER = os.environ.get("SOAK_SERVER_CONTAINER", "sigul-server")
@@ -140,7 +140,12 @@ class ServerTeardownAgainstSilentPeer(_ProcessFault):
     )
     unit = os.environ.get("SOAK_SERVER_PEER_CONTAINER", "sigul-toxiproxy")
 
+    def __init__(self, target: Target) -> None:
+        super().__init__(target)
+        self._child = ""
+
     def start(self) -> None:
+        self._child = ""
         parent = self._target.run_in(
             SERVER, ["pgrep", "-o", "-f", r"serve[r]\.py"], timeout=15, check=False
         ).strip()
@@ -165,6 +170,7 @@ class ServerTeardownAgainstSilentPeer(_ProcessFault):
         )
         if not parent or not child:
             raise RuntimeError(f"no idle server child found (parent={parent!r})")
+        self._child = child
         self._target.freeze(self.unit)
         self._target.run_in(SERVER, ["kill", "-ALRM", child], timeout=15)
 
@@ -184,13 +190,30 @@ class ServerTeardownAgainstSilentPeer(_ProcessFault):
             if alive == "no":
                 return
             time.sleep(0.5)
-        raise RuntimeError(
+        raise ProductDefect(
             f"server child {child} still blocked in teardown "
             f"{TEARDOWN_BOUND_SECONDS:.0f}s after its alarm - the patch 06 deadlock"
         )
 
+    def _child_alive(self) -> bool:
+        if not self._child:
+            return False
+        out = self._target.run_in(
+            SERVER,
+            ["sh", "-c", f"kill -0 {self._child} 2>/dev/null && echo yes || echo no"],
+            timeout=15,
+        )
+        return out.strip() == "yes"
+
     def stop(self) -> None:
         self._target.thaw(self.unit)
+        # A child still wedged once its peer is back will stay wedged:
+        # the peer never read the FIN and never will. Nothing but a
+        # restart restores service - which is what production had to
+        # do - so do that here, and leave the deadlock itself to the
+        # ProductDefect raised from start().
+        if self._child_alive():
+            self._target.restart(SERVER)
 
 
 PROCESS_FAULTS: tuple[type[_ProcessFault], ...] = (

@@ -29,11 +29,12 @@ The `pr` profile, about 30 minutes, looks like this:
 
 ```text
 ramp      1 → 2 → 4 → 8 clients, 45s each     finds the backlog cliff
-warm      restart server, restart bridge      recovery measured; done here
-                                              so no restart falls inside
-                                              the leak-measurement window
+warm      restart server, restart bridge,    recovery measured; done here
+          teardown against a silent peer      so nothing that resets a
+                                              daemon falls inside the
+                                              leak-measurement window
 baseline  2 min clean load at 3 clients       reference latency, leak start
-faults    9 faults, 17 min in total           the actual test
+faults    8 faults, 16 min in total           the actual test
 cooldown  5 min clean load                    compared against baseline
 ```
 
@@ -94,9 +95,10 @@ whichever is larger; success rate within 5 points.
 `harness/expectations.json` lists faults and invariants known to fail
 on current code, per profile, each with the issue tracking the defect.
 Those report as **xfail** and do not fail the run. For a fault the
-marker covers the stall during its window only: failing to recover
-once the fault has ended, or a harness error injecting it, always
-fails the run. If one starts *passing* it
+marker covers the product misbehaving - a stall during the window, or
+a defect the fault observed directly - and nothing else: failing to
+recover once the fault has ended, or a harness error injecting it,
+always fails the run. If one starts *passing* it
 reports as **xpass** and the run fails - the marker is stale, and
 whoever fixed it should remove the entry and close the issue. This is
 how the suite stays green and useful while the defects it has found

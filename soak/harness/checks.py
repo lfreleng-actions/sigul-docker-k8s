@@ -18,6 +18,12 @@ from .stats import Run
 #: MB/h on the bridge. Observed with the zombie leak: +50 to +270 MB/h.
 MAX_RSS_SLOPE_MB_PER_HOUR = 30.0
 
+#: Shortest span over which a fitted RSS trend is worth judging. Below
+#: this the fit is dominated by a few requests' worth of allocation
+#: noise (observed: +10 to +370 MB/h for the same healthy daemon over
+#: ninety seconds), so the reading is reported but not judged.
+MIN_TREND_SPAN_SECONDS = 600.0
+
 #: Descriptor growth tolerated between the baseline and cooldown phase
 #: means. Samples land mid-request, and a request in flight holds
 #: around a dozen descriptors on the server, so phase means of a few
@@ -33,6 +39,7 @@ MAX_CLOSE_WAIT_END = 1
 P95_TOLERANCE_RATIO = 1.5
 P95_TOLERANCE_FLOOR_MS = 250.0
 SUCCESS_RATE_TOLERANCE = 0.05
+MIN_REGRESSION_SAMPLES = 5
 
 #: Monitoring coverage: a unit must have been sampled for at least this
 #: fraction of the run's ticks for its resource invariants to mean
@@ -124,14 +131,28 @@ def invariants(results: Results) -> list[Check]:
                 else "one container lifetime throughout",
             )
         )
-        checks.append(
-            Check(
-                f"{unit}: RSS trend < {MAX_RSS_SLOPE_MB_PER_HOUR:.0f} MB/h",
-                res.rss_slope_mb_per_hour < MAX_RSS_SLOPE_MB_PER_HOUR,
-                f"{res.rss_slope_mb_per_hour:+.1f} MB/h "
-                f"(baseline {res.rss_start_mb} MB, cooldown {res.rss_end_mb} MB)",
-            )
+        trend_detail = (
+            f"{res.rss_slope_mb_per_hour:+.1f} MB/h "
+            f"(baseline {res.rss_start_mb} MB, cooldown {res.rss_end_mb} MB)"
         )
+        if res.span_seconds < MIN_TREND_SPAN_SECONDS:
+            checks.append(
+                Check(
+                    f"{unit}: RSS trend < {MAX_RSS_SLOPE_MB_PER_HOUR:.0f} MB/h",
+                    True,
+                    f"not judged: {trend_detail} over {res.span_seconds:.0f}s, "
+                    f"need {MIN_TREND_SPAN_SECONDS:.0f}s",
+                    informational=True,
+                )
+            )
+        else:
+            checks.append(
+                Check(
+                    f"{unit}: RSS trend < {MAX_RSS_SLOPE_MB_PER_HOUR:.0f} MB/h",
+                    res.rss_slope_mb_per_hour < MAX_RSS_SLOPE_MB_PER_HOUR,
+                    trend_detail,
+                )
+            )
         checks.append(
             Check(
                 f"{unit}: open descriptors return to baseline",
@@ -161,9 +182,20 @@ def regressions(results: Results, baseline: dict) -> list[Check]:
     baseline_phases = baseline.get("phases", {})
     for phase in ("baseline", "cooldown"):
         reference = baseline_phases.get(phase, {})
-        for task, stats in results.phases.get(phase, {}).items():
-            ref = reference.get(task)
-            if not ref or stats.count < 5:
+        current = results.phases.get(phase, {})
+        # Iterate the baseline's tasks, not the run's: a task that has
+        # vanished or become too slow to complete five times in the
+        # phase is a regression, not a gap in the data.
+        for task, ref in reference.items():
+            stats = current.get(task)
+            if stats is None or stats.count < MIN_REGRESSION_SAMPLES:
+                checks.append(
+                    Check(
+                        f"{phase}/{task}: enough requests to compare",
+                        False,
+                        f"{stats.count if stats else 0} completed, need {MIN_REGRESSION_SAMPLES}",
+                    )
+                )
                 continue
             limit = max(
                 ref["p95_ms"] * P95_TOLERANCE_RATIO,

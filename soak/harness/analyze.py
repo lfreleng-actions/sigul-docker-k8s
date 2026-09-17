@@ -129,10 +129,17 @@ def _fault_result(
     # A fault that removes the service outright is judged on recovery
     # alone; its stall is reported but cannot be a failure.
     stalled = meta.service_possible_during and stall > stall_bound
-    harness_error = bool(row.get("note"))
+    timeline_note = row.get("note", "")
+    # A fault may observe the product failing directly (recorded as
+    # "defect: ..."); that counts like a stall. Anything else in the
+    # note means the harness failed to inject or remove the fault.
+    defect_observed = timeline_note.startswith("defect:")
+    harness_error = bool(timeline_note) and not defect_observed
 
     if harness_error:
-        note = f"harness: {row['note']}"
+        note = f"harness: {timeline_note}"
+    elif defect_observed:
+        note = timeline_note
     elif recovery is None:
         note = "no successful request after the fault ended"
     elif not recovered:
@@ -153,7 +160,7 @@ def _fault_result(
     # class this suite exists to catch, the second invalidates the run.
     if harness_error or not recovered:
         verdict = "fail"
-    elif stalled:
+    elif stalled or defect_observed:
         verdict = "xfail" if expected == "fail" else "fail"
     else:
         verdict = "xpass" if expected == "fail" else "pass"
@@ -224,6 +231,7 @@ def _unit_resources(
         zombies_max=max(int(r["zombies"]) for r in rows),
         samples=len(rows),
         restarts_in_window=max(0, len(lifetimes) - 1),
+        span_seconds=round(span_hi - span_lo, 1),
     )
 
 

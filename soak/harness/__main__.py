@@ -48,27 +48,38 @@ def log(message: str) -> None:
     print(f"[{time.strftime('%H:%M:%S')}] {message}", flush=True)
 
 
-def wait_for_service(config: str, password: str, attempts: int = 60) -> None:
+#: Total time allowed for the stack to serve its first request. One
+#: bound for the whole phase, so a hanging stack fails here with a
+#: report rather than being cancelled by the CI job's timeout.
+STARTUP_BUDGET_SECONDS = 300.0
+
+
+def wait_for_service(config: str, password: str) -> None:
     """Block until one real request succeeds, or give up."""
-    for attempt in range(1, attempts + 1):
+    deadline = time.monotonic() + STARTUP_BUDGET_SECONDS
+    attempt = 0
+    while time.monotonic() < deadline:
+        attempt += 1
+        remaining = deadline - time.monotonic()
         try:
             proc = subprocess.run(  # noqa: S603
                 ["sigul", "--batch", "-c", config, "list-users"],
                 input=password.encode() + b"\0",
                 capture_output=True,
-                timeout=60,
+                timeout=min(60.0, max(1.0, remaining)),
                 check=False,
             )
         except subprocess.TimeoutExpired:
             # A request that hangs is a failed attempt like any other;
             # it is also the condition this loop most needs to outlast.
-            time.sleep(5)
             continue
         if proc.returncode == 0:
             log(f"stack is serving (attempt {attempt})")
             return
         time.sleep(5)
-    raise SystemExit("stack never served a request; aborting soak")
+    raise SystemExit(
+        f"stack served no request within {STARTUP_BUDGET_SECONDS:.0f}s; aborting soak"
+    )
 
 
 def wait_for_first_request(
@@ -202,6 +213,9 @@ def run(profile: Profile, output_dir: Path) -> int:
                 locust.wait(timeout=60)
             except subprocess.TimeoutExpired:
                 locust.kill()
+                # Reap, so requests.csv has no writer left when the
+                # analyser opens it.
+                locust.wait()
         else:
             # Locust ending before we asked it to means the advertised
             # load was absent for part of the run; whatever it recorded

@@ -60,6 +60,9 @@ class Profile:
     warm_faults: tuple[FaultSlot, ...] = (
         FaultSlot("proc_restart_server", 0, 60),
         FaultSlot("proc_restart_bridge", 0, 60),
+        # Verifies its own outcome and restarts the server if the
+        # teardown wedged, so it too belongs before the baseline.
+        FaultSlot("server_teardown_vs_silent_peer", 0, 60),
     )
 
     #: Clean load before any faults, used as the within-run reference
@@ -108,7 +111,6 @@ _PR_FAULTS: tuple[FaultSlot, ...] = (
     FaultSlot("client_backlog_flood", 45, 60),
     FaultSlot("net_blackhole_server_link", 90, 90),
     FaultSlot("proc_freeze_bridge", 45, 60),
-    FaultSlot("server_teardown_vs_silent_peer", 30, 60),
     FaultSlot("client_kill_mid_sign", 45, 45),
 )
 
@@ -125,7 +127,10 @@ SMOKE = Profile(
     ramp_step_seconds=15.0,
     baseline_seconds=30.0,
     steady_users=2,
-    warm_faults=(FaultSlot("proc_restart_server", 0, 30),),
+    warm_faults=(
+        FaultSlot("proc_restart_server", 0, 30),
+        FaultSlot("server_teardown_vs_silent_peer", 0, 30),
+    ),
     faults=(FaultSlot("client_connect_and_hang", 20, 20),),
     cooldown_seconds=30.0,
 )

@@ -25,6 +25,16 @@ import urllib.request
 from abc import ABC, abstractmethod
 
 
+class ProductDefect(Exception):
+    """The fault ran as intended and observed the defect it exists to find.
+
+    Distinct from any other exception a fault may raise: those mean the
+    harness failed to inject or remove the fault and the window is
+    invalid, which nothing may excuse. This means the product failed,
+    which an expectation may record as known.
+    """
+
+
 class Fault(ABC):
     """One reproducible way of mistreating the stack."""
 

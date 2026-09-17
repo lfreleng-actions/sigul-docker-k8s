@@ -321,7 +321,6 @@ class _RealClientFault(Fault):
         done here where it would hide that time from the clock.
         """
         self._stop.set()
-        failure, self._failure = self._failure, None
         procs, self._procs = self._procs, []
         for proc in procs:
             with contextlib.suppress(ProcessLookupError):
@@ -333,6 +332,10 @@ class _RealClientFault(Fault):
         if self._thread is not None:
             self._thread.join(timeout=15)
             self._thread = None
+        # Read the worker's verdict only once it has stopped, so a
+        # failure it notices while waking up is attributed to this
+        # window and not the next.
+        failure, self._failure = self._failure, None
         if failure is not None:
             raise RuntimeError(f"{self.name}: {failure}")
 

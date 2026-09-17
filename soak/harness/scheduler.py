@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 
 from .faults import Fault
+from .faults.base import ProductDefect
 from .profiles import FaultSlot, Profile
 
 
@@ -112,6 +113,12 @@ class Scheduler:
             try:
                 self._active = fault
                 fault.start()
+            except ProductDefect as exc:
+                # The fault worked and caught the product misbehaving.
+                # Recorded with its own prefix so the analyser can treat
+                # it as a product failure rather than a harness one.
+                note = f"defect: {exc}"
+                self._log(f"  ! {note}")
             except Exception as exc:  # noqa: BLE001 - report, do not abort the run
                 note = f"start failed: {exc!r}"
                 self._log(f"  ! {note}")

@@ -16,10 +16,16 @@ class Check:
     name: str
     ok: bool
     detail: str
-    #: pass | fail | xfail | xpass, once expectations are applied.
+    #: pass | fail | xfail | xpass | skip, once expectations are applied.
     verdict: str = ""
+    #: An informational reading that the run had too little data to
+    #: judge. Reported, never failed, never matched to an expectation.
+    informational: bool = False
 
     def judge(self, expectations: dict[str, dict]) -> Check:
+        if self.informational:
+            self.verdict = "skip"
+            return self
         expectation = expectations.get(self.name, {})
         expected_fail = expectation.get("expect") == "fail"
         if self.ok and not expected_fail:
@@ -88,6 +94,9 @@ class UnitResources:
     #: the unit restarted inside the measured window, which resets
     #: memory, descriptors and sockets and invalidates the comparison.
     restarts_in_window: int = 0
+    #: Seconds from the first baseline sample to the last cooldown one:
+    #: the span the RSS trend is fitted over.
+    span_seconds: float = 0.0
 
 
 @dataclass
