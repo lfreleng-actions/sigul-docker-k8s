@@ -41,6 +41,11 @@ P95_TOLERANCE_FLOOR_MS = 250.0
 SUCCESS_RATE_TOLERANCE = 0.05
 MIN_REGRESSION_SAMPLES = 5
 
+#: Lowest success rate tolerated at any ramp step. The ramp is where a
+#: too-small listen backlog shows itself, as connections refused to
+#: honest clients once several arrive together.
+MIN_RAMP_SUCCESS_RATE = 0.95
+
 #: Monitoring coverage: a unit must have been sampled for at least this
 #: fraction of the run's ticks for its resource invariants to mean
 #: anything. Restarts and freezes legitimately cost a few readings;
@@ -101,7 +106,29 @@ def coverage(
     return checks
 
 
-def invariants(results: Results) -> list[Check]:
+def _ramp_checks(results: Results) -> list[Check]:
+    checks: list[Check] = []
+    for step in results.ramp:
+        if step.requests == 0:
+            checks.append(
+                Check(
+                    f"ramp at {step.users} users: requests served",
+                    False,
+                    "no requests completed",
+                )
+            )
+            continue
+        checks.append(
+            Check(
+                f"ramp at {step.users} users: success rate >= {MIN_RAMP_SUCCESS_RATE:.0%}",
+                step.success_rate >= MIN_RAMP_SUCCESS_RATE,
+                f"{step.success_rate:.0%} of {step.requests} requests, p95 {step.p95_ms:.0f} ms",
+            )
+        )
+    return checks
+
+
+def _fault_checks(results: Results) -> list[Check]:
     checks: list[Check] = []
     unexpected = [f for f in results.faults if f.verdict == "fail"]
     stale = [f for f in results.faults if f.verdict == "xpass"]
@@ -121,6 +148,11 @@ def invariants(results: Results) -> list[Check]:
             or "none",
         )
     )
+    return checks
+
+
+def _resource_checks(results: Results) -> list[Check]:
+    checks: list[Check] = []
     for unit, res in results.resources.items():
         checks.append(
             Check(
@@ -175,6 +207,11 @@ def invariants(results: Results) -> list[Check]:
             )
         )
     return checks
+
+
+def invariants(results: Results) -> list[Check]:
+    """Absolute checks: hold regardless of any baseline."""
+    return _ramp_checks(results) + _fault_checks(results) + _resource_checks(results)
 
 
 def regressions(results: Results, baseline: dict) -> list[Check]:

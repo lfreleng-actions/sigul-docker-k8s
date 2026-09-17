@@ -100,10 +100,26 @@ class UnitResources:
 
 
 @dataclass
+class RampStep:
+    """Load at one concurrency level during the opening ramp."""
+
+    users: int
+    seconds: float
+    requests: int
+    failures: int
+    p95_ms: float
+
+    @property
+    def success_rate(self) -> float:
+        return (self.requests - self.failures) / self.requests if self.requests else 0.0
+
+
+@dataclass
 class Results:
     profile: str
     started: float
     ended: float
+    ramp: list[RampStep] = field(default_factory=list)
     phases: dict[str, dict[str, TaskStats]] = field(default_factory=dict)
     faults: list[FaultResult] = field(default_factory=list)
     resources: dict[str, UnitResources] = field(default_factory=dict)

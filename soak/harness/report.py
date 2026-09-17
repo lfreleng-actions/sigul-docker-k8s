@@ -55,6 +55,24 @@ def _fault_table(results: Results) -> list[str]:
     return lines
 
 
+def _ramp_table(results: Results) -> list[str]:
+    if not results.ramp:
+        return []
+    lines = [
+        "## Ramp",
+        "",
+        "| Users | Held | Requests | Failed | Success | p95 |",
+        "|---:|---:|---:|---:|---:|---:|",
+    ]
+    for step in results.ramp:
+        lines.append(
+            f"| {step.users} | {step.seconds:.0f}s | {step.requests} | {step.failures} | "
+            f"{step.success_rate:.0%} | {step.p95_ms:.0f} ms |"
+        )
+    lines.append("")
+    return lines
+
+
 def _latency_tables(results: Results) -> list[str]:
     lines = ["## Latency (successful requests, ms)", ""]
     for phase in ("baseline", "cooldown"):
@@ -102,6 +120,7 @@ def write_report(results: Results, output_dir: Path) -> str:
         "",
     ]
     lines += _fault_table(results)
+    lines += _ramp_table(results)
     lines += _latency_tables(results)
     lines += _resource_table(results)
     for title, checks in (

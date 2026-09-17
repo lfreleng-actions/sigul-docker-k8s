@@ -13,12 +13,13 @@ from .base import Fault
 from .clients import CLIENT_FAULTS
 from .network import NETWORK_FAULTS
 from .process import PROCESS_FAULTS
+from .real_clients import REAL_CLIENT_FAULTS
 
 
 def build_registry(target: Target) -> dict[str, Fault]:
     """Instantiate one of each fault, keyed by name."""
     registry: dict[str, Fault] = {}
-    for cls in CLIENT_FAULTS + NETWORK_FAULTS:
+    for cls in CLIENT_FAULTS + REAL_CLIENT_FAULTS + NETWORK_FAULTS:
         instance = cls()
         registry[instance.name] = instance
     for cls in PROCESS_FAULTS:

@@ -43,8 +43,16 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .checks import coverage, invariants, regressions
-from .models import Check, FaultMeta, FaultResult, Results, TaskStats, UnitResources
-from .stats import Run, slope_per_hour, task_stats
+from .models import (
+    Check,
+    FaultMeta,
+    FaultResult,
+    RampStep,
+    Results,
+    TaskStats,
+    UnitResources,
+)
+from .stats import Run, percentile, slope_per_hour, task_stats
 
 #: Default bound on recovery: seconds from the end of a fault window to
 #: the first successful request. Generous because Sigul's server
@@ -62,6 +70,32 @@ DEFAULT_MAX_STALL_SECONDS = 30.0
 #: Slack added to a fault's own duration when the fault removes the
 #: service outright and only recovery can be judged.
 STALL_SLACK_SECONDS = 15.0
+
+
+def _ramp_steps(run: Run) -> list[RampStep]:
+    """Requests and failures at each concurrency level of the ramp.
+
+    The ramp exists to find the bridge's backlog cliff: with a listen
+    backlog of five and clients accepted only between server pairings,
+    there is some concurrency at which honest clients start being
+    refused. This is where that shows up.
+    """
+    steps: list[RampStep] = []
+    for row in run.timeline:
+        if row["kind"] != "ramp":
+            continue
+        start, end = float(row["start_epoch"]), float(row["end_epoch"])
+        during = run.between(start, end)
+        steps.append(
+            RampStep(
+                users=int(row["name"].split("=", 1)[1]),
+                seconds=round(end - start, 1),
+                requests=len(during),
+                failures=sum(1 for r in during if not r.ok),
+                p95_ms=round(percentile([r.latency_ms for r in during if r.ok], 95), 1),
+            )
+        )
+    return steps
 
 
 def _phase_stats(run: Run) -> dict[str, dict[str, TaskStats]]:
@@ -228,7 +262,9 @@ def _unit_resources(
         fds_start=round(statistics.fmean(int(r["open_fds"]) for r in head)),
         fds_end=round(statistics.fmean(int(r["open_fds"]) for r in tail)),
         close_wait_max=max(int(r["close_wait"]) for r in rows),
-        close_wait_end=round(statistics.fmean(int(r["close_wait"]) for r in tail)),
+        # The last reading, not the phase mean: a leak that appears late
+        # in cooldown must not be averaged away.
+        close_wait_end=int(tail[-1]["close_wait"]),
         fin_wait_2_max=max(int(r["fin_wait_2"]) for r in rows),
         zombies_max=max(int(r["zombies"]) for r in rows),
         samples=len(rows),
@@ -253,6 +289,7 @@ def analyse(
     results = Results(profile=profile_name, started=started, ended=ended)
 
     results.phases = _phase_stats(run)
+    results.ramp = _ramp_steps(run)
 
     fault_expectations = expectations.get("faults", {})
     recovery_windows = {
