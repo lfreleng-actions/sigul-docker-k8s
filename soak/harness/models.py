@@ -88,6 +88,11 @@ class UnitResources:
     close_wait_end: int
     fin_wait_2_max: int
     zombies_max: int
+    #: Zombies in the last cooldown sample. A reaping parent leaves a
+    #: zombie for the moments between a child exiting and its next
+    #: wait(), so the peak can be non-zero on a healthy daemon; what
+    #: must be zero is the count once things are quiet.
+    zombies_end: int
     samples: int
     #: Distinct container lifetimes seen from the start of the baseline
     #: phase to the end of cooldown, minus one. Anything but zero means
