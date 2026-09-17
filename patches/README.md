@@ -390,6 +390,46 @@ the chart.
 `RSS trend` invariants, previously marked expected-fail against
 issue #14.
 
+### 09-fix-bridge-handshake-deadline.patch
+
+**Status:** CRITICAL - without it one silent connection stops all
+signing for as long as it stays open
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** Bridge
+
+**Problem:**
+The bridge accepts a peer and calls `force_handshake()` on it with no
+deadline. It serves one client at a time, so a peer that connects and
+then sends nothing holds the only slot there is until it goes away: a
+port scanner, a load balancer or health check that opens a bare TCP
+connection, a client suspended between `connect()` and its
+ClientHello, or a NAT that drops the client's packets after the SYN.
+The same applies on the server port while the bridge waits for a
+server. NSPR sockets do not honour `socket.setdefaulttimeout()`, so
+the daemon's one-hour default gave no protection either.
+
+Measured by the soak harness: two silent connections to the client
+port, **0 requests served in 60 s**; service resumed only when they
+closed.
+
+**Fix:**
+Both handshakes go through `force_handshake_timeout()` with a
+five-second deadline. A real Sigul peer completes the handshake in
+well under a second even across a WAN, and the clock starts at
+`accept()`, so time queued in the listen backlog does not count. On
+expiry NSPR raises `PR_IO_TIMEOUT_ERROR`; the bridge logs `Peer did not
+complete its TLS handshake within 5 s; dropping it` and, through the
+patch 07 cleanup, closes the peer and returns to its accept loop. When
+the dropped peer was a client, the paired server connection is closed
+with it and the server reconnects within a second, as for any other
+rejected client.
+
+**Test:** with two silent connections parked on the client port, an
+honest `list-users` is now served after nine seconds (two deadlines)
+rather than never; a silent connection parked on the server port
+delays a restarted server's pairing by one deadline rather than
+forever. The soak harness's `client_connect_and_hang` fault, marked
+expected-fail against issue #11, passes.
 ## Applying Patches
 
 The Docker build process automatically applies these patches:
