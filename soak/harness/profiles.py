@@ -121,7 +121,9 @@ _PR_FAULTS: tuple[FaultSlot, ...] = (
     FaultSlot("client_backlog_flood", 45, 60),
     FaultSlot("net_blackhole_server_link", 90, 90),
     FaultSlot("proc_freeze_bridge", 45, 60),
-    FaultSlot("client_kill_mid_sign", 45, 45),
+    # Complete when start() returns - the kill has been delivered - so
+    # no hold; the recovery window is what matters.
+    FaultSlot("client_kill_mid_sign", 0, 60),
 )
 
 PR = Profile(
