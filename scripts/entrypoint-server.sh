@@ -451,8 +451,15 @@ start_server_service() {
             # Use su to drop privileges in debug mode
             exec su -s /bin/bash "$SIGUL_USER" -c "$(declare -f start_server_service_debug); start_server_service_debug"
         else
-            # Drop privileges and exec sigul_server
-            # Using exec with su to replace shell process with server process (becomes PID 1)
+            # Drop privileges and exec sigul_server so that the daemon
+            # itself becomes PID 1, as it is under the Helm chart.
+            #
+            # setpriv rather than su: su stays resident as the parent of
+            # the daemon and, as PID 1, never reaps the processes that
+            # are orphaned beneath it. The server reaps those itself
+            # (patches/08), but only when it is PID 1. --reset-env sets
+            # HOME, USER, LOGNAME and SHELL from the passwd entry, as su
+            # did.
             #
             # Logging: -vv enables DEBUG level logging
             #   - Without flags: WARNING level only (errors/warnings)
@@ -462,7 +469,8 @@ start_server_service() {
             # Output goes to both:
             #   - Console (stdout/stderr) - captured by 'docker logs'
             #   - Log file (/var/log/sigul_server.log)
-            exec su -s /bin/bash "$SIGUL_USER" -c "exec /usr/sbin/sigul_server -c $CONFIG_FILE -vv"
+            exec setpriv --reuid="$SIGUL_USER" --regid="$SIGUL_USER" --init-groups \
+                --reset-env /usr/sbin/sigul_server -c "$CONFIG_FILE" -vv
         fi
     else
         # Already running as non-root user
