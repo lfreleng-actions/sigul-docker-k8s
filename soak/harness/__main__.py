@@ -279,7 +279,15 @@ def run(profile: Profile, output_dir: Path) -> int:
     finally:
         if interrupted:
             _restore_stack(scheduler, target, (bridge, server))
-        failure = _stop_load(locust) if startup_failure is None else startup_failure
+        # Always stop and reap Locust if it exists, so nothing is still
+        # writing requests.csv when analysis reads it; the startup
+        # failure, if any, is the one to report.
+        load_failure = (
+            _stop_load(locust)
+            if locust is not None or startup_failure is None
+            else None
+        )
+        failure = startup_failure or load_failure
         # Stop the sampler before the timeline is closed. If its writer
         # is still alive there is no safe way to read samples.csv, so
         # the run ends here with the failure logged rather than with a
