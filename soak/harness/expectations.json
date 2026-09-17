@@ -26,8 +26,8 @@
   "pr": {
     "faults": {
       "client_handshake_then_hang": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/12"
+        "max_stall_seconds": 135,
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/12 - patch 11 sheds a silent mid-request peer after 120 s; the bound is that plus slack"
       },
       "client_backlog_flood": {
         "expect": "fail",
@@ -48,16 +48,16 @@
   "nightly": {
     "faults": {
       "client_handshake_then_hang": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/12"
+        "max_stall_seconds": 135,
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/12 - patch 11 sheds a silent mid-request peer after 120 s; the bound is that plus slack"
       },
       "client_backlog_flood": {
         "expect": "fail",
         "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/13 (backlog raised to 128 in patch 10; twenty silent connections now each cost one patch 09 handshake deadline in turn rather than being SYN-dropped - still a stall until handshakes leave the accept loop's critical path)"
       },
       "client_stop_mid_sign": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/12"
+        "max_stall_seconds": 135,
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/12 - patch 11 sheds a silent mid-request peer after 120 s; the bound is that plus slack"
       }
     },
     "invariants": {

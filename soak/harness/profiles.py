@@ -116,7 +116,10 @@ class Profile:
 # stack has been under load long enough for state to have accumulated.
 _PR_FAULTS: tuple[FaultSlot, ...] = (
     FaultSlot("client_connect_and_hang", 60, 60),
-    FaultSlot("client_handshake_then_hang", 60, 60),
+    # Held past the bridge's 120 s request idle deadline (patch 11), so
+    # the run asserts that a frozen client is shed, not merely that the
+    # service recovers once the client is killed.
+    FaultSlot("client_handshake_then_hang", 150, 60),
     FaultSlot("client_abrupt_reset", 45, 60),
     FaultSlot("net_latency_client", 60, 60),
     FaultSlot("client_backlog_flood", 45, 60),
@@ -164,7 +167,7 @@ NIGHTLY = Profile(
             FaultSlot("client_slow_loris", 120, 60),
             FaultSlot("client_half_close_hang", 60, 60),
             FaultSlot("client_garbage_handshake", 60, 60),
-            FaultSlot("client_stop_mid_sign", 60, 60),
+            FaultSlot("client_stop_mid_sign", 150, 60),
             FaultSlot("net_bandwidth_squeeze", 90, 60),
             FaultSlot("net_reset_peer_client", 60, 60),
             FaultSlot("net_blackhole_client", 60, 60),

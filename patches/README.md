@@ -465,6 +465,49 @@ trade-off the soak harness's `client_backlog_flood` fault measures,
 and it remains marked expected-fail against issue #13 until
 handshakes are taken off the accept loop's critical path.
 
+### 11-fix-bridge-request-idle-deadline.patch
+
+**Status:** CRITICAL - without it a client that goes silent
+mid-request holds the bridge's single slot for as long as it likes
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** Bridge (and `double_tls.OuterBuffer` /
+`forward_two_way`, which gain optional deadlines the server and client
+do not use)
+
+**Problem:**
+Once a client has completed its handshake and the bridge is relaying
+its request, every read and write on either peer blocks with no
+deadline: `OuterBuffer` for the headers and payloads, `forward_two_way`
+for the inner stream. A client suspended mid-upload, a CI runner
+paused by its scheduler, or a peer behind a NAT that has dropped the
+flow all look exactly like a slow peer. The bridge serves one client
+at a time, so everyone else waits until the frozen client is killed -
+the soak harness measured a real `sign-data` frozen at 6 MB into a
+384 MB upload blocking all signing for the whole window. The server's
+one-hour alarm was the only bound.
+
+**Fix:**
+`OuterBuffer` takes an optional `idle_timeout`, applied to each receive
+and send; `forward_two_way` takes one too and raises
+`IdleTimeoutError` when a full period passes with no event on any
+descriptor. Only the bridge passes them, at 120 seconds: a peer that
+moves no bytes at all for two minutes mid-request has stopped. On
+expiry the bridge logs the drop plainly and, through the patch 07
+cleanup, closes both peers and returns to its accept loop; the server
+reconnects within a second. No legitimate Sigul operation goes two
+minutes without a byte crossing the bridge - the largest signing
+operations either stream or finish in seconds - and the full signing
+suite passes unchanged against the patched bridge.
+
+The server and client code paths are untouched: the defaults keep
+their previous unbounded behaviour.
+
+**Test:** a real client frozen 6 MB into an upload; an honest
+`list-users` retried every thirty seconds is refused four times and
+served at 122 seconds, where before it was never served. The soak
+harness's `client_handshake_then_hang` and `client_stop_mid_sign`
+faults now recover within the window.
+
 ## Applying Patches
 
 The Docker build process automatically applies these patches:
