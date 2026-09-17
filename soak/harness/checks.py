@@ -250,7 +250,7 @@ def _resource_checks(results: Results) -> list[Check]:
             Check(
                 f"{unit}: no zombie processes",
                 res.zombies_end == 0,
-                f"min of last 3 samples={res.zombies_end} (peak {res.zombies_max})",
+                f"median of last 3 samples={res.zombies_end} (peak {res.zombies_max})",
             )
         )
     return checks
