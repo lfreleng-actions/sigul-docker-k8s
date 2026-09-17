@@ -86,7 +86,7 @@ repos:
       - id: write-good
         files: "\\.(rst|md|markdown|mdown|mkdn)$"
         exclude:
-          "^(docs/|K8S/docs/|DEPLOYMENT_GUIDE\\.md|OPERATIONS_GUIDE\\.md|README\\.md|baseline-paths\\.md|patches/README\\.md|K8S/charts/sigul/README\\.md)"
+          "^(docs/|K8S/docs/|DEPLOYMENT_GUIDE\\.md|OPERATIONS_GUIDE\\.md|README\\.md|baseline-paths\\.md|patches/README\\.md|soak/README\\.md|K8S/charts/sigul/README\\.md)"
 
   - repo: https://github.com/shellcheck-py/shellcheck-py
     rev: a6564f5d57444e123433a5c9af733e3975c77229  # frozen: v0.11.0.1-1

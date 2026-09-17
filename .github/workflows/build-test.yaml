@@ -1026,88 +1026,9 @@ jobs:
               steps.runner-arch.outputs.platform-id
             }}-image:test
         run: |
-          echo '🔧 Setting up client container for integration tests...'
-
-          # Detect network name
-          NETWORK_NAME=$(docker network ls --filter "name=sigul" \
-            --format "{{.Name}}" | head -1)
-          echo "Using network: ${NETWORK_NAME}"
-
-          # Create client volumes if they don't exist
-          docker volume create sigul-docker_sigul_client_nss || true
-          docker volume create sigul-docker_sigul_client_config || true
-
-          # Set proper ownership on client volumes (UID 1000 = sigul user)
-          docker run --rm \
-            -v sigul-docker_sigul_client_nss:/target-nss \
-            -v sigul-docker_sigul_client_config:/target-config \
-            alpine:3.19 \
-            sh -c 'chown -R 1000:1000 /target-nss /target-config'
-
-          # Get bridge NSS volume for certificate import
-          BRIDGE_NSS_VOLUME=$(docker volume ls --format "{{.Name}}" \
-            | grep -E "bridge.*nss|sigul.*bridge.*nss" | head -1)
-          echo "Bridge NSS volume: ${BRIDGE_NSS_VOLUME}"
-
-          # Get ephemeral NSS password
-          NSS_PASSWORD=$(cat test-artifacts/nss-password)
-
-          # Start temporary client container for initialization
-          docker run -d --name sigul-client-init \
-            --network "${NETWORK_NAME}" \
-            --user sigul \
-            -v "${BRIDGE_NSS_VOLUME}":/etc/pki/sigul/bridge:ro \
-            -v sigul-docker_sigul_client_nss:/etc/pki/sigul/client:rw \
-            -v sigul-docker_sigul_client_config:/etc/sigul:rw \
-            -e NSS_PASSWORD="${NSS_PASSWORD}" \
-            "${SIGUL_CLIENT_IMAGE}" \
-            tail -f /dev/null
-
-          # Wait for container to be ready
-          sleep 3
-
-          # Initialize client certificates
-          echo "Initializing client certificates..."
-          docker exec sigul-client-init /usr/local/bin/init-client-certs.sh
-
-          # Generate client configuration
-          docker exec --user root sigul-client-init bash -c \
-            'cat > /etc/sigul/client.conf << "EOFCONFIG"
-          [client]
-          bridge-hostname: sigul-bridge.example.org
-          bridge-port: 44334
-          server-hostname: sigul-server.example.org
-          # Default identity for batch-mode requests.  Without this,
-          # sigul falls back to getpass.getuser() inside the client
-          # container - that resolves to the sigul user, which is not
-          # the admin user we created in the server database, so
-          # every request would fail AUTHENTICATION_FAILED.
-          user-name: admin
-
-          [gnupg]
-          gnupg-bin: /usr/bin/gpg2
-          gnupg-key-type: RSA
-          gnupg-key-length: 4096
-
-          [nss]
-          client-cert-nickname: sigul-client-cert
-          nss-ca-cert-nickname: sigul-ca
-          nss-bridge-cert-nickname: sigul-bridge-cert
-          nss-dir: /etc/pki/sigul/client
-          nss-password: '"${NSS_PASSWORD}"'
-          nss-min-tls: tls1.2
-          EOFCONFIG
-          '
-
-          # Set proper ownership
-          docker exec --user root sigul-client-init \
-            chown sigul:sigul /etc/sigul/client.conf
-
-          # Stop and remove init container
-          docker stop sigul-client-init
-          docker rm sigul-client-init
-
-          echo "✅ Client setup complete"
+          # Creates the client NSS database and client.conf in the two
+          # named volumes every suite mounts read-only.
+          ./scripts/setup-client.sh
 
       - name: 'Run integration tests'
         shell: bash
@@ -1293,6 +1214,125 @@ jobs:
 
           echo "✅ Functional test infrastructure cleanup completed"
 
+  ### Soak and chaos test ###
+  soak-test:
+    name: 'Soak: linux/amd64'
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: read
+    # Thirty minutes of steady load with faults injected - misbehaving
+    # clients, network conditions, daemon restarts and freezes - while
+    # memory, descriptors and socket states are sampled. Judges how
+    # long one bad peer stalls everyone else and whether the service
+    # comes back on its own. See soak/README.md.
+    #
+    # Known defects are recorded as expected failures in
+    # soak/harness/expectations.json, so this job is green while they
+    # are being fixed and turns red when a marker goes stale.
+    timeout-minutes: 50
+    needs: build-containers
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 'Download Sigul Client image artifact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: 'client-linux-amd64-image'
+          path: /tmp
+
+      - name: 'Download Sigul Server image artifact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: 'server-linux-amd64-image'
+          path: /tmp
+
+      - name: 'Download Sigul Bridge image artifact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: 'bridge-linux-amd64-image'
+          path: /tmp
+
+      - name: 'Load and tag container images'
+        shell: bash
+        run: |
+          for component in client server bridge; do
+            docker load --input "/tmp/${component}-linux-amd64.tar"
+            docker tag "${component}:linux-amd64" \
+              "${component}-linux-amd64-image:test"
+          done
+          # The deploy script loads from /tmp/*.tar itself when they
+          # exist; they are already loaded, so keep it in local mode.
+          rm -f /tmp/*-linux-amd64.tar
+
+      - name: 'Run soak profile: pr'
+        shell: bash
+        env:
+          SIGUL_RUNNER_PLATFORM: linux-amd64
+        run: |
+          # --keep leaves the stack up so the daemon logs can be
+          # captured below; the last step tears it down.
+          ./soak/run-soak.sh pr --keep
+
+      - name: 'Publish soak report to job summary'
+        if: always()
+        shell: bash
+        run: |
+          if [ -f soak/results/report.md ]; then
+            cat soak/results/report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '## Sigul soak: no report produced' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: 'Upload soak results'
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: always()
+        with:
+          name: 'soak-results-linux-amd64'
+          path: soak/results/
+          retention-days: 30
+
+      - name: 'Capture daemon logs'
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p soak/results/logs
+          for c in sigul-server sigul-bridge sigul-toxiproxy; do
+            docker logs "$c" > "soak/results/logs/${c}.log" 2>&1 || true
+          done
+          docker cp sigul-server:/var/log/sigul_server.log \
+            soak/results/logs/sigul_server.log 2>/dev/null || true
+          docker cp sigul-bridge:/var/log/sigul_bridge.log \
+            soak/results/logs/sigul_bridge.log 2>/dev/null || true
+
+      - name: 'Upload daemon logs'
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: always()
+        with:
+          name: 'soak-logs-linux-amd64'
+          path: soak/results/logs/
+          retention-days: 30
+
+      - name: 'Clean up soak infrastructure'
+        if: always()
+        shell: bash
+        run: |
+          docker compose -f docker-compose.sigul.yml -f soak/compose.soak.yml \
+            down -v --remove-orphans >/dev/null 2>&1 || true
+
   ### Cleanup Sigul Infrastructure ###
   cleanup-infrastructure:
     name: 'Cleanup Infrastructure'
@@ -1356,7 +1396,8 @@ jobs:
       publish-ghcr,
       pr-sbom,
       pr-grype,
-      functional-tests
+      functional-tests,
+      soak-test
     ]
     if: always()
     timeout-minutes: 1
@@ -1369,6 +1410,7 @@ jobs:
           SBOM_RESULT: ${{ needs.pr-sbom.result }}
           GRYPE_RESULT: ${{ needs.pr-grype.result }}
           TESTS_RESULT: ${{ needs.functional-tests.result }}
+          SOAK_RESULT: ${{ needs.soak-test.result }}
           PUBLISH_RESULT: ${{ needs.publish-ghcr.result }}
           REGISTRY_NAME: ${{ env.REGISTRY }}
           IMAGE: ${{ env.IMAGE_NAME }}
@@ -1388,6 +1430,8 @@ jobs:
               " ${GRYPE_RESULT} |"
             echo "| Functional Tests (matrix: amd64 + arm64) |" \
               " ${TESTS_RESULT} |"
+            echo "| Soak / chaos (amd64, ~30 min) |" \
+              " ${SOAK_RESULT} |"
             echo ""
 
             # Note: needs.<job>.result is the *overall* matrix outcome
@@ -1400,6 +1444,13 @@ jobs:
             echo "### Functional Tests"
             echo "- **Status**: ${TESTS_RESULT}"
             echo "- **Includes**: Integration testing against fresh infrastructure"
+            echo ""
+
+            echo "### Soak / chaos"
+            echo "- **Status**: ${SOAK_RESULT}"
+            echo "- **Includes**: 30 min of load with client, network and" \
+              "process faults; recovery, leaks and latency judged." \
+              "Full report in the soak job summary and soak-results artifact."
             echo ""
 
             echo "### Supply-chain scan"

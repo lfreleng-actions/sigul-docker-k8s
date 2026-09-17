@@ -37,3 +37,12 @@ path = [
 ]
 SPDX-License-Identifier = "Apache-2.0"
 SPDX-FileCopyrightText = "2025 The Linux Foundation"
+
+# Soak harness data files: JSON carries no comment syntax for a header.
+[[annotations]]
+path = [
+    "soak/.gitignore",
+    "soak/harness/*.json"
+]
+SPDX-License-Identifier = "Apache-2.0"
+SPDX-FileCopyrightText = "2026 The Linux Foundation"

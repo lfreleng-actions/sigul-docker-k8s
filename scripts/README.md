@@ -56,6 +56,7 @@ For most users, these are the scripts you'll need:
 | Script                           | Purpose                        | When to Use            |
 | -------------------------------- | ------------------------------ | ---------------------- |
 | `deploy-sigul-infrastructure.sh` | Deploy infrastructure stack    | Test/dev environments  |
+| `setup-client.sh`                | Provision client volumes       | After every deploy     |
 | `run-integration-tests.sh`       | End-to-end integration testing | CI/CD pipelines        |
 | `run-signing-tests.sh`           | Signing operation coverage     | CI/CD pipelines        |
 | `run-lifecycle-tests.sh`         | Connection lifecycle testing   | CI/CD pipelines        |
