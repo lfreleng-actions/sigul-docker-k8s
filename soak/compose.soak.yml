@@ -1,0 +1,112 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Soak-test overlay for docker-compose.sigul.yml.
+#
+#   docker compose -f docker-compose.sigul.yml -f soak/compose.soak.yml ...
+#
+# It adds two services and changes nothing about the stack under test.
+#
+# Toxiproxy sits transparently in front of the bridge. Rather than
+# moving the bridge's network alias - which would fight Compose's
+# list-merging rules - each client of the bridge gets an /etc/hosts
+# entry pointing `sigul-bridge.example.org` at Toxiproxy, which
+# forwards to the real bridge. /etc/hosts wins over Docker's DNS, so
+# the redirection is invisible to Sigul: the bridge still presents a
+# certificate whose CN matches the name the peer dialled, and no
+# generated config changes.
+#
+# Both directions are intercepted deliberately. The client->bridge path
+# carries request traffic; the server->bridge path is the long-lived
+# idle connection whose silent death caused the production wedge, and
+# it can only be simulated from inside the network path.
+
+services:
+  # Transparent TCP fault injector. No toxics are active until the
+  # harness adds them, and an idle proxy costs well under a
+  # millisecond, so the stack behaves normally between fault windows.
+  toxiproxy:
+    # yamllint disable-line rule:line-length
+    image: ghcr.io/shopify/toxiproxy:2.12.0@sha256:9378ed52a28bc50edc1350f936f518f31fa95f0d15917d6eb40b8e376d1a214e
+    container_name: sigul-toxiproxy
+    # -host 0.0.0.0 exposes the control API to the harness container;
+    # the whole stack is a disposable test rig on a private network.
+    command: ["-host", "0.0.0.0"]
+    networks:
+      sigul-network:
+        ipv4_address: 172.20.0.10
+        aliases:
+          - toxiproxy
+    depends_on:
+      sigul-bridge:
+        condition: service_healthy
+    restart: "no"
+    labels:
+      org.sigul.component: "soak-toxiproxy"
+
+  # The server's connection to the bridge is the one the production
+  # deadlock died on. Route it through Toxiproxy so the harness can
+  # blackhole it the way a NAT or load balancer silently would.
+  sigul-server:
+    extra_hosts:
+      - "sigul-bridge.example.org:172.20.0.10"
+    depends_on:
+      toxiproxy:
+        condition: service_started
+
+  # Load generator, fault scheduler, metrics sampler and analyser.
+  soak-runner:
+    build:
+      context: ./soak
+      dockerfile: Dockerfile
+      args:
+        SIGUL_CLIENT_IMAGE: >-
+          ${SIGUL_CLIENT_IMAGE:-sigul-docker-sigul-client-test}
+    image: sigul-soak-runner:local
+    container_name: sigul-soak-runner
+    hostname: soak-runner
+    # Root so the Docker socket is usable for container stats and
+    # process-level faults. The container is a test harness on a
+    # throwaway network and signs nothing.
+    user: "0:0"
+    environment:
+      SOAK_PROFILE: ${SOAK_PROFILE:-pr}
+      SOAK_OUTPUT_DIR: /results
+      SOAK_TOXIPROXY_URL: http://172.20.0.10:8474
+      SOAK_BRIDGE_CONTAINER: sigul-bridge
+      SOAK_SERVER_CONTAINER: sigul-server
+      SIGUL_CONFIG: /etc/sigul/client.conf
+      SIGUL_ADMIN_USER: ${SIGUL_ADMIN_USER:-admin}
+      DEBUG: ${DEBUG:-false}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - soak_client_nss:/etc/pki/sigul/client:ro
+      - soak_client_config:/etc/sigul:ro
+      - ./test-artifacts:/test-artifacts:ro
+      - ./soak/results:/results:rw
+    extra_hosts:
+      - "sigul-bridge.example.org:172.20.0.10"
+    networks:
+      sigul-network:
+        ipv4_address: 172.20.0.11
+    depends_on:
+      toxiproxy:
+        condition: service_started
+      sigul-server:
+        condition: service_started
+    restart: "no"
+    labels:
+      org.sigul.component: "soak-runner"
+
+# The client volumes are provisioned by scripts/setup-client.sh under
+# the names every test suite in this repository mounts with `docker run
+# -v`. Attach to those as external volumes, under distinct keys so the
+# base file's own client volume declarations are left alone.
+volumes:
+  soak_client_nss:
+    external: true
+    name: sigul-docker_sigul_client_nss
+  soak_client_config:
+    external: true
+    name: sigul-docker_sigul_client_config

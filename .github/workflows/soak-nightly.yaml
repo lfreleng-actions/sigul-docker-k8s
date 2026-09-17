@@ -1,0 +1,132 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+name: 'Sigul Soak (nightly) 🌙'
+
+# Hours of load with every fault repeated, against the published
+# images. Long enough for slow leaks to become unambiguous trends and
+# for the faults with long recovery paths to be exercised many times.
+# The PR job runs the short profile against unpublished PR images;
+# this one runs the long profile against what is actually deployed.
+#
+# workflow_dispatch takes an image tag so any two releases can be
+# compared, or a release candidate soaked before it is tagged latest.
+
+on:  # yamllint disable-line rule:truthy
+  schedule:
+    # 02:17 UTC daily; off the hour to avoid the top-of-hour rush.
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to soak (e.g. v2.2.5)'
+        required: false
+        default: 'latest'
+        type: string
+      profile:
+        description: 'Soak profile'
+        required: false
+        default: 'nightly'
+        type: choice
+        options: ['smoke', 'pr', 'nightly']
+
+permissions: {}
+
+concurrency:
+  group: soak-nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: 'ghcr.io'
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  soak:
+    name: 'Soak: ${{ matrix.platform }}'
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    timeout-minutes: 600
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            platform_id: linux-amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            platform_id: linux-arm64
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 'Pull and tag images'
+        shell: bash
+        env:
+          TAG: ${{ inputs.image_tag || 'latest' }}
+          PLATFORM_ID: ${{ matrix.platform_id }}
+          REGISTRY_NAME: ${{ env.REGISTRY }}
+          IMAGE: ${{ env.IMAGE_NAME }}
+        run: |
+          for component in client server bridge; do
+            ref="${REGISTRY_NAME}/${IMAGE}/${component}:${TAG}"
+            docker pull "$ref"
+            docker tag "$ref" "${component}-${PLATFORM_ID}-image:test"
+          done
+
+      - name: 'Run soak profile'
+        shell: bash
+        env:
+          SIGUL_RUNNER_PLATFORM: ${{ matrix.platform_id }}
+          PROFILE: ${{ inputs.profile || 'nightly' }}
+        run: |
+          ./soak/run-soak.sh "$PROFILE" --keep
+
+      - name: 'Publish soak report to job summary'
+        if: always()
+        shell: bash
+        run: |
+          if [ -f soak/results/report.md ]; then
+            cat soak/results/report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '## Sigul soak: no report produced' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: 'Capture daemon logs'
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p soak/results/logs
+          for c in sigul-server sigul-bridge sigul-toxiproxy; do
+            docker logs "$c" > "soak/results/logs/${c}.log" 2>&1 || true
+          done
+          docker cp sigul-server:/var/log/sigul_server.log \
+            soak/results/logs/sigul_server.log 2>/dev/null || true
+          docker cp sigul-bridge:/var/log/sigul_bridge.log \
+            soak/results/logs/sigul_bridge.log 2>/dev/null || true
+
+      - name: 'Upload soak results'
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: always()
+        with:
+          name: 'soak-nightly-${{ matrix.platform_id }}'
+          path: soak/results/
+          retention-days: 90
+
+      - name: 'Clean up'
+        if: always()
+        shell: bash
+        run: |
+          docker compose -f docker-compose.sigul.yml -f soak/compose.soak.yml \
+            down -v --remove-orphans >/dev/null 2>&1 || true

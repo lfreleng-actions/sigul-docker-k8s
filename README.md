@@ -250,7 +250,13 @@ The deploy script writes an ephemeral admin password to
 ### Running the test suites
 
 The repository ships three end-to-end suites, all of which CI runs against
-the live stack:
+the live stack, plus a soak and chaos harness under [`soak/`](./soak/)
+that runs for thirty minutes on every pull request (see
+[`soak/README.md`](./soak/README.md)). Provision the client first:
+
+```bash
+SIGUL_CLIENT_IMAGE=client-${PLATFORM_ID}-image:test ./scripts/setup-client.sh
+```
 
 ```bash
 # Control-plane tests: list-users, list-keys, double-TLS handshake, etc.
