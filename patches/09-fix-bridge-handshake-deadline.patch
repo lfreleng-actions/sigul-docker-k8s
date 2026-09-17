@@ -15,12 +15,10 @@
  import tempfile
  import threading
 
-@@ -121,6 +122,57 @@
-             except configparser.NoOptionError:
-                 group = None
+@@ -123,6 +124,62 @@
              self.koji_fas_groups[v] = group
-+
-+
+
+
 +# Deadline for a peer to complete its TLS handshake once accepted. The
 +# bridge serves one client at a time, so a peer that connects and then
 +# says nothing - or trickles a byte a second - holds the only slot there
@@ -63,17 +61,24 @@
 +                    'TLS handshake not completed within %d s'
 +                    % _HANDSHAKE_TIMEOUT_SECONDS,
 +                    nss.error.PR_IO_TIMEOUT_ERROR)
-+            # NSS may be waiting to read or to write; ask for both.
++            # Wait for the peer to send. Polling for WRITE as well would
++            # return at once - a fresh socket is always writable - and
++            # spin at full CPU until the deadline. A handshake step can
++            # only block on a write if the send buffer is full, which
++            # handshake-sized messages never manage; and if it ever did,
++            # this still ends at the deadline rather than spinning.
 +            nss.io.Socket.poll(
-+                [(sock, nss.io.PR_POLL_READ | nss.io.PR_POLL_WRITE)],
++                [(sock, nss.io.PR_POLL_READ)],
 +                nss.io.milliseconds_to_interval(int(remaining * 1000) + 1))
 +    finally:
 +        sock.set_socket_option(nss.io.PR_SockOpt_Nonblocking, False)
 +    logging.debug('%s TLS handshake completed', role)
-
-
++
++
  def create_listen_sock(config, port):
-@@ -1257,7 +1309,7 @@
+     sock = nss.ssl.SSLSocket(nss.io.PR_AF_INET)
+     # FIXME? does this belong in a finished product?
+@@ -1257,7 +1314,7 @@
      @staticmethod
      def handle_connection(config, client_sock, server_sock):
          '''Handle a single connection using client_sock and server_sock.'''
@@ -82,7 +87,7 @@
          cert = client_sock.get_peer_certificate()
          if cert is None:
              raise ForwardingError('No client certificate')
-@@ -1476,8 +1528,7 @@
+@@ -1476,8 +1533,7 @@
          # This is particularly problematic in containerized environments where
          # connection timing is less predictable.
          try:
@@ -92,7 +97,7 @@
          except Exception as e:
              logging.error('Server TLS handshake failed: %s', e)
              _adbg('Server TLS handshake EXCEPTION: %r', e)
-@@ -1522,6 +1573,13 @@
+@@ -1522,6 +1578,13 @@
          if e.errno == nss.error.SEC_ERROR_EXPIRED_CERTIFICATE:
              logging.warning("Peer's certificate has expired, rejecting "
                              "connection")
