@@ -15,24 +15,11 @@
     "bound in a 60s window (pr, nightly) may not in a 20s one (smoke)."
   ],
   "smoke": {
-    "faults": {
-      "server_teardown_vs_silent_peer": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/pull/8 (patch 06 bounds this teardown; unpatched, the child blocks forever - the production deadlock). Remove after rebasing on #8."
-      }
-    },
+    "faults": {},
     "invariants": {
       "sigul-server: no zombie processes": {
         "expect": "fail",
         "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/14"
-      },
-      "sigul-bridge: no CLOSE-WAIT sockets left behind": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/pull/8 (bridge leaks one CLOSE-WAIT socket per failed server-side handshake, and main's connect-based compose healthcheck triggers one every probe). Remove after rebasing on #8."
-      },
-      "sigul-bridge: no zombie processes": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/pull/8 (main's connect-based compose healthcheck leaves a zombie per probe that hangs on a full backlog: 67 in a 4-minute smoke run locally; #8 replaces it with a listen-state check). Remove after rebasing on #8."
       }
     }
   },
@@ -49,10 +36,6 @@
       "client_backlog_flood": {
         "expect": "fail",
         "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/13"
-      },
-      "server_teardown_vs_silent_peer": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/pull/8 (patch 06 bounds this teardown; unpatched, the child blocks forever - the production deadlock). Remove after rebasing on #8."
       }
     },
     "invariants": {
@@ -60,21 +43,9 @@
         "expect": "fail",
         "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/14"
       },
-      "sigul-bridge: no CLOSE-WAIT sockets left behind": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/pull/8 (bridge leaks one CLOSE-WAIT socket per failed server-side handshake, and main's connect-based compose healthcheck triggers one every probe). Remove after rebasing on #8."
-      },
-      "sigul-bridge: no zombie processes": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/pull/8 (main's connect-based compose healthcheck leaves a zombie per probe that hangs on a full backlog: 67 in a 4-minute smoke run locally; #8 replaces it with a listen-state check). Remove after rebasing on #8."
-      },
       "sigul-server: RSS trend < 30 MB/h": {
         "expect": "fail",
         "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/14 (kernel task structures for the zombies, ~7 KB each, charged to the container)"
-      },
-      "sigul-bridge: open descriptors return to baseline": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/pull/8 (bridge leaks one CLOSE-WAIT socket per failed server-side handshake, and main's connect-based compose healthcheck triggers one every probe). Remove after rebasing on #8."
       }
     }
   },
@@ -103,10 +74,6 @@
       "client_stop_mid_sign": {
         "expect": "fail",
         "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/12"
-      },
-      "server_teardown_vs_silent_peer": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/pull/8 (patch 06 bounds this teardown; unpatched, the child blocks forever - the production deadlock). Remove after rebasing on #8."
       }
     },
     "invariants": {
@@ -114,21 +81,9 @@
         "expect": "fail",
         "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/14"
       },
-      "sigul-bridge: no CLOSE-WAIT sockets left behind": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/pull/8 (bridge leaks one CLOSE-WAIT socket per failed server-side handshake, and main's connect-based compose healthcheck triggers one every probe). Remove after rebasing on #8."
-      },
-      "sigul-bridge: no zombie processes": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/pull/8 (main's connect-based compose healthcheck leaves a zombie per probe that hangs on a full backlog: 67 in a 4-minute smoke run locally; #8 replaces it with a listen-state check). Remove after rebasing on #8."
-      },
       "sigul-server: RSS trend < 30 MB/h": {
         "expect": "fail",
         "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/14 (kernel task structures for the zombies, ~7 KB each, charged to the container)"
-      },
-      "sigul-bridge: open descriptors return to baseline": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/pull/8 (bridge leaks one CLOSE-WAIT socket per failed server-side handshake, and main's connect-based compose healthcheck triggers one every probe). Remove after rebasing on #8."
       }
     }
   }
