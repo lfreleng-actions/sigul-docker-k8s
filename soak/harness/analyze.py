@@ -62,15 +62,19 @@ DEFAULT_MAX_STALL_SECONDS = 30.0
 #: service outright and only recovery can be judged.
 STALL_SLACK_SECONDS = 15.0
 
-#: How much RSS may grow across the run before it is called a leak.
-#: The daemons are small Python processes; tens of MB in half an hour
-#: of constant load is not noise.
-MAX_RSS_GROWTH_MB = 40.0
+#: Steepest RSS trend tolerated, from a least-squares fit over every
+#: sample. A fit is the right detector for a linear leak: it uses the
+#: whole run rather than two endpoints, and its units do not change
+#: with the profile's length. Observed without a leak: within +/-10
+#: MB/h on the bridge. Observed with the zombie leak: +50 to +270 MB/h.
+MAX_RSS_SLOPE_MB_PER_HOUR = 30.0
 
-#: Descriptor and CLOSE-WAIT drift tolerated between the baseline and
-#: cooldown phases. Zero would be ideal; a little allows for a sample
-#: landing mid-request.
-MAX_FD_DRIFT = 4
+#: Descriptor growth tolerated between the baseline and cooldown phase
+#: means. Samples land mid-request, and a request in flight holds
+#: around a dozen descriptors on the server, so phase means of a few
+#: dozen samples wobble by several either way. The leak this catches
+#: was +105 on the bridge in twenty minutes; a fall is never a leak.
+MAX_FD_GROWTH = 10
 MAX_CLOSE_WAIT_END = 1
 
 #: Regression tolerances against the committed baseline. p95 may grow
@@ -108,11 +112,11 @@ def _longest_stall(
     first_after = next((t for t in run.successes if t >= end), None)
     recovery = (first_after - end) if first_after is not None else None
 
+    # Anchors run from the fault's start to the first success after it
+    # ends. The start is clamped to the fault itself: time without
+    # requests before the fault began is not the fault's doing.
     window_end = first_after if first_after is not None else max(end, run_end)
-    before = [t for t in run.successes if t < start]
-    anchors = ([before[-1]] if before else [start]) + [
-        t for t in run.successes if start <= t <= window_end
-    ]
+    anchors = [start] + [t for t in run.successes if start <= t <= window_end]
     if first_after is None:
         anchors.append(window_end)
     stall = max(
@@ -145,7 +149,9 @@ def _fault_result(
     stall_bound = float(expectation.get("max_stall_seconds", default_stall))
 
     recovered = recovery is not None and recovery <= max_recovery
-    stalled = stall > stall_bound
+    # A fault that removes the service outright is judged on recovery
+    # alone; its stall is reported but cannot be a failure.
+    stalled = meta.service_possible_during and stall > stall_bound
     harness_error = bool(row.get("note"))
 
     if harness_error:
@@ -197,10 +203,26 @@ def _mean_rss_mb(rows: list[dict[str, str]]) -> float:
     return statistics.fmean(int(r["rss_bytes"]) for r in rows) / (1 << 20)
 
 
-def _unit_resources(rows: list[dict[str, str]]) -> UnitResources:
+def _unit_resources(
+    rows: list[dict[str, str]], windows: dict[str, tuple[float, float]]
+) -> UnitResources:
+    """Summarise one unit's samples.
+
+    Start and end figures come from the baseline and cooldown phases -
+    both clean load at the same concurrency - so the comparison is like
+    for like. Peaks and the trend fit use every sample.
+    """
     rows.sort(key=lambda r: float(r["epoch"]))
+
+    def within(phase: str) -> list[dict[str, str]]:
+        if phase not in windows:
+            return []
+        lo, hi = windows[phase]
+        return [r for r in rows if lo <= float(r["epoch"]) <= hi]
+
     tenth = max(1, len(rows) // 10)
-    head, tail = rows[:tenth], rows[-tenth:]
+    head = within("baseline") or rows[:tenth]
+    tail = within("cooldown") or rows[-tenth:]
     return UnitResources(
         rss_start_mb=round(_mean_rss_mb(head), 1),
         rss_end_mb=round(_mean_rss_mb(tail), 1),
@@ -262,19 +284,19 @@ def _invariants(results: Results) -> list[Check]:
         )
     )
     for unit, res in results.resources.items():
-        growth = res.rss_end_mb - res.rss_start_mb
         checks.append(
             Check(
-                f"{unit}: RSS growth < {MAX_RSS_GROWTH_MB:.0f} MB",
-                growth < MAX_RSS_GROWTH_MB,
-                f"{res.rss_start_mb} -> {res.rss_end_mb} MB (slope {res.rss_slope_mb_per_hour:+.1f} MB/h)",
+                f"{unit}: RSS trend < {MAX_RSS_SLOPE_MB_PER_HOUR:.0f} MB/h",
+                res.rss_slope_mb_per_hour < MAX_RSS_SLOPE_MB_PER_HOUR,
+                f"{res.rss_slope_mb_per_hour:+.1f} MB/h "
+                f"(baseline {res.rss_start_mb} MB, cooldown {res.rss_end_mb} MB)",
             )
         )
         checks.append(
             Check(
                 f"{unit}: open descriptors return to baseline",
-                abs(res.fds_end - res.fds_start) <= MAX_FD_DRIFT,
-                f"{res.fds_start} -> {res.fds_end}",
+                res.fds_end - res.fds_start <= MAX_FD_GROWTH,
+                f"{res.fds_start} -> {res.fds_end} (bound +{MAX_FD_GROWTH})",
             )
         )
         checks.append(
@@ -358,7 +380,14 @@ def analyse(
     by_unit: dict[str, list[dict[str, str]]] = defaultdict(list)
     for row in run.samples:
         by_unit[row["unit"]].append(row)
-    results.resources = {unit: _unit_resources(rows) for unit, rows in by_unit.items()}
+    windows = {
+        r["name"]: (float(r["start_epoch"]), float(r["end_epoch"]))
+        for r in run.timeline
+        if r["kind"] == "phase"
+    }
+    results.resources = {
+        unit: _unit_resources(rows, windows) for unit, rows in by_unit.items()
+    }
 
     results.invariants = _coverage(results, units) + _invariants(results)
     if baseline:

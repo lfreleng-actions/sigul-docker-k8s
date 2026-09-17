@@ -20,6 +20,10 @@
       "sigul-server: no zombie processes": {
         "expect": "fail",
         "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/14"
+      },
+      "sigul-server: RSS trend < 30 MB/h": {
+        "expect": "fail",
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/14 (kernel task structures for the zombies, ~7 KB each, charged to the container)"
       }
     }
   },
@@ -43,10 +47,6 @@
         "expect": "fail",
         "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/14"
       },
-      "sigul-server: RSS growth < 40 MB": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/14"
-      },
       "sigul-bridge: no CLOSE-WAIT sockets left behind": {
         "expect": "fail",
         "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/pull/8 (bridge leaks one CLOSE-WAIT socket per failed server-side handshake, including every compose healthcheck probe on main; remove when #8 is merged and this branch rebased)"
@@ -58,6 +58,10 @@
       "sigul-bridge: no zombie processes": {
         "expect": "fail",
         "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/pull/8 - two zombies appeared on the bridge during net_blackhole_server_link in CI on main's bridge image; not reproduced locally with PR #8's bridge, cause unconfirmed, coincident with main's connect-based compose healthcheck which #8 replaces. Remove after rebasing on #8."
+      },
+      "sigul-server: RSS trend < 30 MB/h": {
+        "expect": "fail",
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/14 (kernel task structures for the zombies, ~7 KB each, charged to the container)"
       }
     }
   },
@@ -93,10 +97,6 @@
         "expect": "fail",
         "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/14"
       },
-      "sigul-server: RSS growth < 40 MB": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/14"
-      },
       "sigul-bridge: no CLOSE-WAIT sockets left behind": {
         "expect": "fail",
         "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/pull/8 (bridge leaks one CLOSE-WAIT socket per failed server-side handshake, including every compose healthcheck probe on main; remove when #8 is merged and this branch rebased)"
@@ -108,6 +108,10 @@
       "sigul-bridge: no zombie processes": {
         "expect": "fail",
         "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/pull/8 - two zombies appeared on the bridge during net_blackhole_server_link in CI on main's bridge image; not reproduced locally with PR #8's bridge, cause unconfirmed, coincident with main's connect-based compose healthcheck which #8 replaces. Remove after rebasing on #8."
+      },
+      "sigul-server: RSS trend < 30 MB/h": {
+        "expect": "fail",
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/14 (kernel task structures for the zombies, ~7 KB each, charged to the container)"
       }
     }
   }

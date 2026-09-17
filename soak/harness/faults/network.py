@@ -50,26 +50,34 @@ def configure_proxies(bridge_upstream: str = "sigul-bridge") -> None:
 
 
 class _ToxicFault(Fault):
-    """A single toxic on a single proxy."""
+    """One toxic type on one proxy, in one or both directions.
+
+    Toxiproxy's `upstream` is the direction from the connecting side
+    towards the service it proxies; `downstream` is the reply path. On
+    the server proxy the connecting side is the Sigul server, so
+    server->bridge traffic - including the server's FIN - is upstream.
+    """
 
     proxy: str = PROXY_CLIENT
     toxic_type: str = ""
-    stream: str = "downstream"
+    streams: tuple[str, ...] = ("downstream",)
     toxicity: float = 1.0
     attributes: dict = {}  # noqa: RUF012 - overridden per subclass
 
     def start(self) -> None:
-        client().add_toxic(
-            self.proxy,
-            self.name,
-            self.toxic_type,
-            stream=self.stream,
-            toxicity=self.toxicity,
-            attributes=dict(self.attributes),
-        )
+        for stream in self.streams:
+            client().add_toxic(
+                self.proxy,
+                f"{self.name}_{stream}",
+                self.toxic_type,
+                stream=stream,
+                toxicity=self.toxicity,
+                attributes=dict(self.attributes),
+            )
 
     def stop(self) -> None:
-        client().remove_toxic(self.proxy, self.name)
+        for stream in self.streams:
+            client().remove_toxic(self.proxy, f"{self.name}_{stream}")
 
 
 class LatencyClient(_ToxicFault):
@@ -81,7 +89,7 @@ class LatencyClient(_ToxicFault):
     )
     proxy = PROXY_CLIENT
     toxic_type = "latency"
-    stream = "upstream"
+    streams = ("upstream",)
     attributes = {"latency": 200, "jitter": 100}  # noqa: RUF012
 
 
@@ -94,7 +102,7 @@ class BandwidthSqueeze(_ToxicFault):
     )
     proxy = PROXY_CLIENT
     toxic_type = "bandwidth"
-    stream = "upstream"
+    streams = ("upstream",)
     attributes = {"rate": 64}  # noqa: RUF012
 
 
@@ -107,7 +115,7 @@ class ResetPeerClient(_ToxicFault):
     )
     proxy = PROXY_CLIENT
     toxic_type = "reset_peer"
-    stream = "downstream"
+    streams = ("downstream",)
     attributes = {"timeout": 2000}  # noqa: RUF012
 
 
@@ -124,7 +132,7 @@ class BlackholeClient(_ToxicFault):
     )
     proxy = PROXY_CLIENT
     toxic_type = "timeout"
-    stream = "downstream"
+    streams = ("upstream", "downstream")
     attributes = {"timeout": 0}  # noqa: RUF012
 
 
@@ -142,7 +150,7 @@ class BlackholeServerLink(_ToxicFault):
     )
     proxy = PROXY_SERVER
     toxic_type = "timeout"
-    stream = "downstream"
+    streams = ("upstream", "downstream")
     attributes = {"timeout": 0}  # noqa: RUF012
 
 

@@ -68,8 +68,16 @@ class Target(ABC):
     """A running Sigul stack that the harness can measure and disturb."""
 
     @abstractmethod
-    def run_in(self, unit: str, argv: list[str], timeout: float = 30.0) -> str:
-        """Run a command inside a unit and return its output."""
+    def run_in(
+        self, unit: str, argv: list[str], timeout: float = 30.0, check: bool = True
+    ) -> str:
+        """Run a command inside a unit and return its output.
+
+        Raises TimeoutError if it overruns and, when `check` is set,
+        RuntimeError on a non-zero exit. A failed reading must not pass
+        as a zero one, and a failed fault injection must not pass as a
+        clean window.
+        """
 
     @abstractmethod
     def stats(self, unit: str) -> ProcessStats:
@@ -183,7 +191,9 @@ class DockerTarget(Target):
         container.reload()
         return container
 
-    def run_in(self, unit: str, argv: list[str], timeout: float = 30.0) -> str:
+    def run_in(
+        self, unit: str, argv: list[str], timeout: float = 30.0, check: bool = True
+    ) -> str:
         # Two bounds, because neither alone is enough. The Docker SDK
         # reads exec output straight from the socket, so the HTTP
         # timeout does not apply to a command that produces nothing;
@@ -204,12 +214,20 @@ class DockerTarget(Target):
         worker.join(timeout + 5)
         if worker.is_alive() or not result:
             raise TimeoutError(f"exec in {unit} exceeded {timeout:.0f}s")
+        code = result[0].exit_code
         output = result[0].output
-        return (
+        text = (
             output.decode("utf-8", errors="replace")
             if isinstance(output, bytes)
             else str(output or "")
         )
+        if code == 124:
+            raise TimeoutError(f"{argv[0]} in {unit} exceeded {timeout:.0f}s")
+        if check and code != 0:
+            raise RuntimeError(
+                f"{' '.join(argv)} in {unit} exited {code}: {text.strip()[:200]}"
+            )
+        return text
 
     def stats(self, unit: str) -> ProcessStats:
         raw = self._container(unit).stats(stream=False)  # type: ignore[attr-defined]

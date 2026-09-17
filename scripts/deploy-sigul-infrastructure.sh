@@ -868,10 +868,12 @@ deploy_sigul_services() {
     local compose_cmd
     compose_cmd=$(get_docker_compose_cmd)
 
-    # Set environment variables for platform-specific images
+    # Set environment variables for platform-specific images, honouring
+    # any the caller has already chosen - as load_infrastructure_images
+    # does - so a soak or A/B run can deploy a published tag.
     local platform_id="${SIGUL_RUNNER_PLATFORM:-$(detect_platform)}"
-    export SIGUL_SERVER_IMAGE="server-${platform_id}-image:test"
-    export SIGUL_BRIDGE_IMAGE="bridge-${platform_id}-image:test"
+    export SIGUL_SERVER_IMAGE="${SIGUL_SERVER_IMAGE:-server-${platform_id}-image:test}"
+    export SIGUL_BRIDGE_IMAGE="${SIGUL_BRIDGE_IMAGE:-bridge-${platform_id}-image:test}"
     # SIGUL_CLIENT_IMAGE removed from infrastructure deployment (only needed for integration tests)
 
     # Credentials must match the state on the volumes, not the other

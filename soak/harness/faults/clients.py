@@ -287,22 +287,35 @@ class _RealClientFault(Fault):
             self._stop.wait(3600)
 
     def stop(self) -> None:
+        """End the fault. Returns as soon as the fault is lifted.
+
+        For a resumed client the fault ends at SIGCONT; whatever the
+        resumed request then costs the service is part of the measured
+        recovery, so reaping is left to a background thread rather than
+        done here where it would hide that time from the clock.
+        """
         self._stop.set()
-        for proc in self._procs:
-            try:
+        procs, self._procs = self._procs, []
+        for proc in procs:
+            with contextlib.suppress(ProcessLookupError):
                 if self.resume_on_stop:
                     proc.send_signal(signal.SIGCONT)
-                    proc.wait(timeout=120)
                 else:
                     proc.kill()
-                    proc.wait(timeout=10)
-            except (ProcessLookupError, subprocess.TimeoutExpired):
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-        self._procs.clear()
+        threading.Thread(target=_reap, args=(procs,), daemon=True).start()
         if self._thread is not None:
             self._thread.join(timeout=15)
             self._thread = None
+
+
+def _reap(procs: list[subprocess.Popen]) -> None:
+    for proc in procs:
+        try:
+            proc.wait(timeout=300)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            proc.wait()
 
 
 class KillMidSign(_RealClientFault):

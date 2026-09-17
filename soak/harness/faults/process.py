@@ -100,41 +100,67 @@ class FreezeServer(_ProcessFault):
         self._target.thaw(self.unit)
 
 
-class ServerTeardownAgainstFrozenBridge(_ProcessFault):
+class ServerTeardownAgainstSilentPeer(_ProcessFault):
     """The production deadlock, reproduced.
 
     server.py arms signal.alarm(3600) in every forked child at fork
     time, request or no request. When it fires, the idle child tears
-    its connection down through outer_close() and waits for the bridge
-    to close its half. Freeze the bridge so it cannot, fire the alarm
-    early, and then thaw the bridge. Before patches 06 and 07 the child
-    waited forever, the daemon's main loop waited on the child, and
-    every request until the pod was restarted failed with
-    "Unexpected EOF in NSPR".
+    its connection down through outer_close() and waits for its TCP
+    peer to close the other half. Make the peer unable to: freeze the
+    process that owns the server's connection, so the kernel keeps
+    ACKing but nothing is ever read or closed - the CLOSE-WAIT state
+    the production bridge sat in for six hours - then fire the alarm
+    early. Before patch 06 the child waited forever, the daemon's main
+    loop waited on the child, and every request until the pod was
+    restarted failed with "Unexpected EOF in NSPR". With it, the child
+    logs "Peer did not close its half" after the linger and exits, and
+    the main loop forks a replacement.
+
+    Under Compose the server's peer is Toxiproxy, so that is what gets
+    frozen. A blackhole toxic does not reproduce this: the proxy still
+    closes on the server's FIN and the teardown completes normally.
     """
 
-    name = "proc_server_teardown_vs_frozen_bridge"
+    name = "server_teardown_vs_silent_peer"
     service_possible_during = False
     description = (
-        "Freeze the bridge, fire the idle server child's hourly alarm so it "
-        "tears down against a peer that cannot answer, then thaw the bridge."
+        "Freeze the server's TCP peer, then fire the idle server child's hourly "
+        "alarm so it tears down against a connection that will never close."
     )
     implication = (
         "The server child never finishes its teardown, the main loop never "
         "forks a replacement, and the service is down until restarted "
-        "(patches/06 and 07)."
+        "(patches/06)."
     )
-    unit = BRIDGE
+    unit = os.environ.get("SOAK_SERVER_PEER_CONTAINER", "sigul-toxiproxy")
 
     def start(self) -> None:
         parent = self._target.run_in(
-            SERVER, ["pgrep", "-o", "-f", r"serve[r]\.py"], timeout=15
+            SERVER, ["pgrep", "-o", "-f", r"serve[r]\.py"], timeout=15, check=False
         ).strip()
-        child = self._target.run_in(SERVER, ["pgrep", "-P", parent], timeout=15).split()
+        # The request child is the parent's live python child. Where
+        # the server is PID 1 its children also include every orphaned
+        # gpg zombie, so filter on command and state rather than taking
+        # the first entry.
+        listing = self._target.run_in(
+            SERVER,
+            ["sh", "-c", f"ps -o pid=,stat=,comm= --ppid {parent} 2>/dev/null || true"],
+            timeout=15,
+        )
+        child = next(
+            (
+                fields[0]
+                for fields in (line.split() for line in listing.splitlines())
+                if len(fields) >= 3
+                and not fields[1].startswith("Z")
+                and "python" in fields[2]
+            ),
+            "",
+        )
         if not parent or not child:
             raise RuntimeError(f"no idle server child found (parent={parent!r})")
         self._target.freeze(self.unit)
-        self._target.run_in(SERVER, ["kill", "-ALRM", child[0]], timeout=15)
+        self._target.run_in(SERVER, ["kill", "-ALRM", child], timeout=15)
 
     def stop(self) -> None:
         self._target.thaw(self.unit)
@@ -145,5 +171,5 @@ PROCESS_FAULTS: tuple[type[_ProcessFault], ...] = (
     RestartServer,
     FreezeBridge,
     FreezeServer,
-    ServerTeardownAgainstFrozenBridge,
+    ServerTeardownAgainstSilentPeer,
 )

@@ -51,13 +51,19 @@ def log(message: str) -> None:
 def wait_for_service(config: str, password: str, attempts: int = 60) -> None:
     """Block until one real request succeeds, or give up."""
     for attempt in range(1, attempts + 1):
-        proc = subprocess.run(  # noqa: S603
-            ["sigul", "--batch", "-c", config, "list-users"],
-            input=password.encode() + b"\0",
-            capture_output=True,
-            timeout=60,
-            check=False,
-        )
+        try:
+            proc = subprocess.run(  # noqa: S603
+                ["sigul", "--batch", "-c", config, "list-users"],
+                input=password.encode() + b"\0",
+                capture_output=True,
+                timeout=60,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            # A request that hangs is a failed attempt like any other;
+            # it is also the condition this loop most needs to outlast.
+            time.sleep(5)
+            continue
         if proc.returncode == 0:
             log(f"stack is serving (attempt {attempt})")
             return
@@ -134,7 +140,11 @@ def run(profile: Profile, output_dir: Path) -> int:
             from .faults.network import client as toxiproxy
 
             toxiproxy().reset()
-        for unit in (bridge, server):
+        for unit in (
+            bridge,
+            server,
+            os.environ.get("SOAK_SERVER_PEER_CONTAINER", "sigul-toxiproxy"),
+        ):
             with contextlib.suppress(Exception):
                 target.thaw(unit)
         if locust is not None and locust.poll() is None:
@@ -156,19 +166,30 @@ def run(profile: Profile, output_dir: Path) -> int:
         scheduler.run_cooldown()
     finally:
         log("stopping load")
+        load_ok = True
         if locust.poll() is None:
             locust.send_signal(signal.SIGINT)
             try:
                 locust.wait(timeout=60)
             except subprocess.TimeoutExpired:
                 locust.kill()
+        else:
+            # Locust ending before we asked it to means the advertised
+            # load was absent for part of the run; whatever it recorded
+            # up to then cannot support a verdict.
+            load_ok = False
+            log(f"locust exited early with status {locust.returncode}")
         sampler.stop()
         timeline.record("phase", "run", started, time.time())
         timeline.close()
         if sampler.errors:
             log(f"sampler: {sampler.errors} readings skipped (units restarting/frozen)")
 
-    return analyse_and_report(profile.name, output_dir, registry)
+    status = analyse_and_report(profile.name, output_dir, registry)
+    if not load_ok:
+        log("verdict: FAIL (load generator exited early)")
+        return 1
+    return status
 
 
 def analyse_and_report(

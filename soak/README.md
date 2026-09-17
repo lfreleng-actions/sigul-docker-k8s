@@ -73,9 +73,11 @@ should not stall the service for more than 30s, because the bridge
 ought to shed it; a fault that removes the service outright (frozen
 bridge, blackholed link) is judged on recovery alone.
 
-**Invariants**, absolute: recovery after every fault; RSS growth under
-40 MB; descriptors and CLOSE-WAIT sockets back to where they started;
-no zombies.
+**Invariants**, absolute: recovery after every fault; RSS trend under
+30 MB/h from a fit over the whole run; descriptors and CLOSE-WAIT
+sockets back to where they were in the baseline phase; no zombies;
+and each daemon sampled for at least half the run, so a silent
+sampler cannot pass as a clean one.
 
 **Regressions**, relative to a committed `baseline-<profile>.json`:
 p95 latency per task within +50 % or +250 ms of the baseline,
@@ -84,8 +86,11 @@ whichever is larger; success rate within 5 points.
 ### Expected failures
 
 `harness/expectations.json` lists faults and invariants known to fail
-on current code, each with the issue tracking the defect. Those report
-as **xfail** and do not fail the run. If one starts *passing* it
+on current code, per profile, each with the issue tracking the defect.
+Those report as **xfail** and do not fail the run. For a fault the
+marker covers the stall during its window only: failing to recover
+once the fault has ended, or a harness error injecting it, always
+fails the run. If one starts *passing* it
 reports as **xpass** and the run fails - the marker is stale, and
 whoever fixed it should remove the entry and close the issue. This is
 how the suite stays green and useful while the defects it has found

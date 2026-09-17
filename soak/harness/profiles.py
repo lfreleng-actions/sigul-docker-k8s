@@ -97,7 +97,7 @@ _PR_FAULTS: tuple[FaultSlot, ...] = (
     FaultSlot("client_backlog_flood", 45, 60),
     FaultSlot("net_blackhole_server_link", 90, 90),
     FaultSlot("proc_freeze_bridge", 45, 60),
-    FaultSlot("proc_server_teardown_vs_frozen_bridge", 30, 60),
+    FaultSlot("server_teardown_vs_silent_peer", 30, 60),
     FaultSlot("client_kill_mid_sign", 45, 45),
     FaultSlot("proc_restart_server", 30, 75),
     FaultSlot("proc_restart_bridge", 30, 75),
