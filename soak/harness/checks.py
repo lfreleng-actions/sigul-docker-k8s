@@ -46,6 +46,11 @@ MIN_REGRESSION_SAMPLES = 5
 #: honest clients once several arrive together.
 MIN_RAMP_SUCCESS_RATE = 0.95
 
+#: The clean phases must carry real, mostly successful load, or the
+#: comparisons built on them mean nothing.
+MIN_CLEAN_PHASE_REQUESTS = 10
+MIN_CLEAN_PHASE_SUCCESS_RATE = 0.95
+
 #: Monitoring coverage: a unit must have been sampled for at least this
 #: fraction of the run's ticks for its resource invariants to mean
 #: anything. Restarts and freezes legitimately cost a few readings;
@@ -123,6 +128,24 @@ def _ramp_checks(results: Results) -> list[Check]:
                 f"ramp at {step.users} users: success rate >= {MIN_RAMP_SUCCESS_RATE:.0%}",
                 step.success_rate >= MIN_RAMP_SUCCESS_RATE,
                 f"{step.success_rate:.0%} of {step.requests} requests, p95 {step.p95_ms:.0f} ms",
+            )
+        )
+    return checks
+
+
+def _clean_phase_checks(results: Results) -> list[Check]:
+    checks: list[Check] = []
+    for phase in ("baseline", "cooldown"):
+        stats = results.phases.get(phase, {})
+        requests = sum(s.count for s in stats.values())
+        ok = sum(s.ok for s in stats.values())
+        rate = ok / requests if requests else 0.0
+        checks.append(
+            Check(
+                f"{phase}: carried clean load",
+                requests >= MIN_CLEAN_PHASE_REQUESTS
+                and rate >= MIN_CLEAN_PHASE_SUCCESS_RATE,
+                f"{ok} of {requests} requests succeeded",
             )
         )
     return checks
@@ -211,7 +234,12 @@ def _resource_checks(results: Results) -> list[Check]:
 
 def invariants(results: Results) -> list[Check]:
     """Absolute checks: hold regardless of any baseline."""
-    return _ramp_checks(results) + _fault_checks(results) + _resource_checks(results)
+    return (
+        _ramp_checks(results)
+        + _clean_phase_checks(results)
+        + _fault_checks(results)
+        + _resource_checks(results)
+    )
 
 
 def regressions(results: Results, baseline: dict) -> list[Check]:

@@ -164,6 +164,18 @@ def _on_init(environment, **_kwargs) -> None:
         raise RuntimeError(f"could not create soak signing key: {detail}")
 
 
+@events.test_start.add_listener
+def _on_test_start(**_kwargs) -> None:
+    """Publish the instant the load shape's clock started.
+
+    The harness anchors its ramp timeline to this so the concurrency it
+    records for each step is the concurrency Locust was actually
+    running, rather than being offset by however long the first request
+    took to complete.
+    """
+    (OUTPUT_DIR / "locust-started").write_text(f"{time.time():.3f}\n")
+
+
 @events.request.add_listener
 def _on_request(name, response_time, exception, **_kwargs) -> None:
     if _request_log is not None:

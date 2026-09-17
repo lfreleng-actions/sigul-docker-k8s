@@ -53,6 +53,7 @@ class _RealClientFault(Fault):
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._failure: BaseException | None = None
+        self._injected = threading.Event()
         self._payload = Path("/tmp/soak-work/blob-fault.bin")
         self._passphrase = os.environ.get("SOAK_KEY_PASSPHRASE", "soak-key-passphrase")
         self._key = os.environ.get("SOAK_KEY_NAME", "soak-test-key")
@@ -64,8 +65,20 @@ class _RealClientFault(Fault):
             self._payload.parent.mkdir(parents=True, exist_ok=True)
             self._payload.write_bytes(os.urandom(_FAULT_PAYLOAD_BYTES))
         self._stop.clear()
+        self._injected.clear()
+        self._failure = None
         self._thread = threading.Thread(target=self._loop, name=self.name, daemon=True)
         self._thread.start()
+        # Return only once the signal has actually been delivered, so
+        # the scheduler's hold window is time the client spent frozen
+        # or dead, not time spent waiting for its upload to begin.
+        if not self._injected.wait(self.upload_wait + 10):
+            raise RuntimeError(
+                f"{self.name}: no client interrupted within {self.upload_wait:.0f}s"
+            )
+        if self._failure is not None:
+            failure, self._failure = self._failure, None
+            raise RuntimeError(f"{self.name}: {failure}")
 
     def _launch(self) -> subprocess.Popen:
         out = f"/tmp/soak-work/fault-{os.getpid()}-{time.time_ns()}.sig"
@@ -97,8 +110,10 @@ class _RealClientFault(Fault):
     def _loop(self) -> None:
         try:
             self._run_once()
-        except Exception as exc:  # noqa: BLE001 - recorded, raised by stop()
+        except Exception as exc:  # noqa: BLE001 - recorded, raised by start() or stop()
             self._failure = exc
+        finally:
+            self._injected.set()
 
     def _run_once(self) -> None:
         while not self._stop.is_set():
@@ -110,6 +125,7 @@ class _RealClientFault(Fault):
                 # wanted, nothing more to do.
                 with contextlib.suppress(ProcessLookupError):
                     os.killpg(proc.pid, self.interrupt)
+                self._injected.set()
             # One interrupted request per window, held until stop().
             self._stop.wait(3600)
 

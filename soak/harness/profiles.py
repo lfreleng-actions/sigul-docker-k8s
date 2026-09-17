@@ -147,6 +147,12 @@ NIGHTLY = Profile(
     description="Overnight soak: every fault, repeated, with long leak-detection windows.",
     ramp_steps=(1, 2, 4, 8, 12),
     ramp_step_seconds=60.0,
+    preflight_faults=(FaultSlot("server_teardown_vs_silent_peer", 0, 20),) * 6,
+    warm_faults=(
+        FaultSlot("proc_restart_server", 0, 60),
+        FaultSlot("proc_restart_bridge", 0, 60),
+    )
+    * 6,
     baseline_seconds=600.0,
     steady_users=3,
     faults=(

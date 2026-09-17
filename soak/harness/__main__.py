@@ -83,19 +83,16 @@ def wait_for_service(config: str, password: str) -> None:
     )
 
 
-def _line_count(path: Path) -> int:
-    return sum(1 for _ in path.open()) if path.is_file() else 0
-
-
-def wait_for_first_request(
-    requests_csv: Path, locust: subprocess.Popen, already: int, timeout: float = 600.0
-) -> None:
-    """Hold the timeline until Locust has actually sent a request.
+def wait_for_load_start(
+    marker: Path, locust: subprocess.Popen, timeout: float = 600.0
+) -> float:
+    """Wait for Locust's shape clock to start and return that instant.
 
     Locust's init creates the signing key on a fresh stack, which can
-    take a while; starting the ramp clock before that would count key
-    generation as load. `already` is the number of rows the preflight
-    probes left in the log. Locust exiting first is a failure to start.
+    take a while; the shape clock starts only after that. The ramp
+    timeline is anchored to the instant Locust records, so each step's
+    window is the concurrency Locust was actually running. Locust
+    exiting first is a failure to start.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -103,11 +100,13 @@ def wait_for_first_request(
             raise SystemExit(
                 f"locust exited during startup with status {locust.returncode}"
             )
-        if _line_count(requests_csv) > max(already, 1):
-            log("load generator is sending requests")
-            return
-        time.sleep(1)
-    raise SystemExit(f"locust sent no request within {timeout:.0f}s")
+        if marker.is_file():
+            text = marker.read_text().strip()
+            if text:
+                log("load generator started")
+                return float(text)
+        time.sleep(0.2)
+    raise SystemExit(f"locust did not start within {timeout:.0f}s")
 
 
 def make_probe(requests_csv: Path, config: str, password: str):  # noqa: ANN201
@@ -230,7 +229,7 @@ def _stop_load(locust: subprocess.Popen | None) -> str | None:
 
 def run(profile: Profile, output_dir: Path) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
-    for stale in ("requests.csv", "samples.csv", "timeline.csv"):
+    for stale in ("requests.csv", "samples.csv", "timeline.csv", "locust-started"):
         (output_dir / stale).unlink(missing_ok=True)
 
     config = os.environ.get("SIGUL_CONFIG", "/etc/sigul/client.conf")
@@ -279,10 +278,9 @@ def run(profile: Profile, output_dir: Path) -> int:
         scheduler.run_preflight(
             make_probe(output_dir / "requests.csv", config, password)
         )
-        probe_rows = _line_count(output_dir / "requests.csv")
         locust = start_locust(profile, output_dir, profile.total_seconds())
-        wait_for_first_request(output_dir / "requests.csv", locust, probe_rows)
-        scheduler.run_ramp()
+        anchor = wait_for_load_start(output_dir / "locust-started", locust)
+        scheduler.run_ramp(anchor)
         scheduler.run_warm_faults()
         scheduler.run_baseline()
         scheduler.run_faults()

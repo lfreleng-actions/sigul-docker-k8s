@@ -70,18 +70,22 @@ class Scheduler:
     def _sleep(self, seconds: float) -> None:
         time.sleep(seconds)
 
-    def run_ramp(self) -> None:
-        # Ramp is driven by Locust's own user spawning; here we only
-        # record the phase so the analyser can bucket by concurrency.
-        start = time.time()
-        for users in self._profile.ramp_steps:
-            step_start = time.time()
-            self._log(
-                f"[ramp] {users} users for {self._profile.ramp_step_seconds:.0f}s"
-            )
-            self._sleep(self._profile.ramp_step_seconds)
-            self._timeline.record("ramp", f"users={users}", step_start, time.time())
-        self._timeline.record("phase", "ramp", start, time.time())
+    def run_ramp(self, anchor: float) -> None:
+        """Record the ramp steps, anchored to Locust's own shape clock.
+
+        Concurrency is driven by Locust's ProfileShape; `anchor` is the
+        instant that clock started, so each step window here is exactly
+        the window in which Locust ran that many users.
+        """
+        step = self._profile.ramp_step_seconds
+        for index, users in enumerate(self._profile.ramp_steps):
+            step_start = anchor + index * step
+            step_end = step_start + step
+            self._log(f"[ramp] {users} users until t+{(index + 1) * step:.0f}s")
+            self._sleep(max(0.0, step_end - time.time()))
+            self._timeline.record("ramp", f"users={users}", step_start, step_end)
+        ramp_end = anchor + len(self._profile.ramp_steps) * step
+        self._timeline.record("phase", "ramp", anchor, ramp_end)
 
     def run_baseline(self) -> None:
         start = time.time()
