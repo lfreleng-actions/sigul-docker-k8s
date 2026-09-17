@@ -57,6 +57,8 @@ For most users, these are the scripts you'll need:
 | -------------------------------- | ------------------------------ | ---------------------- |
 | `deploy-sigul-infrastructure.sh` | Deploy infrastructure stack    | Test/dev environments  |
 | `run-integration-tests.sh`       | End-to-end integration testing | CI/CD pipelines        |
+| `run-signing-tests.sh`           | Signing operation coverage     | CI/CD pipelines        |
+| `run-lifecycle-tests.sh`         | Connection lifecycle testing   | CI/CD pipelines        |
 | `test-infrastructure.sh`         | Infrastructure validation      | Infrastructure testing |
 <!-- markdownlint-enable MD013 -->
 

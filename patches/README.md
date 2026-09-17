@@ -255,6 +255,62 @@ code with a peer that never closes. Against unpatched sigul the first
 check reports `STILL BLOCKED`; against patched it returns at the linger
 bound, while the idle check confirms indefinite waiting still works.
 
+### 07-fix-bridge-server-socket-lifecycle.patch
+
+**Status:** CRITICAL - without it the bridge leaks a socket per failed
+server handshake and hands dead server connections to clients
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** Bridge
+
+**Problem:**
+`bridge_one_request()` accepts one server connection, then blocks in a
+bare `client_listen_sock.accept()` until a client arrives. Two defects
+follow from that shape:
+
+- The server socket is closed only inside the client-wait block. A
+  server that fails its outer TLS handshake, or presents no
+  certificate, is accepted, rejected and then never closed. Each such
+  attempt leaks one socket, left in `CLOSE-WAIT` with the peer's final
+  bytes unread, for the life of the bridge process. Anything that can
+  reach the server port - a scanner, a misconfigured peer, a
+  crash-looping server - can grow this without bound.
+- While waiting for a client the bridge has no knowledge of the server
+  socket. A server that dies during that wait, which in production can
+  last hours, is only discovered when a client finally connects and is
+  paired with the corpse; that client fails with `Unexpected EOF`. The
+  server's `FIN` also sits unread, so the bridge never closes its half.
+  This is the other side of patch 06: an unpatched server's teardown
+  waits forever on exactly that missing close.
+
+Observed in production: the bridge held three `CLOSE-WAIT` sockets on
+the server port, one with 98 unread bytes, alongside
+`Unexpected EOF on outer stream` and `_InnerBridgingBuffer: data
+dropped` in its log, while the server sat in the patch 06 deadlock.
+
+**Fix:**
+
+- Replace the bare `accept()` with `_wait_for_client_or_server_loss()`,
+  an NSPR poll on both `client_listen_sock` and `server_sock`. A server
+  that has completed its handshake sends nothing until a client
+  arrives, so any readiness on its socket means it has closed or
+  failed. The bridge logs, discards it and returns to waiting for a
+  fresh server instead of pairing the next client with a dead one.
+- Close both sockets in a `finally` that covers every exit path of
+  `bridge_one_request()`, including the handshake and certificate
+  failures the old structure skipped.
+
+The poll stays unbounded: the bridge must still wait indefinitely for
+the next client, exactly as before. Only what it notices while waiting
+changes.
+
+**Test:** `scripts/run-lifecycle-tests.sh`, run against the compose
+stack after the signing tests. It asserts on socket and process
+tables, not log text: five bogus TLS handshakes on the server port
+must leave no new `CLOSE-WAIT` sockets, and a server restart while the
+bridge waits for a client must leave none either, with the first
+request after the restart succeeding. Against unpatched sigul the
+handshake phase leaks one socket per attempt.
+
 ## Applying Patches
 
 The Docker build process automatically applies these patches:

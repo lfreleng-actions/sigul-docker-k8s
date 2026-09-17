@@ -249,8 +249,8 @@ The deploy script writes an ephemeral admin password to
 
 ### Running the test suites
 
-The repository ships two end-to-end suites, both of which CI runs against the
-live stack:
+The repository ships three end-to-end suites, all of which CI runs against
+the live stack:
 
 ```bash
 # Control-plane tests: list-users, list-keys, double-TLS handshake, etc.
@@ -262,6 +262,13 @@ SIGUL_CLIENT_IMAGE=client-${PLATFORM_ID}-image:test \
 # verified with the upstream tool that would consume it (gpg, rpm).
 SIGUL_CLIENT_IMAGE=client-${PLATFORM_ID}-image:test \
     ./scripts/run-signing-tests.sh
+
+# Connection lifecycle: what happens between requests and when a peer
+# goes away.  Sequential requests, failed handshakes on the server
+# port, and a server restart while the bridge waits for a client;
+# asserts on socket and process tables.  Restarts the server container.
+SIGUL_CLIENT_IMAGE=client-${PLATFORM_ID}-image:test \
+    ./scripts/run-lifecycle-tests.sh
 ```
 
 `run-signing-tests.sh` writes its scratch state to a `mktemp` directory and
