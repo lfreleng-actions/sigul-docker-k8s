@@ -168,7 +168,12 @@ services:
       - "44333:44333"
       - "44334:44334"
     healthcheck:
-      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/localhost/44333' 2>/dev/null || exit 1"]
+      # Never probe the bridge by connecting to it. It accepts on 44333
+      # only while it has no server paired, so bare connects queue in
+      # a backlog of five until real peers are SYN-dropped, and each
+      # one it does accept fails the TLS handshake. Check listen state
+      # instead, as the Helm chart's probes do.
+      test: ["CMD-SHELL", "ss -tln | grep -q ':44333 ' && ss -tln | grep -q ':44334 '"]
       interval: 10s
       timeout: 5s
       retries: 5
