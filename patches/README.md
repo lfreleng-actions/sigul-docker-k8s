@@ -346,6 +346,50 @@ bridge waits for a client must leave none either, with the first
 request after the restart succeeding. Against unpatched sigul the
 handshake phase leaks one socket per attempt.
 
+### 08-fix-server-reap-orphaned-children.patch
+
+**Status:** CRITICAL - without it the server accumulates one zombie
+process per gpg helper it spawns, until the container's pid limit
+stops it forking at all
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** Server
+
+**Problem:**
+The server's main loop forks one child per connection and waits for
+it with `os.waitpid(child_pid, 0)` - that child, and only that child.
+In a container the server is PID 1, so every process orphaned anywhere
+beneath it is reparented to it, and nothing else will ever wait for
+those. The gpg helpers spawned while signing are orphaned that way by
+design: gpgme double-forks so that it need not wait for them. Each one
+therefore stays a zombie for the life of the daemon.
+
+Measured by the soak harness: roughly ten zombies per signing request
+(`gpg`, `gpgconf`, and a `python3` per request), 7,423 after
+twenty-eight minutes of load. The local Kubernetes pod reports
+`pids.max` of 11,965; at that point `fork()` fails and the server
+stops serving until the pod is restarted. Each zombie also holds
+around 7 KB of kernel memory, which shows as steady RSS growth.
+Control-plane requests (`list-users`, `list-keys`) do not spawn gpg
+and leave nothing behind.
+
+**Fix:**
+Replace the targeted wait with a loop over `os.waitpid(-1, 0)` that
+reaps whatever exits until the request child itself is returned. The
+main loop is blocked in that wait for the whole life of each child,
+so orphans are reaped as they die rather than accumulating. Only the
+request child's status is inspected; the others are logged at debug
+level.
+
+This only helps when the server is PID 1. Under the Helm chart it is.
+Under Compose `scripts/entrypoint-server.sh` used `su`, which stayed
+resident as the daemon's parent and reaped nothing; it now drops
+privileges with `setpriv` so the daemon is PID 1 there too, matching
+the chart.
+
+**Test:** the soak harness's `sigul-server: no zombie processes` and
+`RSS trend` invariants, previously marked expected-fail against
+issue #14.
+
 ## Applying Patches
 
 The Docker build process automatically applies these patches:
