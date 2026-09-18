@@ -346,6 +346,178 @@ bridge waits for a client must leave none either, with the first
 request after the restart succeeding. Against unpatched sigul the
 handshake phase leaks one socket per attempt.
 
+### 08-fix-server-reap-orphaned-children.patch
+
+**Status:** CRITICAL - without it the server accumulates one zombie
+process per gpg helper it spawns, until the container's pid limit
+stops it forking at all
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** Server
+
+**Problem:**
+The server's main loop forks one child per connection and waits for
+it with `os.waitpid(child_pid, 0)` - that child, and only that child.
+In a container the server is PID 1, so every process orphaned anywhere
+beneath it is reparented to it, and nothing else will ever wait for
+those. The gpg helpers spawned while signing are orphaned that way by
+design: gpgme double-forks so that it need not wait for them. Each one
+therefore stays a zombie for the life of the daemon.
+
+Measured by the soak harness: roughly ten zombies per signing request
+(`gpg`, `gpgconf`, and a `python3` per request), 7,423 after
+twenty-eight minutes of load. The local Kubernetes pod reports
+`pids.max` of 11,965; at that point `fork()` fails and the server
+stops serving until the pod is restarted. Each zombie also holds
+around 7 KB of kernel memory, which shows as steady RSS growth.
+Control-plane requests (`list-users`, `list-keys`) do not spawn gpg
+and leave nothing behind.
+
+**Fix:**
+Replace the targeted wait with a loop over `os.waitpid(-1, 0)` that
+reaps whatever exits until the request child itself is returned. The
+main loop is blocked in that wait for the whole life of each child,
+so orphans are reaped as they die rather than accumulating. Only the
+request child's status is inspected; the others are logged at debug
+level.
+
+This only helps when the server is PID 1. Under the Helm chart it is.
+Under Compose `scripts/entrypoint-server.sh` used `su`, which stayed
+resident as the daemon's parent and reaped nothing; it now drops
+privileges with `setpriv` so the daemon is PID 1 there too, matching
+the chart. The environment is passed through as `su` passed it, with
+`HOME`, `USER`, `LOGNAME` and `SHELL` set from the passwd entry.
+
+**Test:** the soak harness's `sigul-server: no zombie processes` and
+`RSS trend` invariants, previously marked expected-fail against
+issue #14.
+
+### 09-fix-bridge-handshake-deadline.patch
+
+**Status:** CRITICAL - without it one silent connection stops all
+signing for as long as it stays open
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** Bridge
+
+**Problem:**
+The bridge accepts a peer and calls `force_handshake()` on it with no
+deadline. It serves one client at a time, so a peer that connects and
+then sends nothing holds the only slot there is until it goes away: a
+port scanner, a load balancer or health check that opens a bare TCP
+connection, a client suspended between `connect()` and its
+ClientHello, or a NAT that drops the client's packets after the SYN.
+The same applies on the server port while the bridge waits for a
+server. NSPR sockets do not honour `socket.setdefaulttimeout()`, so
+the daemon's one-hour default gave no protection either.
+
+Measured by the soak harness: two silent connections to the client
+port, **0 requests served in 60 s**; service resumed only when they
+closed.
+
+**Fix:**
+Both handshakes go through `_handshake_with_deadline()`, a wall-clock
+bound of five seconds on the whole handshake. NSS's own
+`force_handshake_timeout()` is not enough: it limits each individual
+read, so a peer trickling one byte a second passes it indefinitely -
+measured, an honest request behind such a peer was still waiting at
+sixty seconds. Instead the socket is switched to non-blocking, the
+handshake is driven a step at a time, and between steps the socket is
+polled with the remaining time; blocking mode is restored on every
+path. A real Sigul peer completes the handshake in well under a second
+even across a WAN, and the clock starts at `accept()`, so time queued
+in the listen backlog does not count. On expiry the bridge raises
+`PR_IO_TIMEOUT_ERROR`, logs a plain `Peer stopped responding ...;
+dropping it` warning naming both this deadline and patch 11's, and,
+through the patch 07 cleanup, closes the
+peer and returns to its accept loop. When
+the dropped peer was a client, the paired server connection is closed
+with it and the server reconnects within a second, as for any other
+rejected client.
+
+**Test:** with two silent connections parked on the client port, an
+honest `list-users` is now served after nine seconds (two deadlines)
+rather than never; behind a one-byte-a-second slow-loris it is served
+after two; a silent connection parked on the server port delays a
+restarted server's pairing by one deadline rather than forever. The
+soak harness's `client_connect_and_hang` fault, previously marked
+expected-fail against issue #11, passes.
+
+### 10-fix-bridge-listen-backlog.patch
+
+**Status:** IMPORTANT - without it a burst of concurrent clients is
+partly refused, and the `sigul` CLI does not retry
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** Bridge
+
+**Problem:**
+`create_listen_sock()` calls `listen()` with the python-nss default
+backlog of five. The bridge accepts one connection at a time, and
+only between requests, so everything that arrives while it is busy
+waits in that queue. Six CI jobs signing together overflow it: the
+kernel drops the excess SYNs, the clients' kernels retry with
+exponential backoff, and after a few retries `connect()` fails
+outright with nothing to tell the client it was merely early.
+
+Measured: twelve concurrent `list-users` clients against the default
+produced seven `TcpExtListenDrops`; the clients survived only because
+the kernel's SYN retries happened to fit inside the CLI's timeout.
+
+**Fix:**
+`listen(128)` on both listening sockets. Nothing about the workload
+changes - the bridge still serves one client at a time - except that
+a burst waits its turn instead of being turned away. Twelve and thirty
+concurrent clients against the patched bridge: zero drops, all served,
+in six and eight seconds respectively.
+
+A large backlog does mean that connections which will never complete
+a handshake now queue rather than being dropped; each costs one
+handshake deadline (patch 09) when its turn comes. That is the
+trade-off the soak harness's `client_backlog_flood` fault measures,
+and it remains marked expected-fail against issue #13 until
+handshakes are taken off the accept loop's critical path.
+
+### 11-fix-bridge-request-idle-deadline.patch
+
+**Status:** CRITICAL - without it a client that goes silent
+mid-request holds the bridge's single slot for as long as it likes
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** Bridge (and `double_tls.OuterBuffer` /
+`forward_two_way`, which gain optional deadlines the server and client
+do not use)
+
+**Problem:**
+Once a client has completed its handshake and the bridge is relaying
+its request, every read and write on either peer blocks with no
+deadline: `OuterBuffer` for the headers and payloads, `forward_two_way`
+for the inner stream. A client suspended mid-upload, a CI runner
+paused by its scheduler, or a peer behind a NAT that has dropped the
+flow all look exactly like a slow peer. The bridge serves one client
+at a time, so everyone else waits until the frozen client is killed -
+the soak harness measured a real `sign-data` frozen at 6 MB into a
+384 MB upload blocking all signing for the whole window. The server's
+one-hour alarm was the only bound.
+
+**Fix:**
+`OuterBuffer` takes an optional `idle_timeout`, applied to each receive
+and send; `forward_two_way` takes one too and raises
+`IdleTimeoutError` when a full period passes with no event on any
+descriptor. Only the bridge passes them, at 120 seconds: a peer that
+moves no bytes at all for two minutes mid-request has stopped. On
+expiry the bridge logs the drop plainly and, through the patch 07
+cleanup, closes both peers and returns to its accept loop; the server
+reconnects within a second. No legitimate Sigul operation goes two
+minutes without a byte crossing the bridge - the largest signing
+operations either stream or finish in seconds - and the full signing
+suite passes unchanged against the patched bridge.
+
+The server and client code paths are untouched: the defaults keep
+their previous unbounded behaviour.
+
+**Test:** a real client frozen 6 MB into an upload; an honest
+`list-users` retried every thirty seconds is refused four times and
+served at 122 seconds, where before it was never served. The soak
+harness's `client_handshake_then_hang` and `client_stop_mid_sign`
+faults now recover within the window.
+
 ## Applying Patches
 
 The Docker build process automatically applies these patches:

@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Give the bridge's listening sockets a backlog sized for a burst of
+# concurrent clients. See patches/README.md for the measurements.
+#
+--- a/src/bridge.py
++++ b/src/bridge.py
+@@ -123,6 +123,9 @@
+             self.koji_fas_groups[v] = group
+
+
++_LISTEN_BACKLOG = 128
++
++
+ def create_listen_sock(config, port):
+     sock = nss.ssl.SSLSocket(nss.io.PR_AF_INET)
+     # FIXME? does this belong in a finished product?
+@@ -139,7 +142,15 @@
+     sock.config_secure_server(cert, nss.nss.find_key_by_any_cert(cert),
+                               cert.find_kea_type())
+     sock.bind(nss.io.NetworkAddress(nss.io.PR_IpAddrAny, port))
+-    sock.listen()
++    # The bridge accepts one connection at a time and only between
++    # requests, so everything that arrives while it is busy waits in
++    # this queue. The default of five is exceeded the moment half a
++    # dozen CI jobs sign together: the kernel drops the excess SYNs,
++    # the clients' kernels retry with exponential backoff, and past a
++    # few retries connect() fails outright. Nothing about the
++    # workload changes at 128 except that a burst waits its turn
++    # instead of being turned away.
++    sock.listen(_LISTEN_BACKLOG)
+     return sock

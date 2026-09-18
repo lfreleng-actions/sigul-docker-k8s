@@ -272,6 +272,7 @@ def _unit_resources(
         close_wait_end=int(tail[-1]["close_wait"]),
         fin_wait_2_max=max(int(r["fin_wait_2"]) for r in rows),
         zombies_max=max(int(r["zombies"]) for r in rows),
+        zombies_end=int(statistics.median(int(r["zombies"]) for r in tail[-3:])),
         samples=len(rows),
         restarts_in_window=max(0, len(lifetimes) - 1),
         span_seconds=round(span_hi - span_lo, 1),
@@ -346,6 +347,27 @@ def analyse(
     invariant_expectations = expectations.get("invariants", {})
     for check in results.invariants + results.regressions:
         check.judge(invariant_expectations)
+    # An expectation that names nothing this run produced is as stale
+    # as one whose subject now passes: the fault was renamed or dropped
+    # from the profile, and the marker would otherwise live on unseen.
+    emitted_faults = {f.name for f in results.faults}
+    emitted_checks = {c.name for c in results.invariants + results.regressions}
+    orphaned = [
+        f"faults/{name}" for name in fault_expectations if name not in emitted_faults
+    ] + [
+        f"invariants/{name}"
+        for name in invariant_expectations
+        if name not in emitted_checks
+    ]
+    if orphaned:
+        results.invariants.append(
+            Check(
+                "no orphaned expected-fail markers",
+                False,
+                "; ".join(f"{name} names nothing in this run" for name in orphaned),
+                verdict="fail",
+            )
+        )
     stale = [c for c in results.invariants if c.verdict == "xpass"]
     if stale:
         results.invariants.append(

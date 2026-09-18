@@ -1,0 +1,227 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Give the bridge an idle deadline while it relays a request, so a peer
+# that goes silent mid-request cannot hold the bridge's single slot.
+# See patches/README.md for the rationale and measurements.
+#
+--- a/src/double_tls.py
++++ b/src/double_tls.py
+@@ -74,6 +74,11 @@
+     pass
+
+
++class IdleTimeoutError(IOError):
++    '''Nothing moved on a connection for longer than its idle deadline.'''
++
++
++
+ class InnerCertificateNotFound(Exception):
+     '''inner_open_* certificate was not found.'''
+     pass
+@@ -191,11 +196,19 @@
+         raise NotImplementedError
+
+     @staticmethod
+-    def forward_two_way(buf_1, buf_2, shutdown_linger=None):
++    def forward_two_way(buf_1, buf_2, shutdown_linger=None,
++                        idle_timeout=None):
+         '''Forward data in parallel using buf_1 and buf_2.
+
+         Stop when neither is active.
+
++        If idle_timeout is not None, raise IdleTimeoutError once that many
++        seconds pass with no event on any descriptor. The bridge passes
++        it while relaying a request: a peer that has stopped mid-request
++        - a client suspended with its upload half sent, say - is
++        otherwise indistinguishable from a slow one, and holds the
++        bridge's single slot for as long as it likes.
++
+         If shutdown_linger is not None, also stop that many seconds after
+         buf_1 goes inactive, whether or not buf_2 has. Only pass it where
+         buf_1 inactive means the local side has closed and nothing more
+@@ -208,6 +221,9 @@
+         # The poll loop is simply two unidirectional forwarding poll loops
+         # combined into one.
+         linger_deadline = None
++        idle_deadline = None
++        if idle_timeout is not None:
++            idle_deadline = time.monotonic() + idle_timeout
+         while buf_1._active or buf_2._active:
+             poll_descs = {}
+             buf_1._prepare_poll(poll_descs)
+@@ -225,6 +241,16 @@
+                     linger_deadline = time.monotonic() + shutdown_linger
+                 timeout = nss.io.seconds_to_interval(
+                     _SHUTDOWN_POLL_TICK_SECONDS)
++            if idle_deadline is not None:
++                remaining = idle_deadline - time.monotonic()
++                if remaining <= 0:
++                    raise IdleTimeoutError(
++                        'No data in either direction for %d s' % idle_timeout)
++                idle_interval = nss.io.seconds_to_interval(
++                    max(1, int(remaining + 0.999)))
++                if (timeout == nss.io.PR_INTERVAL_NO_TIMEOUT
++                        or idle_interval < timeout):
++                    timeout = idle_interval
+
+             _debug('Poll: %s',
+                    ', '.join(['{0!s}:{1!s}'.format(_id(o), v)
+@@ -233,6 +259,8 @@
+             _debug('-> %s', ', '.join(['{0!s}:{1!s}'.format(_id(o), v)
+                                        for (o, v) in
+                                        six.iteritems(poll_descs)]))
++            if idle_deadline is not None and any(six.itervalues(poll_descs)):
++                idle_deadline = time.monotonic() + idle_timeout
+
+             # Handle I/O errors.
+             buf_1._handle_errors(poll_descs)
+@@ -950,10 +978,21 @@
+
+     '''A buffer allowing access to the outer stream of a _DoubleTLS socket.'''
+
+-    def __init__(self, socket):
++    def __init__(self, socket, idle_timeout=None):
++        '''Wrap socket.
++
++        idle_timeout, in seconds, bounds every individual receive and
++        send; on expiry NSPR raises NSPRError with PR_IO_TIMEOUT_ERROR.
++        None means block indefinitely, as before.
++
++        '''
+         self.__socket = socket
+         self.__inner_packets = b''
+         self.__outer_data = b''
++        if idle_timeout is None:
++            self.__interval = nss.io.PR_INTERVAL_NO_TIMEOUT
++        else:
++            self.__interval = nss.io.seconds_to_interval(idle_timeout)
+
+     @property
+     def socket(self):
+@@ -968,7 +1007,7 @@
+         '''
+         res = b''
+         while len(res) < buf_size:
+-            run = self.__socket.recv(buf_size - len(res))
++            run = self.__socket.recv(buf_size - len(res), self.__interval)
+             if len(run) == 0:
+                 raise EOFError('Unexpected EOF on _DoubleTLS')
+             res += run
+@@ -1015,8 +1054,8 @@
+         if len(data) >= _chunk_inner_mask:
+             raise Exception('Data size larger than limit')
+         _debug('o%s: sending %d bytes', _id(self), len(data))
+-        self.__socket.send(utils.u32_pack(len(data)))
+-        self.__socket.send(data)
++        self.__socket.send(utils.u32_pack(len(data)), self.__interval)
++        self.__socket.send(data, self.__interval)
+
+     def set_full_duplex(self, value):
+         '''Set full duplex status of the socket to value.'''
+@@ -1025,7 +1064,7 @@
+     def send_outer_eof(self):
+         '''Send an EOF on the outer stream.'''
+         _debug('o%s: sending EOF', _id(self))
+-        self.__socket.send(utils.u32_pack(0))
++        self.__socket.send(utils.u32_pack(0), self.__interval)
+
+     def pending_inner_packets(self):
+         '''Return inner stream packets that need handling.
+@@ -1180,8 +1219,13 @@
+                 self.__dst_shut_down = True
+
+
+-def bridge_inner_stream(client_buf, server_buf):
+-    '''Transfer data between until the inner stream ends.'''
++def bridge_inner_stream(client_buf, server_buf, idle_timeout=None):
++    '''Transfer data between until the inner stream ends.
++
++    Raise IdleTimeoutError if idle_timeout seconds pass with nothing
++    moving in either direction.
++
++    '''
+     # FIXME: recover from I/O errors?
+     client_fd = client_buf.socket
+     server_fd = server_buf.socket
+@@ -1194,7 +1238,8 @@
+                                  client_buf.pending_inner_packets())
+     buf_2 = _InnerBridgingBuffer(server_fd, client_fd,
+                                  server_buf.pending_inner_packets())
+-    _InnerBridgingBuffer.forward_two_way(buf_1, buf_2)
++    _InnerBridgingBuffer.forward_two_way(buf_1, buf_2,
++                                         idle_timeout=idle_timeout)
+     client_fd.set_socket_option(nss.io.PR_SockOpt_Nonblocking, False)
+     server_fd.set_socket_option(nss.io.PR_SockOpt_Nonblocking, False)
+
+--- a/src/bridge.py
++++ b/src/bridge.py
+@@ -149,7 +149,16 @@
+
+ _LISTEN_BACKLOG = 128
+
++# Longest the bridge waits, while relaying a request, for a single byte
++# to move in either direction before abandoning the request. A client
++# suspended mid-upload, a CI runner paused by its scheduler, or a peer
++# behind a NAT that has dropped the flow all look exactly like a slow
++# peer, and the bridge serves one client at a time. Two minutes is far
++# beyond any silence a real request produces: even the server's largest
++# signing operations stream data or finish in seconds.
++_REQUEST_IDLE_SECONDS = 120
+
++
+ def create_listen_sock(config, port):
+     sock = nss.ssl.SSLSocket(nss.io.PR_AF_INET)
+     # FIXME? does this belong in a finished product?
+@@ -1305,15 +1314,18 @@
+                 'User {0!s} not allowed to connect'.format(
+                     repr(user_name)))
+
+-        client_buf = double_tls.OuterBuffer(client_sock)
+-        server_buf = double_tls.OuterBuffer(server_sock)
++        client_buf = double_tls.OuterBuffer(client_sock,
++                                            idle_timeout=_REQUEST_IDLE_SECONDS)
++        server_buf = double_tls.OuterBuffer(server_sock,
++                                            idle_timeout=_REQUEST_IDLE_SECONDS)
+
+         conn = BridgeConnection(config, user_name, client_buf, server_buf)
+         try:
+             conn.__forward_request_headers()
+             conn.__handler.forward_request_payload(conn)
+
+-            double_tls.bridge_inner_stream(conn.client_buf, conn.server_buf)
++            double_tls.bridge_inner_stream(conn.client_buf, conn.server_buf,
++                                           idle_timeout=_REQUEST_IDLE_SECONDS)
+
+             conn.__forward_reply_headers()
+             conn.__forward_reply_payload()
+@@ -1548,6 +1560,8 @@
+         logging.warning('Invalid reply: %s', str(e))
+     except ForwardingError as e:
+         logging.warning('Error working with request data: %s', str(e))
++    except double_tls.IdleTimeoutError as e:
++        logging.warning('Request abandoned: %s; dropping both peers', str(e))
+     except IOError as e:
+         logging.info('I/O error: %s', repr(e))
+     except EOFError as e:
+@@ -1557,12 +1571,14 @@
+             logging.warning("Peer's certificate has expired, rejecting "
+                             "connection")
+         elif e.errno == nss.error.PR_IO_TIMEOUT_ERROR:
+-            # A peer that connected and never finished its handshake.
+-            # Named plainly, without a traceback: it is the expected
+-            # outcome for a scanner or a bare TCP health check, and the
+-            # thing to look for when clients report slow service.
+-            logging.warning('Peer did not complete its TLS handshake within '
+-                            '%d s; dropping it', _HANDSHAKE_TIMEOUT_SECONDS)
++            # A peer that stopped talking: either it never finished its
++            # handshake, or it went silent mid-request. Named plainly,
++            # without a traceback: it is the expected outcome for a
++            # scanner, a bare TCP health check or a suspended client, and
++            # the thing to look for when clients report slow service.
++            logging.warning('Peer stopped responding (handshake deadline '
++                            '%d s, request idle deadline %d s); dropping it',
++                            _HANDSHAKE_TIMEOUT_SECONDS, _REQUEST_IDLE_SECONDS)
+         else:
+             logging.info('NSPR I/O error: %s', str(e), exc_info=True)
+     except BridgeError as e:

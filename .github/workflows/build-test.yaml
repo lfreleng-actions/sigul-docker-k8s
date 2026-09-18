@@ -991,28 +991,32 @@ jobs:
             exit 1
           fi
 
-          # Check for the actual patched code: server_sock.force_handshake()
-          if ! docker exec sigul-bridge grep -q "server_sock.force_handshake()" \
+          # Check for the actual patched code. Patch 01 completes the
+          # server handshake straight after accept(); patch 09 routes
+          # that call through _handshake_with_deadline(), so that is the
+          # literal to look for.
+          HANDSHAKE_CALL="_handshake_with_deadline(server_sock"
+          if ! docker exec sigul-bridge grep -q "${HANDSHAKE_CALL}" \
                /usr/share/sigul/bridge.py; then
-            echo "❌ ERROR: server_sock.force_handshake() call not found!"
+            echo "❌ ERROR: ${HANDSHAKE_CALL} call not found!"
             echo "The patch may not be fully applied"
             exit 1
           fi
 
           # Check it's in the right location (after accept, before client conn)
-          if docker exec sigul-bridge grep -B10 -A10 "server_sock.force_handshake()" \
+          if docker exec sigul-bridge grep -B10 -A10 "${HANDSHAKE_CALL}" \
              /usr/share/sigul/bridge.py | grep -q "accept()"; then
             echo "✅ Double-TLS handshake patch verified in bridge"
             echo ""
             echo "Patched code location confirmed:"
-            docker exec sigul-bridge grep -B5 -A10 "server_sock.force_handshake()" \
+            docker exec sigul-bridge grep -B5 -A10 "${HANDSHAKE_CALL}" \
               /usr/share/sigul/bridge.py | sed 's/^/  /'
           else
-            echo "❌ ERROR: server_sock.force_handshake() not in correct location!"
+            echo "❌ ERROR: ${HANDSHAKE_CALL} not in correct location!"
             echo "Expected after accept() call but before client connection"
             echo ""
-            echo "Showing context around force_handshake():"
-            docker exec sigul-bridge grep -B10 -A10 "server_sock.force_handshake()" \
+            echo "Showing context around the handshake call:"
+            docker exec sigul-bridge grep -B10 -A10 "${HANDSHAKE_CALL}" \
               /usr/share/sigul/bridge.py | sed 's/^/  /'
             exit 1
           fi

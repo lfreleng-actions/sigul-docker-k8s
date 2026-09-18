@@ -67,6 +67,7 @@ class _RealClientFault(Fault):
         self._stop.clear()
         self._injected.clear()
         self._failure = None
+        self.activated_at = None
         self._thread = threading.Thread(target=self._loop, name=self.name, daemon=True)
         self._thread.start()
         # Return only once the signal has actually been delivered, so
@@ -123,8 +124,16 @@ class _RealClientFault(Fault):
             if proc.poll() is None:
                 # Exited between poll() and here: already the outcome we
                 # wanted, nothing more to do.
-                with contextlib.suppress(ProcessLookupError):
+                try:
                     os.killpg(proc.pid, self.interrupt)
+                except ProcessLookupError:
+                    # Gone between poll() and here: nothing was disturbed,
+                    # so this is not an injected fault.
+                    raise RuntimeError(
+                        "client exited before the signal could be delivered; "
+                        "the fault was not injected"
+                    ) from None
+                self.activated_at = time.time()
                 self._injected.set()
             # One interrupted request per window, held until stop().
             self._stop.wait(3600)

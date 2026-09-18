@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Reap every child the server daemon inherits, not just the one it
+# forked. See patches/README.md for the rationale and measurements.
+#
+--- a/src/server.py
++++ b/src/server.py
+@@ -2952,8 +2952,28 @@
+
+ def sigalarm_handler(*args):
+     sys.exit(_CHILD_TIMEOUT)
++
++
++def _wait_for_child_reaping_orphans(child_pid):
++    '''Wait for child_pid to exit and return its wait status.
++
++    Reap any other child that exits meanwhile. When this daemon is PID 1
++    - as it is in a container - every process orphaned anywhere beneath
++    it is reparented here, and nothing else will ever wait for it. The
++    gpg helpers the request child spawns while signing are orphaned that
++    way by design: gpgme double-forks so that it need not wait for them.
++    A waitpid() on child_pid alone leaves each of those a zombie for the
++    life of the daemon, roughly ten per signing request, until the
++    container's pid limit is reached and fork() fails.
+
++    '''
++    while True:
++        (pid, status) = os.waitpid(-1, 0)
++        if pid == child_pid:
++            return status
++        logging.debug('Reaped orphaned process %d (status %d)', pid, status)
+
++
+ def main():
+     # Any blocking socket operations time out after an hour
+     socket.setdefaulttimeout(60 * 60)
+@@ -2992,7 +3012,7 @@
+                             logging.shutdown()
+                         finally:
+                             os._exit(_CHILD_BUG)
+-                (_, status) = os.waitpid(child_pid, 0)
++                status = _wait_for_child_reaping_orphans(child_pid)
+                 if os.WIFEXITED(status) and os.WEXITSTATUS(
+                         status) == _CHILD_OK:
+                     fast_reconnections_done = 0

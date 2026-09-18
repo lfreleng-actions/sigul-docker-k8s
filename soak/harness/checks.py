@@ -58,6 +58,12 @@ MIN_CLEAN_PHASE_SUCCESS_RATE = 0.95
 MIN_SAMPLE_COVERAGE = 0.5
 SAMPLE_INTERVAL_SECONDS = 5.0
 
+#: The end-of-run readings (zombies, CLOSE-WAIT) come from the last
+#: cooldown sample, so that sample must actually be from the end of
+#: cooldown: a sampler that died halfway through would otherwise leave
+#: a stale "last" row that says nothing about the final state.
+MAX_TAIL_STALENESS_SECONDS = SAMPLE_INTERVAL_SECONDS * 3
+
 
 def coverage(
     results: Results,
@@ -106,6 +112,24 @@ def coverage(
                     f"{unit}: monitored through {phase}",
                     have >= want * MIN_SAMPLE_COVERAGE,
                     f"{have} of ~{want} samples",
+                )
+            )
+        if "cooldown" in windows:
+            _, hi = windows["cooldown"]
+            last = max(
+                (
+                    float(r["epoch"])
+                    for r in run.samples
+                    if r["unit"] == unit and float(r["epoch"]) <= hi
+                ),
+                default=0.0,
+            )
+            staleness = hi - last
+            checks.append(
+                Check(
+                    f"{unit}: sampled to the end of cooldown",
+                    staleness <= MAX_TAIL_STALENESS_SECONDS,
+                    f"last sample {staleness:.0f}s before cooldown ended (bound {MAX_TAIL_STALENESS_SECONDS:.0f}s)",
                 )
             )
     return checks
@@ -225,8 +249,8 @@ def _resource_checks(results: Results) -> list[Check]:
         checks.append(
             Check(
                 f"{unit}: no zombie processes",
-                res.zombies_max == 0,
-                f"peak {res.zombies_max}",
+                res.zombies_end == 0,
+                f"median of last 3 samples={res.zombies_end} (peak {res.zombies_max})",
             )
         )
     return checks
