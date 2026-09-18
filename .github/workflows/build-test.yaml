@@ -1162,6 +1162,29 @@ jobs:
             "${SIGUL_BRIDGE_IMAGE}" \
             /test/test_nspr_poll_timeout.py
 
+      - name: 'Test bridge client admission'
+        shell: bash
+        env:
+          SIGUL_BRIDGE_IMAGE: >-
+            bridge-${{
+              steps.runner-arch.outputs.platform-id
+            }}-image:test
+        run: |
+          # Regression guard for patches/13. Drives ClientAdmission
+          # against a real TLS listener built from a throwaway NSS
+          # database: twenty silent peers ahead of an honest client
+          # must not delay it, silent peers are shed at the handshake
+          # deadline, that deadline is charged only while the bridge
+          # is attending, a rejected client does not end the wait, and
+          # the loss of the server is reported. Needs certutil, which
+          # the bridge image ships.
+          docker run --rm \
+            --user 1000:1000 \
+            -v "${PWD}/test:/test:ro" \
+            --entrypoint python3 \
+            "${SIGUL_BRIDGE_IMAGE}" \
+            /test/test_bridge_client_admission.py
+
       - name: 'Capture Sigul daemon logs and container diagnostics'
         if: always()
         shell: bash

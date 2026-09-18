@@ -469,11 +469,12 @@ concurrent clients against the patched bridge: zero drops, all served,
 in six and eight seconds respectively.
 
 A large backlog does mean that connections which will never complete
-a handshake now queue rather than being dropped; each costs one
-handshake deadline (patch 09) when its turn comes. That is the
-trade-off the soak harness's `client_backlog_flood` fault measures,
-and it remains marked expected-fail against issue #13 until
-handshakes are taken off the accept loop's critical path.
+a handshake now queue rather than being dropped. With patch 09 alone
+each cost one handshake deadline when its turn came - the soak
+harness's `client_backlog_flood` fault measured twenty of them
+stalling an honest client for twenty deadlines. Patch 13 takes
+handshakes off the accept loop's critical path, and that fault now
+passes.
 
 ### 11-fix-bridge-request-idle-deadline.patch
 
@@ -557,8 +558,8 @@ the real descriptors. It has nothing to read, so it reports readable
 only when the whole call timed out and the scratch bits were never
 overwritten; in that case every result is forced to `0`. `_nspr_poll`
 uses it, so `forward_two_way` and everything built on it are
-corrected without further change. One sentinel pair per process,
-recreated after `fork()`.
+corrected without further change; patch 13's admission loop uses it
+directly. One sentinel pair per process, recreated after `fork()`.
 
 **Test:** `test/test_nspr_poll_timeout.py`, run in the bridge image in
 CI. Against the unpatched module it reports `[1, 1]` and `[1, 8]` for
@@ -566,6 +567,58 @@ idle READ and blocked WRITE interests and the idle deadline never
 fires; patched, `[0, 0]`, real events still reported unchanged, the
 deadline fires at 2.0 s idle and 5.0 s when fed traffic for the first
 3 s.
+
+### 13-fix-bridge-concurrent-client-admission.patch
+
+**Status:** CRITICAL - without it a burst of connections that never
+speak stalls honest clients for one handshake deadline each
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** Bridge
+
+**Problem:**
+The bridge pairs one client with one server at a time, and before
+this patch it also *accepted* clients one at a time: `accept()`, then
+the whole TLS handshake, on the accept loop's critical path. Patch 09
+bounded each handshake at five seconds, and patch 10 let a burst of
+connections queue instead of being SYN-dropped, but together they
+meant twenty connections that never send a ClientHello - a port scan,
+load-balancer health checks, clients suspended between `connect()` and
+their hello - cost an honest client behind them twenty deadlines: a
+hundred seconds. Every rejected client also cost a server reconnect,
+because the server connection was closed with it. The soak harness's
+`client_backlog_flood` fault measured exactly this and was marked
+expected-fail against issue #13.
+
+**Fix:**
+A `ClientAdmission` object owns the client listening socket for the
+life of the daemon. While the bridge is waiting for a client it polls
+the server socket, the listening socket and every pending client
+together (through patch 12's `poll_sockets()`), accepts everything
+queued, drives each pending handshake one non-blocking step whenever
+its socket is readable, and returns the first to complete - in
+blocking mode, as everything downstream expects. Peers that fail
+their handshake are logged and dropped without ending the wait, so
+the server connection is never touched by a client that was never
+going to be served. Silent peers are shed at the deadline, which is
+charged only for time the bridge spends attending to them: a client
+accepted just as another wins the slot is not charged for the request
+it then waits behind, so a busy bridge does not drop honest clients.
+The pending set is capped at 256; beyond that the bridge stops
+accepting until it drains and arrivals wait in the kernel backlog as
+before. The server-side handshake is unchanged.
+
+The bridge remains single-threaded and still serves one request at a
+time. Only admission is concurrent.
+
+**Test:** with twenty silent connections parked on the client port, an
+honest `list-users` is served in 0.67 s (previously ~100 s); all
+twenty are dropped together at the deadline. Thirty concurrent honest
+clients under continuous slow-loris, garbage, RST and half-close
+pressure: 30/30 served in 16 s, zero server reconnects, zero leaked
+descriptors after 1,500 rejected peers. `test/test_bridge_client_admission.py`,
+run in the bridge image in CI, drives the class directly against a
+real TLS listener. The soak harness's `client_backlog_flood` fault
+passes and its expected-fail marker is removed.
 
 ## Applying Patches
 
