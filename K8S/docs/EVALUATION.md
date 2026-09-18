@@ -294,9 +294,15 @@ the bridge pod and makes leaf re-issuance a Job re-run.
   defect §2.5(1). Separate small PVC (or same volume) for the server
   NSS DB.
 - **initContainers:**
-  1. `wait-for-bridge` — the existing `nc -z` loop against the bridge
-     Service (the entrypoint already contains this logic; it ports
-     directly).
+  1. `wait-for-bridge` — a `getent hosts` loop against the bridge's
+     **headless** Service, whose DNS records exist only while the
+     bridge pod is Ready. Deliberately DNS-only: the bridge accepts one
+     connection at a time and starts a TLS handshake on each, so a bare
+     TCP probe disturbs its accept loop. The image entrypoint performs
+     its own `getent` check, but against the ClusterIP Service, which
+     resolves whether or not the bridge is Ready — so readiness is
+     gated here, and the entrypoint's check only catches a
+     misconfigured hostname.
   2. `nss-init` — import CA + server P12 into the pod's NSS DB; render
      `server.conf` from Secret values.
   3. `db-init` (first boot only, idempotent) — `sigul_server_create_db`

@@ -620,6 +620,54 @@ run in the bridge image in CI, drives the class directly against a
 real TLS listener. The soak harness's `client_backlog_flood` fault
 passes and its expected-fail marker is removed.
 
+### 14-fix-bridge-quiet-peer-disconnect.patch
+
+**Status:** COSMETIC - the bridge behaves correctly either way; this
+is about what its log tells whoever reads it
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** Bridge
+
+**Problem:**
+A peer that connects to the server port and hangs up without speaking
+was logged as `ERROR: Server TLS handshake failed`, re-raised, and
+logged a second time by the generic NSPR handler with a full
+traceback. Health checks, port scanners and load balancers do exactly
+this, so every start of the stack put a red error and a stack trace at
+the top of the bridge log - the first thing anyone reads during an
+incident, and unrelated to any incident. Seen on every Compose deploy
+and on the OpenSearch production deployment.
+
+The immediate source was the server's own entrypoint, which probed the
+bridge with `nc -z` before starting the daemon; that is fixed
+separately, outside the patch series. But the bridge is internet-facing
+on its client port and will always meet peers that connect and leave,
+so it should not call that a failure of its own.
+
+**Fix:**
+`PR_END_OF_FILE_ERROR` and `PR_CONNECT_RESET_ERROR` during the
+server-side handshake are reported as `INFO: Server went away during
+its TLS handshake; waiting for it to reconnect`, and the request is
+abandoned without an exception, so no traceback is produced. The
+bridge returns to its accept loop exactly as before - only the log
+changes. Every other failure keeps exactly the handling it already
+had: a protocol violation is still logged at `ERROR` and re-raised,
+which produces the traceback from the handler above, while a
+handshake that runs out of time (patch 09) or a peer whose
+certificate has expired are reported as plain warnings, deliberately
+and unchanged by this patch.
+
+This matches what the client side already does through patch 13's
+`ClientAdmission`, which reports the same event as `INFO: Client
+<addr> went away during its TLS handshake`. The two sides now describe
+the same thing the same way.
+
+**Test:** a clean deploy reaches `Server authenticated` with zero
+`ERROR` or `Traceback` lines in the bridge log, where before it always
+carried one of each. With the server stopped, `nc -z` against the
+server port produces one `INFO` line and no traceback, and the bridge
+pairs normally when the server returns. The full signing suite passes
+unchanged (41/41).
+
 ## Applying Patches
 
 The Docker build process automatically applies these patches:

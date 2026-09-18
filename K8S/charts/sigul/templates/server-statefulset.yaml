@@ -99,11 +99,11 @@ spec:
         # bridge pod is Ready (its probes are exec-based). A bare TCP
         # probe here would disrupt the bridge's serial accept loop
         # (accepted connections trigger an immediate TLS handshake).
-        # Note: the image entrypoint still performs one nc-based check
-        # before launching the daemon; because this gate guarantees
-        # the bridge is already up, that amounts to a single bounded
-        # connection the bridge recovers from. Removing it entirely is
-        # image-level (Phase 0) work.
+        # The image entrypoint resolves rather than connects too, but
+        # against BRIDGE_HOSTNAME below - the ClusterIP Service, whose
+        # DNS answers whether or not the bridge is Ready. So readiness
+        # is gated here and only here; the entrypoint's check catches a
+        # misconfigured hostname and nothing more.
         - name: wait-for-bridge
           image: {{ include "sigul.image.server" . }}
           imagePullPolicy: {{ .Values.images.server.pullPolicy }}
