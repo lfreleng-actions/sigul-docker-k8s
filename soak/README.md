@@ -91,8 +91,80 @@ sampled through the run and through both clean phases, so a silent
 sampler or a truncated run cannot pass as a clean one.
 
 **Regressions**, relative to a committed `baseline-<profile>.json`:
-p95 latency per task within +50 % or +250 ms of the baseline,
-whichever is larger; success rate within 5 points.
+per-task median and p95 latency within +50 % or +250 ms of the
+baseline, whichever is larger; success rate within 5 points; and the
+phase completing at least 85 % of the baseline's requests. Every
+comparison is one-sided — faster, more reliable or more productive
+never fails. If no baseline file exists the run says so and skips
+these entirely; the invariants above still apply.
+
+### The baseline
+
+A percentile is only compared where enough requests completed to
+estimate it: 20 for the median, 50 for p95. This is not caution for
+its own sake. Sigul serves one request at a time, and the load mix
+contains a 64 MiB signing task taking 8–22 s, so every other request
+can queue behind one — `list_users` has a median around 600 ms and a
+p95 around 8 s, and that tail says which request it queued behind
+rather than anything about `list_users`. Measured across four green
+CI runs, a p95 drawn from ~20 completions swung by **7.3×**; the same
+task's p95 over 50 or more completions held to within 1.23×. Twenty
+samples do not yield a 95th percentile, they yield a second-worst
+observation.
+
+For the same reason only `cooldown` is compared. The `baseline` phase
+is two minutes long and too thin to judge; it is still measured and
+reported, and the leak detection still uses it as its starting point.
+
+Completions per phase carry weight that latency does not: for a
+strictly serial service that is the capacity metric, work that takes
+longer shows up first as less of it getting done, and a uniform
+slowdown too small to trip the latency bounds still shows here. The
+four runs completed 243, 253, 266 and 290 requests — a 1.19× spread,
+mean 263, standard deviation 21 — so the 85 % floor sits at 207,
+below mean minus two standard deviations.
+
+Be clear about what that buys. The gate catches a capacity loss of
+about a third, a median or p95 half again as slow, any task that falls
+below half the completions the baseline recorded for it, and a success
+rate more than five points below the baseline. It will not notice a
+20 % degradation. That is the deliberate trade for a blocking check
+whose false failures would cost more than its misses: a gate people
+learn to re-run is worse than no gate. Tighten it when there is
+evidence, not optimism.
+
+The committed figures are the **worst** observed across the runs —
+slowest latency, fewest completions — with the tolerances applied on
+top of that. That is a trade, not a free lunch: anchoring to the worst
+run and then allowing a further 50 % means a regression is measured
+against the unluckiest green run rather than a typical one, so smaller
+degradations go unseen. It buys a gate that does not fail on ordinary
+variance, which for a blocking check is worth more than the
+sensitivity it costs. The section above says what survives that trade.
+
+Regenerate it from the `results.json` of runs that passed, never by
+hand:
+
+```bash
+python3 harness/make_baseline.py --profile pr --platform linux-amd64 \
+    --note 'v2.3.1 images, ubuntu-latest, runs 123 and 456' \
+    run1/results.json run2/results.json run3/results.json
+```
+
+The numbers must come from the hardware the gate runs on. A laptop is
+several times faster than a shared CI runner, so a baseline captured
+locally would either never fire or fire constantly. Architecture
+matters for the same reason and by more than run-to-run noise: on the
+same profile, arm64 completed **1.6×** the work amd64 did. The
+committed baseline is amd64, which is what the pull-request gate runs
+on. Because every comparison is one-sided it is safe on faster
+hardware, simply less sensitive there — an arm64 run of the `pr`
+profile is judged, but leniently.
+
+Refreshing the baseline is a deliberate, reviewed act. An intended
+performance change, a new runner image or a change to the load
+profile are all good reasons. "The gate is red" is not one — that is
+the gate working.
 
 ### Expected failures
 
@@ -182,6 +254,8 @@ soak/
     ├── analyze.py           verdict, report.md, results.json, charts
     ├── target.py            how to measure and disturb the stack (Docker; K8s later)
     ├── expectations.json    known defects, as xfail markers
+    ├── make_baseline.py     build baseline-<profile>.json from green runs
+    ├── baseline-pr.json     regression reference for the `pr` profile
     └── faults/
         ├── base.py          Fault interface, Toxiproxy client
         ├── clients.py       client_* faults
