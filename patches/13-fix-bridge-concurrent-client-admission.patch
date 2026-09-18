@@ -1,0 +1,369 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Take client TLS handshakes off the accept loop's critical path. While
+# the bridge waits for a client it now accepts everything queued on the
+# listening socket and drives all of their handshakes side by side,
+# pairing the first to finish; peers that never speak are shed at the
+# handshake deadline without delaying anyone else, and without costing
+# a server reconnect. See patches/README.md for the measurements.
+#
+--- a/src/bridge.py
++++ b/src/bridge.py
+@@ -124,15 +124,17 @@
+             self.koji_fas_groups[v] = group
+
+
+-# Deadline for a peer to complete its TLS handshake once accepted. The
+-# bridge serves one client at a time, so a peer that connects and then
+-# says nothing - or trickles a byte a second - holds the only slot there
+-# is for as long as it likes: a port scanner, a health check that opens
+-# a bare TCP connection, a client suspended between connect() and its
+-# ClientHello. A real Sigul peer finishes the handshake in well under a
+-# second even across a WAN; five seconds is ten times that. The clock
+-# starts at accept(), so time spent queued in the listen backlog does
+-# not count against the peer.
++# Deadline for a peer to complete its TLS handshake once accepted. A
++# peer that connects and then says nothing - or trickles a byte a
++# second - must not hold the bridge: a port scanner, a health check that
++# opens a bare TCP connection, a client suspended between connect() and
++# its ClientHello. A real Sigul peer finishes the handshake in well
++# under a second even across a WAN; five seconds is ten times that.
++#
++# For the server the clock is wall time from accept(). For clients it
++# is the time the bridge spends waiting for a client while the peer is
++# pending, see ClientAdmission; either way time queued in the listen
++# backlog does not count against the peer.
+ _HANDSHAKE_TIMEOUT_SECONDS = 5
+
+
+@@ -149,6 +151,10 @@
+     the poll timeout. Blocking mode is restored afterwards, on every
+     path, because everything downstream expects it.
+
++    Only the server is handshaken this way, one connection at a time;
++    clients go through ClientAdmission, which drives any number of
++    handshakes side by side.
++
+     '''
+     deadline = time.monotonic() + _HANDSHAKE_TIMEOUT_SECONDS
+     sock.set_socket_option(nss.io.PR_SockOpt_Nonblocking, True)
+@@ -208,13 +214,13 @@
+     sock.config_secure_server(cert, nss.nss.find_key_by_any_cert(cert),
+                               cert.find_kea_type())
+     sock.bind(nss.io.NetworkAddress(nss.io.PR_IpAddrAny, port))
+-    # The bridge accepts one connection at a time and only between
+-    # requests, so everything that arrives while it is busy waits in
+-    # this queue. The default of five is exceeded the moment half a
+-    # dozen CI jobs sign together: the kernel drops the excess SYNs,
+-    # the clients' kernels retry with exponential backoff, and past a
+-    # few retries connect() fails outright. Nothing about the
+-    # workload changes at 128 except that a burst waits its turn
++    # Clients are accepted only while the bridge is waiting for one
++    # (see ClientAdmission), so everything that arrives during a
++    # request waits in this queue. The default of five is exceeded the
++    # moment half a dozen CI jobs sign together: the kernel drops the
++    # excess SYNs, the clients' kernels retry with exponential backoff,
++    # and past a few retries connect() fails outright. Nothing about
++    # the workload changes at 128 except that a burst waits its turn
+     # instead of being turned away.
+     sock.listen(_LISTEN_BACKLOG)
+     return sock
+@@ -1333,8 +1339,12 @@
+
+     @staticmethod
+     def handle_connection(config, client_sock, server_sock):
+-        '''Handle a single connection using client_sock and server_sock.'''
+-        _handshake_with_deadline(client_sock, 'Client')
++        '''Handle a single connection using client_sock and server_sock.
++
++        client_sock has completed its TLS handshake (see
++        ClientAdmission); server_sock has too.
++
++        '''
+         cert = client_sock.get_peer_certificate()
+         if cert is None:
+             raise ForwardingError('No client certificate')
+@@ -1505,42 +1515,206 @@
+             self.__handler.close()
+
+
+-def _wait_for_client_or_server_loss(server_sock, client_listen_sock):
+-    '''Block until a client connects or the paired server goes away.
++# Upper bound on clients accepted but not yet through their handshakes.
++# Honest clients leave this set within milliseconds of being attended
++# to, and silent ones within one handshake deadline of the bridge's
++# attention, so it only fills under a flood of connections that never
++# speak. When it is full the bridge stops accepting until it drains,
++# and arrivals wait in the kernel's listen backlog as they did before;
++# what it must not do is take a descriptor for every one of them.
++_MAX_PENDING_CLIENTS = 256
+
+-    Return True when a client connection is pending on client_listen_sock,
+-    False when server_sock reported readiness first - which, for a
+-    server that has completed its outer handshake and is waiting for a
+-    client, can only mean it has closed or failed, because it sends
+-    nothing until the client arrives.
++# Pause before touching the listening socket again after accept() fails
++# for a reason other than an empty queue.
++_ACCEPT_RETRY_SECONDS = 1
+
+-    A bare client_listen_sock.accept() cannot do this: it blocks with no
+-    knowledge of server_sock, so a server that dies during the wait is
+-    only discovered when a client finally connects and is handed the
+-    corpse. It also means the server's FIN sits unread, so the bridge
+-    never closes its half and the server's teardown - if unbounded -
+-    waits forever on a FIN that never comes.
++
++class _PendingClient(object):
++    '''A client accepted but not yet through its TLS handshake.'''
+
++    def __init__(self, sock, addr):
++        self.sock = sock
++        self.addr = addr
++        # Seconds of the bridge's attention this peer may still consume.
++        self.remaining = _HANDSHAKE_TIMEOUT_SECONDS
++
++
++def _close_quietly(sock):
++    try:
++        sock.close()
++    except Exception as e:
++        _adbg('Ignoring error closing socket: %r', e)
++
++
++class ClientAdmission(object):
++    '''Accept clients and complete their TLS handshakes side by side.
++
++    The bridge pairs one client with one server at a time, but a
++    client's handshake involves only the bridge and that client. So
++    while the bridge is waiting for a client, every connection queued
++    on the listening socket is accepted and its handshake driven a step
++    at a time, all of them together, and the first to finish is the one
++    served. A peer that never sends its ClientHello, or trickles it,
++    costs nobody else anything: it sits here until its deadline while
++    the honest client behind it is handshaken and paired in
++    milliseconds. It also never touches the server connection, where
++    before every rejected client cost a server reconnect.
++
++    Before this, queued connections were accepted one at a time and
++    each was handshaken on the accept loop's critical path: twenty
++    silent connections ahead of an honest client kept it waiting for
++    twenty handshake deadlines.
++
++    A pending client's deadline is charged only for time the bridge
++    spends here, waiting for a client, not wall time. A client accepted
++    just as another one won the slot may then sit unattended for as
++    long as that request takes; it has done nothing wrong, and charging
++    it for time nobody was reading its handshake would drop honest
++    clients exactly when the bridge is busiest.
++
++    Pending clients survive across requests and across the loss of a
++    server: the set belongs to the daemon, not to any one pairing.
++
+     '''
+-    # Readability is the only interest to request; NSPR reports errors
+-    # and hangups in the output flags regardless, and any event on the
+-    # server socket means the server is gone.
+-    descs = [
+-        (client_listen_sock, nss.io.PR_POLL_READ),
+-        (server_sock, nss.io.PR_POLL_READ),
+-    ]
+-    while True:
+-        res = nss.io.Socket.poll(descs, nss.io.PR_INTERVAL_NO_TIMEOUT)
+-        client_ready, server_event = res[0], res[1]
+-        if server_event:
+-            _adbg('Server socket reported %r while waiting for a client',
+-                  server_event)
+-            return False
+-        if client_ready & nss.io.PR_POLL_READ:
+-            return True
+
++    def __init__(self, listen_sock):
++        self.__listen_sock = listen_sock
++        # accept() must never block: the listening socket is only ever
++        # read after poll() said it is readable, and drained until it
++        # says otherwise. Accepted sockets do not inherit this.
++        listen_sock.set_socket_option(nss.io.PR_SockOpt_Nonblocking, True)
++        self.__pending = []
++        # After accept() fails for any reason other than an empty queue
++        # - out of descriptors, say - leave the listening socket alone
++        # until this time. Polling it again at once would report it
++        # readable again at once, and the loop would spin on the error.
++        self.__accept_after = 0
+
+-def bridge_one_request(config, server_listen_sock, client_listen_sock):
++    def wait_for_client(self, server_sock):
++        '''Return a client socket with its TLS handshake complete.
++
++        Return None instead if server_sock reports an event first. For a
++        server that has completed its handshake and is waiting for a
++        client that can only mean it has closed or failed, because it
++        sends nothing until a client arrives. A bare accept() cannot
++        notice this: a server that dies during the wait would only be
++        discovered when a client finally connects and is handed the
++        corpse - and its FIN would sit unread, so the bridge never
++        closes its half and the server's teardown waits on a FIN that
++        never comes.
++
++        The returned socket is in blocking mode, as everything
++        downstream expects.
++
++        '''
++        wait_began = time.monotonic()
++        while True:
++            # Readability is the only interest to request; NSPR reports
++            # errors and hangups in the output flags regardless.
++            descs = [(server_sock, nss.io.PR_POLL_READ)]
++            accepting = (len(self.__pending) < _MAX_PENDING_CLIENTS
++                         and wait_began >= self.__accept_after)
++            if accepting:
++                descs.append((self.__listen_sock, nss.io.PR_POLL_READ))
++            attended = list(self.__pending)
++            descs.extend((p.sock, nss.io.PR_POLL_READ) for p in attended)
++            flags = double_tls.poll_sockets(descs,
++                                            self.__poll_timeout(wait_began))
++            now = time.monotonic()
++            elapsed = now - wait_began
++            wait_began = now
++            # Everyone pending through this poll paid for it, whatever
++            # ended it - including the server going away, since the set
++            # outlives the pairing. Expiry is checked below; a peer that
++            # ran out during a poll the server ended is dropped at the
++            # start of the next wait instead.
++            for pending in attended:
++                pending.remaining -= elapsed
++
++            if flags[0]:
++                _adbg('Server socket reported %r while waiting for a client',
++                      flags[0])
++                return None
++            if accepting and flags[1] & nss.io.PR_POLL_READ:
++                self.__accept_all(now)
++            # Those with something to read get a step of their handshake
++            # before the deadline is checked, so a ClientHello that
++            # lands as the deadline does still counts.
++            pending_flags = flags[len(flags) - len(attended):]
++            for (pending, ready) in zip(attended, pending_flags):
++                if ready:
++                    sock = self.__handshake_step(pending)
++                    if sock is not None:
++                        return sock
++                if pending in self.__pending and pending.remaining <= 0:
++                    self.__pending.remove(pending)
++                    logging.warning('Client %s did not complete its TLS '
++                                    'handshake within %d s; dropping it',
++                                    pending.addr, _HANDSHAKE_TIMEOUT_SECONDS)
++                    _close_quietly(pending.sock)
++
++    def __poll_timeout(self, now):
++        '''How long the next poll may block, as an NSPR interval.'''
++        waits = [p.remaining for p in self.__pending]
++        if now < self.__accept_after:
++            waits.append(self.__accept_after - now)
++        if not waits:
++            return nss.io.PR_INTERVAL_NO_TIMEOUT
++        return nss.io.milliseconds_to_interval(
++            int(max(0, min(waits)) * 1000) + 1)
++
++    def __accept_all(self, now):
++        '''Accept everything queued on the listening socket.'''
++        while len(self.__pending) < _MAX_PENDING_CLIENTS:
++            try:
++                (sock, addr) = self.__listen_sock.accept()
++            except nss.error.NSPRError as e:
++                if e.errno != nss.error.PR_WOULD_BLOCK_ERROR:
++                    # Out of descriptors, or a peer that reset before we
++                    # got to it. Neither is a reason to stop serving;
++                    # whatever is still queued is picked up after a
++                    # pause.
++                    logging.info('Accepting a client failed: %s', str(e))
++                    self.__accept_after = now + _ACCEPT_RETRY_SECONDS
++                return
++            _adbg('Client-side TCP accept from %r', addr)
++            sock.set_socket_option(nss.io.PR_SockOpt_Nonblocking, True)
++            self.__pending.append(_PendingClient(sock, addr))
++
++    def __handshake_step(self, pending):
++        '''Drive pending's handshake one step.
++
++        Return its socket, in blocking mode, once the handshake is
++        complete; None while it is still under way or if it failed, in
++        which case the client has been dropped.
++
++        '''
++        try:
++            pending.sock.force_handshake()
++        except nss.error.NSPRError as e:
++            if e.errno == nss.error.PR_WOULD_BLOCK_ERROR:
++                return None
++            self.__pending.remove(pending)
++            if e.errno == nss.error.SEC_ERROR_EXPIRED_CERTIFICATE:
++                logging.warning("Client %s's certificate has expired; "
++                                'rejecting it', pending.addr)
++            elif e.errno in (nss.error.PR_END_OF_FILE_ERROR,
++                             nss.error.PR_CONNECT_RESET_ERROR):
++                logging.info('Client %s went away during its TLS '
++                             'handshake', pending.addr)
++            else:
++                logging.info('Client %s failed its TLS handshake: %s',
++                             pending.addr, str(e))
++            _adbg('Client TLS handshake EXCEPTION: %r', e)
++            _close_quietly(pending.sock)
++            return None
++        self.__pending.remove(pending)
++        pending.sock.set_socket_option(nss.io.PR_SockOpt_Nonblocking, False)
++        logging.debug('Client TLS handshake completed')
++        return pending.sock
++
++
++def bridge_one_request(config, server_listen_sock, admission):
+     '''Forward one request and reply.'''
+
+     server_sock = None
+@@ -1571,16 +1745,14 @@
+         _adbg('Server peer cert CN=%r', server_cert.subject_common_name)
+
+         logging.debug('Waiting for the client to connect')
+-        if not _wait_for_client_or_server_loss(server_sock,
+-                                               client_listen_sock):
++        client_sock = admission.wait_for_client(server_sock)
++        if client_sock is None:
+             # The server left before any client arrived. Drop it and go
+             # back to waiting for a fresh server rather than handing the
+             # next client a dead connection.
+             logging.info('Server connection lost while waiting for a client; '
+                          'discarding it')
+             return
+-        (client_sock, client_addr) = client_listen_sock.accept()
+-        _adbg('Client-side TCP accept from %r', client_addr)
+         BridgeConnection.handle_connection(config, client_sock, server_sock)
+     # Python 3.10 made this a deprecated alias of TimeoutError so it's only a matter of
+     # time before they remove this alias and break everyone. Replace this with TimeoutError
+@@ -1626,10 +1798,7 @@
+         # keep the peer's own teardown waiting.
+         for sock in (client_sock, server_sock):
+             if sock is not None:
+-                try:
+-                    sock.close()
+-                except Exception as e:
+-                    _adbg('Ignoring error closing socket: %r', e)
++                _close_quietly(sock)
+     logging.debug('Request handling finished')
+
+
+@@ -1693,12 +1862,12 @@
+                 logging.error(str(e))
+                 sys.exit(1)
+
++            admission = ClientAdmission(client_listen_sock)
+             while True:
+                 # This loop can unfortunately not be interrupted using SIGINT,
+                 # see https://bugzilla.redhat.com/show_bug.cgi?id=707382 for
+                 # an explanation.
+-                bridge_one_request(config, server_listen_sock,
+-                                   client_listen_sock)
++                bridge_one_request(config, server_listen_sock, admission)
+         except (KeyboardInterrupt, SystemExit):
+             pass  # Silence is golden
+         except Exception:

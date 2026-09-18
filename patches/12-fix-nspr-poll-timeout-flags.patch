@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Make poll results trustworthy after a timeout. nss.io.Socket.poll()
+# hands back PR_Poll()'s out_flags without checking whether anything
+# was ready, and NSPR leaves its own scratch bits in them when the call
+# times out - bits that read as PR_POLL_READ and PR_POLL_ERR. Every
+# timed poll in double_tls therefore saw phantom events, which is why
+# the request idle deadline from patch 11 never fired on the inner
+# stream. See patches/README.md for the analysis and measurements.
+#
+--- a/src/double_tls.py
++++ b/src/double_tls.py
+@@ -82,8 +82,55 @@
+ class InnerCertificateNotFound(Exception):
+     '''inner_open_* certificate was not found.'''
+     pass
++
++
++# nss.io.Socket.poll() returns PR_Poll()'s out_flags without looking at
++# its return value, and NSPR only fills those in when at least one
++# descriptor is ready. When the call times out instead, each out_flags
++# still holds the scratch bits NSPR wrote while translating in_flags for
++# the system poll(): 0x1 for a READ interest and 0x8 for a WRITE
++# interest - which are exactly PR_POLL_READ and PR_POLL_ERR. So after a
++# timeout every descriptor looks readable, and every one we wanted to
++# write looks failed.
++#
++# Nothing here can tell the two cases apart from the flags alone. What
++# can is a descriptor that is never ready: one end of an idle loopback
++# pair, polled for READ alongside the real descriptors. It has nothing
++# to read, so PR_Poll() reports it readable only when the whole call
++# timed out and the scratch bits were never overwritten.
++#
++# One pair per process: a socket inherited across fork() would work,
++# but only because neither process ever writes to it, and that is one
++# assumption too many.
++_poll_sentinel = None
++_poll_sentinel_pid = None
++
++
++def _sentinel_socket():
++    global _poll_sentinel, _poll_sentinel_pid
++    pid = os.getpid()
++    if _poll_sentinel is None or _poll_sentinel_pid != pid:
++        _poll_sentinel = nss.io.Socket.new_tcp_pair()
++        _poll_sentinel_pid = pid
++    return _poll_sentinel[0]
+
+
++def poll_sockets(descs, timeout):
++    '''Poll for descs and return their out_flags.
++
++    descs is a sequence of (nss.io.Socket, in_flags); the result is a
++    list of out_flags in the same order. Unlike nss.io.Socket.poll(),
++    every out_flags is 0 when the call timed out without an event.
++
++    '''
++    flat = [(_sentinel_socket(), nss.io.PR_POLL_READ)]
++    flat.extend(descs)
++    res = nss.io.Socket.poll(flat, timeout)
++    if res[0] & nss.io.PR_POLL_READ:
++        return [0] * len(descs)
++    return list(res[1:])
++
++
+ def _nspr_poll(descs, timeout):
+     '''Poll for descs.
+
+@@ -91,9 +138,8 @@
+     updated with poll results.
+
+     '''
+-    # FIXME: implement this in nss-python instead?
+     flat = list(descs.items())
+-    res = nss.io.Socket.poll(flat, timeout)
++    res = poll_sockets(flat, timeout)
+     for (i, desc) in enumerate(flat):
+         descs[desc[0]] = res[i]

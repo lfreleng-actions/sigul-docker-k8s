@@ -217,9 +217,11 @@ class BacklogFlood(_RawClientFault):
     name = "client_backlog_flood"
     description = "Open 20 simultaneous connections to the client port and hold them."
     implication = (
-        "The listen backlog is 5 and the bridge accepts clients only "
-        "between server pairings, so honest clients beyond the backlog "
-        "are SYN-dropped and the sigul CLI does not retry."
+        "Twenty peers that never send a ClientHello, queued ahead of an "
+        "honest client: with serial admission each costs the honest client "
+        "one handshake deadline in turn (patch 13 handshakes them side by "
+        "side); with the default listen backlog of five the excess are "
+        "SYN-dropped and the sigul CLI does not retry (patch 10)."
     )
     clients = 20
 
