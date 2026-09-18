@@ -512,11 +512,60 @@ suite passes unchanged against the patched bridge.
 The server and client code paths are untouched: the defaults keep
 their previous unbounded behaviour.
 
+As shipped, only the `OuterBuffer` half of this worked: the
+`forward_two_way` deadline was reset by phantom events on every
+timeout and never fired. Patch 12 fixes the poll results it relies on.
+
 **Test:** a real client frozen 6 MB into an upload; an honest
 `list-users` retried every thirty seconds is refused four times and
 served at 122 seconds, where before it was never served. The soak
 harness's `client_handshake_then_hang` and `client_stop_mid_sign`
 faults now recover within the window.
+
+### 12-fix-nspr-poll-timeout-flags.patch
+
+**Status:** CRITICAL - without it every timed poll in `double_tls`
+sees phantom events, and the patch 11 inner-stream deadline never fires
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** `double_tls` (used by bridge, server and client)
+
+**Problem:**
+`nss.io.Socket.poll()` returns `PR_Poll()`'s `out_flags` without
+looking at its return value, and NSPR only fills those in when at
+least one descriptor is ready. When the call times out instead, each
+`out_flags` still holds the scratch bits NSPR wrote while translating
+the request for the system `poll()`: `0x1` for a READ interest and
+`0x8` for a WRITE interest - which read back as `PR_POLL_READ` and
+`PR_POLL_ERR`. So after a timeout every descriptor looks readable, and
+every one we wanted to write looks failed.
+
+Upstream Sigul never noticed because it never polled with a timeout:
+every call passed `PR_INTERVAL_NO_TIMEOUT`. Patches 06 and 11
+introduced timed polls, and the effects were: the `forward_two_way`
+idle deadline was reset on every timeout ("something happened") and
+never fired, so a client frozen during the inner-TLS phase still held
+the bridge's slot; and a buffer with data queued for a destination
+that was merely full saw `PR_POLL_ERR` and dropped the data. Measured
+in the bridge image: two idle sockets bridged with `idle_timeout=2`,
+no `IdleTimeoutError` in 6 seconds; polling an idle socket for WRITE
+with a full send buffer returned `[1, 8]`.
+
+**Fix:**
+A new `double_tls.poll_sockets()` wraps `nss.io.Socket.poll()` with a
+sentinel: one end of an idle loopback pair, polled for READ alongside
+the real descriptors. It has nothing to read, so it reports readable
+only when the whole call timed out and the scratch bits were never
+overwritten; in that case every result is forced to `0`. `_nspr_poll`
+uses it, so `forward_two_way` and everything built on it are
+corrected without further change. One sentinel pair per process,
+recreated after `fork()`.
+
+**Test:** `test/test_nspr_poll_timeout.py`, run in the bridge image in
+CI. Against the unpatched module it reports `[1, 1]` and `[1, 8]` for
+idle READ and blocked WRITE interests and the idle deadline never
+fires; patched, `[0, 0]`, real events still reported unchanged, the
+deadline fires at 2.0 s idle and 5.0 s when fed traffic for the first
+3 s.
 
 ## Applying Patches
 

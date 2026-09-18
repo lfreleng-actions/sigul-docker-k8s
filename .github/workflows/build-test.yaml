@@ -1138,6 +1138,30 @@ jobs:
             "${SIGUL_SERVER_IMAGE}" \
             /test/test_double_tls_teardown.py
 
+      - name: 'Test poll results after a timeout'
+        shell: bash
+        env:
+          SIGUL_BRIDGE_IMAGE: >-
+            bridge-${{
+              steps.runner-arch.outputs.platform-id
+            }}-image:test
+        run: |
+          # Regression guard for patches/12. nss.io.Socket.poll()
+          # returns NSPR's scratch bits as out_flags when the call
+          # times out, so every timed poll saw phantom events and the
+          # patches/11 request idle deadline never fired on the inner
+          # stream. The check asserts idle sockets report nothing on a
+          # timeout, real events still come through, and the deadline
+          # fires - and is pushed back by traffic.
+          #
+          # --entrypoint for the same reason as the teardown test above.
+          docker run --rm \
+            --user 1000:1000 \
+            -v "${PWD}/test:/test:ro" \
+            --entrypoint python3 \
+            "${SIGUL_BRIDGE_IMAGE}" \
+            /test/test_nspr_poll_timeout.py
+
       - name: 'Capture Sigul daemon logs and container diagnostics'
         if: always()
         shell: bash
