@@ -286,14 +286,32 @@ else, so a second backend was all that separated it from the chart.
 drives a Helm release through `kubectl`.
 
 ```bash
-./soak/k8s/deploy.sh              # kind cluster + chart, or reuse a context
-cd soak && python3 -m harness k8s # ~9 minutes
-./soak/k8s/deploy.sh --teardown
+./soak/k8s/deploy.sh                       # kind cluster + chart, or reuse a context
+set -a; . test-artifacts/soak-k8s.env; set +a   # select the Kubernetes backend
+cd soak && python3 -m harness k8s          # ~9 minutes
+cd .. && ./soak/k8s/deploy.sh --teardown
 ```
 
-The deploy script prints the environment the harness needs. Point
-`SOAK_K8S_CONTEXT` at an existing cluster to skip kind entirely, which
-is worth doing locally where one is usually running already.
+The second line is not optional: without it `SOAK_TARGET` is unset,
+the harness builds a `DockerTarget` and soaks whatever Compose stack
+happens to be running instead. `deploy.sh` writes that file (mode
+`0600`, since it names the admin password file) as well as printing
+the command.
+
+The deploy script waits for what the harness actually needs, not just
+for Helm to return: the PKI bootstrap Job complete, the daemons rolled
+out, and the toolbox client able to reach the server and authenticate.
+It prints the environment the harness needs and writes it to
+`test-artifacts/soak-k8s.env`. Point `SOAK_K8S_CONTEXT` at an existing
+cluster to skip kind entirely, which is worth doing locally where one
+is usually running already.
+
+The kind cluster is called `soak-k8s`, and the name matters: kind
+names its node container `<cluster>-control-plane`, and
+`deploy-sigul-infrastructure.sh --force-clean-volumes` — which
+`run-soak.sh` runs — removes every container matching `name=sigul`. A
+cluster named after Sigul is destroyed by any Compose soak on the same
+machine, minutes into an unrelated Kubernetes run.
 
 Everything happens from **outside** the cluster, and nothing is
 installed to make the release measurable — no runner Deployment, no
@@ -306,23 +324,59 @@ in a container, because every interaction is a `kubectl` call.
 
 Compose covers the daemons, and every defect found so far lived
 there. It cannot cover what the chart contributes. Here the
-controllers, the probes and the NetworkPolicies are all in play — and
-the difference shows immediately:
+controllers and the probes are in play — and the difference shows
+immediately:
 
-| | Compose | Kubernetes |
-| --- | ---: | ---: |
-| bridge restart | ~2 s | **7 s** (Deployment replaces the pod) |
-| server restart | ~2 s | **25 s** (StatefulSet, `OrderedReady`) |
+|                | Compose | Kubernetes                                |
+| -------------- | ------: | ----------------------------------------: |
+| bridge restart | ~2 s    | **7 s** (Deployment replaces the pod)     |
+| server restart | ~2 s    | **25 s** (StatefulSet, probe-gated start) |
 
-That 25 seconds is the `OrderedReady` cost, and it is invisible under
-Compose. Restarts are warm faults, before the baseline, for the same
+The asymmetry is the point, and it is not `OrderedReady`: the chart
+fixes the server at one replica, so there is no second ordinal for
+ordering to serialise. It is that a Deployment brings the replacement
+up *alongside* the outgoing pod, while a StatefulSet's replacement
+cannot exist until the old pod is fully gone — and then waits out its
+init containers, its startup and a readiness probe with a 10-second
+initial delay and a 15-second period. Twenty-five seconds of it, none
+of it visible under Compose.
+
+Restarts are warm faults, before the baseline, for the same
 reason the Compose profiles place them there: the leak comparison runs
 from baseline to cooldown and means nothing across a restart.
 
+What this does **not** cover is a server that is `Running` but never
+`Ready` — the state `OrderedReady` genuinely will not resolve, and the
+one behind the production incident. Both restart faults delete a
+*healthy* pod. Tracked as
+[#27](https://github.com/lfreleng-actions/sigul-docker-k8s/issues/27).
+
 When a replacement reports `Ready`, the target checks that the daemon
-is actually holding its port open, and warns if not. A readiness probe
-that passes early sends the next request into a refused connection,
-and nothing else in a run would attribute that to the probe.
+holds the socket it needs in order to serve — the bridge listening for
+clients, the server connected to the bridge. If it does not, the run
+**fails** on a `readiness means the daemon can serve` invariant rather
+than merely logging it: a readiness probe that passes early sends the
+next request into a refused connection, and a warning in a nightly's
+output is a warning nobody reads.
+
+**NetworkPolicies are applied but not yet verified.** kind's default
+CNI accepts policy objects without enforcing them, so what this
+exercises today is the chart's templating, not its policies. Proving
+them needs the cluster created with `disableDefaultCNI` and a
+policy-capable CNI installed, together with a negative connectivity
+assertion so that enforcement is demonstrated rather than assumed.
+Tracked as [#26](https://github.com/lfreleng-actions/sigul-docker-k8s/issues/26).
+
+**Liveness-driven recovery is not covered either.** Both restart
+faults delete a *healthy* pod. The production failure — `Running` but
+never `Ready`, which `OrderedReady` will not replace — needs a wedge,
+and freezing is unavailable here (see below), so it needs a different
+mechanism. Tracked as
+[#27](https://github.com/lfreleng-actions/sigul-docker-k8s/issues/27).
+
+Until both land, [#21](https://github.com/lfreleng-actions/sigul-docker-k8s/issues/21)
+stays open: this target meets its probe and StatefulSet-replacement
+criteria and not its policy or wedge ones.
 
 ### What it deliberately does not do
 
@@ -338,9 +392,12 @@ recovery from an event that never happened. Compose keeps that ground.
 
 **Raw-socket client faults** dial the bridge directly, and its Service
 is `ClusterIP` — unreachable from where the harness runs. **Network
-toxics** need Toxiproxy in the request path, which is separate
-plumbing in a cluster. Both are thoroughly covered under Compose, so
-the `k8s` profile names neither rather than naming them and failing.
+toxics** need Toxiproxy in the request path, which is
+separate plumbing in a cluster. Both are thoroughly covered under
+Compose, so the `k8s` profile names neither rather than naming them
+and failing — and pairing a profile that does name one with a target
+that has no proxy is refused before the run starts, rather than
+turning into a fault failure twenty minutes in.
 
 No baseline is committed for this profile. The `kubectl exec` in front
 of every request makes its latencies incomparable with Compose's, and

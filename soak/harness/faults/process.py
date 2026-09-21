@@ -74,6 +74,7 @@ class RestartServer(_ProcessFault):
 
 class FreezeBridge(_ProcessFault):
     name = "proc_freeze_bridge"
+    requires = ("freeze",)
     service_possible_during = False
     description = "SIGSTOP the whole bridge container: sockets open, nothing answered."
     implication = (
@@ -91,6 +92,7 @@ class FreezeBridge(_ProcessFault):
 
 class FreezeServer(_ProcessFault):
     name = "proc_freeze_server"
+    requires = ("freeze",)
     service_possible_during = False
     description = "SIGSTOP the whole server container: sockets open, nothing answered."
     implication = (
@@ -128,6 +130,9 @@ class ServerTeardownAgainstSilentPeer(_ProcessFault):
     """
 
     name = "server_teardown_vs_silent_peer"
+    # Freezes the server's TCP peer, which under Compose is Toxiproxy:
+    # both the freezer and the proxy have to exist.
+    requires = ("freeze", "proxy")
     service_possible_during = False
     description = (
         "Freeze the server's TCP peer, then fire the idle server child's hourly "

@@ -39,10 +39,9 @@ COLUMNS = (
 )
 
 
-#: Long enough for a whole tick of readings to fail on the target's
-#: API bound: two units, each with several calls that may each take
-#: DockerTarget.API_TIMEOUT_SECONDS.
-STOP_TIMEOUT_SECONDS = 180.0
+#: Added to the target's per-sample budget to cover the writer
+#: flushing and closing the file once the last reading is in.
+STOP_GRACE_SECONDS = 10.0
 
 
 class Sampler:
@@ -59,6 +58,13 @@ class Sampler:
         self._interval = interval
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # The loop finishes the unit it is on before it looks at the
+        # stop flag, so a shutdown waits out at most one unit's
+        # readings. What that costs depends entirely on the backend -
+        # a kubectl round trip is bounded far more loosely than a
+        # Docker API call - so the target states its own worst case
+        # rather than this module guessing one for both.
+        self._stop_timeout = target.sample_budget_seconds() + STOP_GRACE_SECONDS
         self.errors = 0
 
     def start(self) -> None:
@@ -70,17 +76,18 @@ class Sampler:
         """Stop sampling and wait for the writer to have closed the file.
 
         One in-flight reading may take up to the target's full API bound
-        to fail, and the loop finishes the units of the current tick
+        to fail, and the loop finishes the unit of the current tick
         before it checks the stop flag. Wait long enough for that, and
         report loudly if the thread is still alive afterwards: analysis
         reading a file the sampler still has open is not acceptable.
         """
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(timeout=STOP_TIMEOUT_SECONDS)
+            self._thread.join(timeout=self._stop_timeout)
             if self._thread.is_alive():
                 raise RuntimeError(
-                    f"sampler thread still running {STOP_TIMEOUT_SECONDS:.0f}s after stop()"
+                    f"sampler thread still running {self._stop_timeout:.0f}s "
+                    "after stop()"
                 )
 
     def _run(self) -> None:

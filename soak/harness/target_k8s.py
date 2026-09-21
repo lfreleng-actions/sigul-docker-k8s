@@ -8,49 +8,111 @@
 
 Kept apart from target.py so that neither backend has to be read to
 understand the other, and so the Docker path carries no import of a
-tool it never uses.
+tool it never uses. The kubectl plumbing underneath is in k8s_api.py:
+this module is only about what a Sigul stack looks like through it.
 """
 
 from __future__ import annotations
 
 import logging
-import os
-import subprocess
 import time
-from datetime import datetime
+from dataclasses import dataclass
 
+# ProductDefect is the fault layer's vocabulary for "the product
+# misbehaved", as opposed to "the harness broke". Imported rather than
+# reinvented so that the Scheduler and the analyser classify a failed
+# replacement the same way they classify a fault that catches the same
+# class of problem directly.
+from .faults.base import ProductDefect
+from .k8s_api import Release
 from .target import ProcessStats, Target
 
 _log = logging.getLogger(__name__)
 
-#: The port each daemon must be holding open before Ready means
-#: anything. The bridge's client port is the one a signing request
-#: arrives on; the server dials out rather than listening, so it has
-#: no equivalent and is not checked.
-_LISTEN_PORTS = {"bridge": 44334}
+
+@dataclass(frozen=True)
+class _Serving:
+    """The socket state that has to exist for Ready to be true."""
+
+    #: Reads as the tail of "... reported Ready while nothing was ...".
+    description: str
+    #: `ss` arguments, matching at least one socket when serving.
+    ss_filter: str
+    #: How long the socket may be absent before its absence is a
+    #: finding. Per daemon, because they differ: see below.
+    grace_seconds: float
+
+
+#: What serving actually means, per daemon. Derived from what each one
+#: does rather than copied from the chart's probe command: the bridge
+#: accepts connections, so it must be listening; the server dials out
+#: and holds a connection to the bridge, so it must be connected.
+#: Checking the daemon's own behaviour rather than re-running the
+#: probe is the point - a probe that stopped being evaluated at all
+#: would still satisfy a copy of itself.
+#:
+#: The grace differs because the sockets do. The bridge's listener is
+#: opened once and held for the daemon's life, so it is there the
+#: instant Ready can legitimately be true and no allowance is
+#: warranted: any at all would let a regressed probe mark the pod
+#: Ready seconds before the listener appeared and still pass, which
+#: is the precise window this check exists to catch.
+#:
+#: The server's connection is per-request. Sampling inside the pod at
+#: 4 Hz during five signing requests caught two single-sample gaps -
+#:
+#:   1 1 1 1 1 1 1 1 1 1 1 1 1 1 0 1 1 1 1 1 1 0 1 1 1 1 1 ...
+#:
+#: - so a single reading landing in one would report a defect that is
+#: not there, and this check fails the run. Polled rather than
+#: loosened, because the defect being looked for is a daemon that
+#: never connects at all: a gap of seconds is still that, a gap of a
+#: quarter of a second is a handoff.
+_SERVING = {
+    "bridge": _Serving(
+        description="listening on 44334",
+        ss_filter="-Htln sport = :44334",
+        grace_seconds=0.0,
+    ),
+    "server": _Serving(
+        description="connected to the bridge on 44333",
+        ss_filter="-Htn state established '( dport = :44333 )'",
+        grace_seconds=5.0,
+    ),
+}
 
 
 class KubernetesTarget(Target):
     """A stack deployed by the Helm chart, driven through kubectl.
 
     Everything happens from outside the cluster, which is what makes
-    this worth having: the chart's probes, its OrderedReady StatefulSet
-    and its NetworkPolicies are all in play, and none of them exist
-    under Compose. Nothing is installed into the cluster to support the
-    harness - no runner Deployment, no RBAC, no sidecar - so what is
-    measured is the release as shipped rather than a variant of it
-    arranged to be measurable.
+    this worth having: the chart's probes and its StatefulSet are in
+    play, and neither exists under Compose. Its NetworkPolicies are
+    applied but not enforced by kind's default CNI, so they are
+    rendered rather than tested (issue #26). Nothing is installed into
+    the cluster to support the harness - no runner Deployment, no
+    RBAC, no sidecar - so what is measured is the release as shipped
+    rather than a variant of it arranged to be measurable.
 
-    Units are named as the chart names them. A Deployment's pod carries
-    a generated suffix, so units are resolved by label rather than
-    remembered: after a restart the old name is gone, and caching it
-    would turn every later reading into an error.
+    Units are named as the chart names them, and the component is the
+    last word of the unit name: `sigul-bridge` is the bridge. That is
+    what the chart labels its objects and names its containers with, so
+    it is what everything here is addressed by.
     """
 
-    #: Ceiling on any single kubectl call. Generous next to the Docker
-    #: backend's, because each one is a round trip to the apiserver and
-    #: on a cold cluster the first exec of a run can take seconds.
-    API_TIMEOUT_SECONDS = 60
+    #: None of them. There is no Toxiproxy in the cluster; the bridge's
+    #: Service is ClusterIP and unreachable from outside it; the sigul
+    #: CLI runs in the toolbox pod, where a signal from here cannot
+    #: follow it; and freeze() is impossible (see its docstring). The
+    #: Kubernetes profile therefore names only restart faults.
+    CAPABILITIES = frozenset()
+
+    #: stats() reads two cgroup files rather than running a tool, but
+    #: goes through the same exec, so it gets its own bound.
+    STATS_TIMEOUT_SECONDS = 20.0
+
+    #: How long to wait for a deleted pod's replacement to be serving.
+    REPLACEMENT_TIMEOUT_SECONDS = 60.0
 
     def __init__(
         self,
@@ -58,97 +120,36 @@ class KubernetesTarget(Target):
         context: str | None = None,
         release: str | None = None,
     ) -> None:
-        self._namespace = namespace or os.environ.get(
-            "SOAK_K8S_NAMESPACE", "sigul-soak"
-        )
-        self._context = context or os.environ.get("SOAK_K8S_CONTEXT", "")
-        self._release = release or os.environ.get("SOAK_K8S_RELEASE", "sigul")
-        self._pods: dict[str, str] = {}
-
-    def _kubectl(self, argv: list[str], timeout: float, check: bool = True) -> str:
-        cmd = ["kubectl"]
-        if self._context:
-            cmd += ["--context", self._context]
-        cmd += ["-n", self._namespace, *argv]
-        try:
-            proc = subprocess.run(  # noqa: S603 - fixed argv
-                cmd, capture_output=True, timeout=timeout, check=False
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise TimeoutError(f"kubectl {argv[0]} exceeded {timeout:.0f}s") from exc
-        out = proc.stdout.decode("utf-8", errors="replace")
-        if check and proc.returncode != 0:
-            err = proc.stderr.decode("utf-8", errors="replace").strip()
-            raise RuntimeError(
-                f"kubectl {argv[0]} exited {proc.returncode}: "
-                f"{(err or out).strip()[:200]}"
-            )
-        return out
+        self._release = Release(namespace=namespace, context=context, name=release)
+        #: Times the chart said a unit was Ready while the socket it
+        #: needs in order to serve was absent. Collected rather than
+        #: logged, so the run can fail on them: a warning in a
+        #: nightly's output is a warning nobody reads, and premature
+        #: readiness is one of the defects this target exists to catch.
+        self.probe_violations: list[str] = []
 
     def _component(self, unit: str) -> str:
         """The chart labels and names containers after the component."""
         return unit.rsplit("-", 1)[-1]
 
-    def _selector(self, unit: str) -> str:
-        return (
-            f"app.kubernetes.io/instance={self._release},"
-            f"app.kubernetes.io/component={self._component(unit)}"
-        )
-
-    def _pod(self, unit: str, refresh: bool = False) -> str:
-        if refresh or unit not in self._pods:
-            out = self._kubectl(
-                [
-                    "get",
-                    "pod",
-                    "-l",
-                    self._selector(unit),
-                    "-o",
-                    "jsonpath={.items[0].metadata.name}",
-                ],
-                timeout=self.API_TIMEOUT_SECONDS,
-            ).strip()
-            if not out:
-                raise RuntimeError(f"no pod for {unit} in {self._namespace}")
-            self._pods[unit] = out
-        return self._pods[unit]
-
     def run_in(
         self, unit: str, argv: list[str], timeout: float = 30.0, check: bool = True
     ) -> str:
-        # Two bounds again, for the same reason as the Docker backend:
-        # `timeout` inside the container bounds the command, and the
-        # subprocess timeout bounds the round trip. A frozen pod answers
-        # neither.
-        last: Exception | None = None
-        for attempt in (0, 1):
-            pod = self._pod(unit, refresh=attempt == 1)
-            try:
-                return self._kubectl(
-                    [
-                        "exec",
-                        pod,
-                        "-c",
-                        self._component(unit),
-                        "--",
-                        "timeout",
-                        str(int(timeout)),
-                        *argv,
-                    ],
-                    timeout=timeout + 15,
-                    check=check,
-                )
-            except RuntimeError as exc:
-                # A pod replaced since it was resolved gives "not
-                # found". Re-resolve once before calling it a failure.
-                last = exc
-        raise RuntimeError(f"exec in {unit} failed: {last}")
+        return self._release.exec_in(
+            self._component(unit), argv, timeout=timeout, check=check
+        )
 
     def stats(self, unit: str) -> ProcessStats:
         # Read the cgroup rather than metrics-server, which a kind
         # cluster does not have and which samples on its own schedule
         # anyway. memory.current counts page cache, so take the anon
         # figure for parity with the Docker backend's usage-minus-cache.
+        #
+        # The command handles a missing cgroup file itself and always
+        # exits zero, so check is left on: a non-zero exit is the exec
+        # failing to run at all, and empty output would parse as zero
+        # RSS and zero PIDs - a fabricated sample that counts towards
+        # coverage and drags the leak trend down with it.
         out = self.run_in(
             unit,
             [
@@ -157,8 +158,7 @@ class KubernetesTarget(Target):
                 "awk '/^anon /{print $2}' /sys/fs/cgroup/memory.stat 2>/dev/null "
                 "|| echo 0; cat /sys/fs/cgroup/pids.current 2>/dev/null || echo 0",
             ],
-            timeout=20.0,
-            check=False,
+            timeout=self.STATS_TIMEOUT_SECONDS,
         )
         fields = [line.strip() for line in out.splitlines() if line.strip()]
         rss = int(fields[0]) if fields and fields[0].isdigit() else 0
@@ -173,9 +173,15 @@ class KubernetesTarget(Target):
 
         This is how a pod dies in production - evicted, OOM-killed,
         rescheduled - and it exercises what Compose cannot: the
-        controller replacing it, the probes deciding when the
-        replacement is ready, and OrderedReady declining to act on a
-        pod that is Running but not Ready.
+        controller creating a replacement, and the probes deciding when
+        that replacement may be sent traffic.
+
+        The pod deleted here is a *healthy* one. A server that is
+        Running but never Ready - the state OrderedReady will not
+        resolve on its own, and the one behind the production incident
+        - needs a wedge this target cannot currently inject, and is
+        deliberately out of scope (see issue #27). Nothing below should
+        be read as covering it.
 
         Waiting is done against the container's start time rather than
         the pod's name or its Ready condition alone. Neither is enough
@@ -185,49 +191,76 @@ class KubernetesTarget(Target):
         a naive wait returns immediately having observed the pod it was
         supposed to be replacing.
         """
+        component = self._component(unit)
         was_started = self.started_at(unit)
-        pod = self._pod(unit, refresh=True)
-        self._kubectl(["delete", "pod", pod, "--now"], timeout=self.API_TIMEOUT_SECONDS)
-        self._pods.pop(unit, None)
+        pod = self._release.pod(component, refresh=True)
+        self._release.run(
+            ["delete", "pod", pod, "--now"],
+            timeout=self._release.API_TIMEOUT_SECONDS,
+        )
+        self._release.forget_pod(component)
 
-        deadline = time.monotonic() + self.API_TIMEOUT_SECONDS
+        deadline = time.monotonic() + self.REPLACEMENT_TIMEOUT_SECONDS
+        last_error = ""
         while time.monotonic() < deadline:
             try:
-                if self.ready(unit) and self.started_at(unit) > was_started:
-                    # Ready is the chart's claim that the replacement can
-                    # serve. Check it against the only thing that makes
-                    # it true - the daemon holding its port open - at the
-                    # one moment the two can disagree. A probe that
-                    # passes early sends the next request into a refused
-                    # connection, and nothing else in the run would
-                    # attribute that to the probe.
-                    port = _LISTEN_PORTS.get(self._component(unit))
-                    if port and not self.listening(unit, port):
-                        _log.warning(
-                            "%s reported Ready while nothing was listening on "
-                            "%d: the readiness probe passes before the daemon "
-                            "can serve",
-                            unit,
-                            port,
-                        )
+                state = self._release.pod_state(component)
+                if state.ready and state.started_at > was_started:
+                    self._note_premature_readiness(unit, component)
                     return
             except RuntimeError as exc:
-                # The controller has not created the replacement yet, so
-                # there is no pod to resolve. Expected for the first
-                # second or two; anything else surfaces when the
-                # deadline below runs out.
+                # Either the controller has not created the replacement
+                # yet, so there is no pod to resolve, or an exec into a
+                # pod that is not accepting them. Expected for the first
+                # second or two; anything else surfaces in the warning
+                # below when the deadline runs out.
+                last_error = str(exc)
                 _log.debug("waiting for %s to be replaced: %s", unit, exc)
-            self._pods.pop(unit, None)
+            self._release.forget_pod(component)
             time.sleep(1.0)
-        # Not raising: a replacement that never becomes Ready is a
-        # finding, not a harness error. The fault's recovery window and
-        # the readiness invariants are what should report it, and they
-        # cannot if this aborts the run first.
-        _log.warning(
-            "%s did not become Ready within %ds of being deleted",
-            unit,
-            self.API_TIMEOUT_SECONDS,
+        # Raised, not warned. A replacement that never reports Ready
+        # is invisible to everything else in the run: the server
+        # serves over its own outbound connection to the bridge rather
+        # than through a readiness-gated Service endpoint, so load
+        # recovers, every other check passes, and a nightly stays
+        # green with a broken probe and a rollout that will never
+        # finish. ProductDefect rather than a bare exception because
+        # that is what this is - the fault ran as intended and caught
+        # the product misbehaving - and the Scheduler records it
+        # against the fault without aborting the report.
+        raise ProductDefect(
+            f"{unit} did not report Ready within "
+            f"{self.REPLACEMENT_TIMEOUT_SECONDS:.0f}s of being deleted"
+            + (f" (last error: {last_error})" if last_error else "")
         )
+
+    def _note_premature_readiness(self, unit: str, component: str) -> None:
+        """Record a unit that reported Ready with no socket behind it.
+
+        Ready is the chart's claim that the replacement can serve.
+        Checked against the only thing that makes it true - the socket
+        state the daemon needs in order to serve - at the one moment
+        the two can disagree. A probe that passes early sends the next
+        request into a refused connection, or pairs it with a server
+        that is not there, and nothing else in the run would attribute
+        that to the probe.
+
+        Both daemons are checked, each against what serving means for
+        it. The server's readiness is an established connection to the
+        bridge, so a replacement marked Ready before it reconnects is
+        the same defect wearing different clothes.
+
+        serving() raises rather than answering False when it cannot
+        ask, and that exception is left to the caller's retry loop: an
+        exec that failed against a pod seconds old must not be recorded
+        as the defect this exists to detect.
+        """
+        expected = _SERVING.get(component)
+        if expected is None or self.serving(unit):
+            return
+        violation = f"{unit} reported Ready while nothing was {expected.description}"
+        _log.warning("%s", violation)
+        self.probe_violations.append(violation)
 
     def freeze(self, unit: str) -> None:
         """Not available here, and deliberately not faked.
@@ -266,36 +299,22 @@ class KubernetesTarget(Target):
         """Nothing to undo: freeze() never happened. See its docstring."""
 
     def logs_since(self, unit: str, seconds: float) -> str:
-        return self._kubectl(
+        component = self._component(unit)
+        # The one call that tolerates failure: a container that has only
+        # just started legitimately has no logs, and an empty string is
+        # the right answer for the error-rate accounting downstream.
+        return self._release.run(
             [
                 "logs",
-                self._pod(unit),
+                self._release.pod(component),
                 "-c",
-                self._component(unit),
+                component,
                 f"--since={int(seconds)}s",
                 "--tail=2000",
             ],
-            timeout=self.API_TIMEOUT_SECONDS,
+            timeout=self._release.API_TIMEOUT_SECONDS,
             check=False,
         )
-
-    def _container_field(self, unit: str, field: str) -> str:
-        name = self._component(unit)
-        return self._kubectl(
-            [
-                "get",
-                "pod",
-                self._pod(unit, refresh=True),
-                "-o",
-                "jsonpath={.status.containerStatuses[?(@.name=='"
-                + name
-                + "')]."
-                + field
-                + "}",
-            ],
-            timeout=self.API_TIMEOUT_SECONDS,
-            check=False,
-        ).strip()
 
     def started_at(self, unit: str) -> float:
         """When the daemon container last started.
@@ -303,11 +322,15 @@ class KubernetesTarget(Target):
         The container's start time, not the pod's: a probe-driven
         restart replaces the container while the pod lives on, and that
         is exactly the event this target exists to catch.
+
+        Read through pod_state so that a failed query raises instead of
+        answering 0.0. The sampler writes this to every row and the
+        analyser reads a change in it as a restart, so a fabricated
+        zero on one reading fails the hard "no restart between baseline
+        and cooldown" invariant over an API blip that restarted
+        nothing. Raised, the sampler skips the reading instead.
         """
-        out = self._container_field(unit, "state.running.startedAt")
-        if not out:
-            return 0.0
-        return datetime.fromisoformat(out.replace("Z", "+00:00")).timestamp()
+        return self._release.pod_state(self._component(unit)).started_at
 
     def restart_count(self, unit: str) -> int:
         """How many times the kubelet has restarted the daemon container.
@@ -316,40 +339,68 @@ class KubernetesTarget(Target):
         target: a liveness probe firing during a long request shows up
         here and nowhere else.
         """
-        out = self._container_field(unit, "restartCount")
+        out = self._release.container_field(self._component(unit), "restartCount")
         return int(out) if out.isdigit() else 0
 
     def ready(self, unit: str) -> bool:
-        """Whether the chart's readiness probe currently passes."""
-        out = self._kubectl(
-            [
-                "get",
-                "pod",
-                "-l",
-                self._selector(unit),
-                "-o",
-                "jsonpath={.items[0].status.conditions[?(@.type=='Ready')].status}",
-            ],
-            timeout=self.API_TIMEOUT_SECONDS,
-            check=False,
-        ).strip()
-        return out == "True"
+        """Whether the chart's readiness probe currently passes.
 
-    def listening(self, unit: str, port: int) -> bool:
-        """Whether the daemon actually holds the port open.
+        The same single reading as started_at, so the two can never
+        describe different pods - see Release.pod_state.
+        """
+        return self._release.pod_state(self._component(unit)).ready
+
+    def serving(self, unit: str) -> bool:
+        """Whether the daemon holds the socket it needs in order to serve.
 
         Paired with ready() this answers the question a readiness probe
         exists to answer and which nothing else checks: does Ready mean
-        reachable. A probe passing before the listener exists sends
-        traffic into a refused connection.
+        reachable. The bridge must be listening for clients; the server
+        must be connected to the bridge.
+
+        Polled for the daemon's own grace rather than sampled once -
+        zero for the bridge, whose listener is permanent, and five
+        seconds for the server, whose connection is per-request. See
+        _SERVING. Returns as soon as the socket appears, so the healthy
+        case costs one exec either way.
+
+        Errors are raised, not turned into False. False is a finding
+        that fails the run, so it has to mean "asked, and the socket
+        was not there" - never "could not ask".
         """
-        try:
+        expected = _SERVING.get(self._component(unit))
+        if expected is None:
+            return True
+        deadline = time.monotonic() + expected.grace_seconds
+        while True:
             out = self.run_in(
                 unit,
-                ["sh", "-c", f"ss -Htln sport = :{port} | head -1"],
-                timeout=15.0,
-                check=False,
+                ["sh", "-c", f"ss {expected.ss_filter} | head -1"],
+                timeout=self.READING_TIMEOUT_SECONDS,
             )
-        except (RuntimeError, TimeoutError):
-            return False
-        return bool(out.strip())
+            if out.strip():
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.25)
+
+    def sample_budget_seconds(self) -> float:
+        """Arithmetic over this backend's own bounds; see Target.
+
+        Everything here is a kubectl round trip, and a reading that
+        meets a replaced pod pays for a second resolution and a second
+        exec before it fails. One reading of one unit is therefore the
+        cgroup read, the three exec readings, and started_at - one
+        pod_state query.
+
+        The result is minutes rather than seconds, and deliberately so:
+        it is only ever waited out when the apiserver has stopped
+        answering at the moment the run ends, and failing the run then
+        would throw away half an hour of measurements that are already
+        on disk.
+        """
+        return (
+            self._release.exec_budget_seconds(self.STATS_TIMEOUT_SECONDS)
+            + 3 * self._release.exec_budget_seconds(self.READING_TIMEOUT_SECONDS)
+            + self._release.API_TIMEOUT_SECONDS
+        )

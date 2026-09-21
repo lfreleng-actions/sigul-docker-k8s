@@ -97,7 +97,10 @@ def _read_admin_password() -> str:
 
 
 def _run_sigul(
-    argv: list[str], passwords: list[str], timeout: float
+    argv: list[str],
+    passwords: list[str],
+    timeout: float,
+    remove_after: tuple[str, ...] = (),
 ) -> tuple[bool, str]:
     """Run one sigul command in its own process group; see harness.cli.
 
@@ -105,8 +108,19 @@ def _run_sigul(
     came back, which under Sigul's serial model implies the whole
     service was blocked, not just this caller.
     """
-    outcome = run_sigul(argv, passwords, timeout)
+    outcome = run_sigul(argv, passwords, timeout, remove_after)
     return outcome.ok, outcome.detail
+
+
+def _outputs(path: Path) -> tuple[str, ...]:
+    """An output file and the backup sigul leaves beside it.
+
+    utils.write_new_file() replaces the target atomically and keeps the
+    previous version as `path~`, so a task deleting only its named
+    output leaves half of what it wrote. Two files per signing request,
+    and for sign_data_64mb they are 64 MiB each.
+    """
+    return (str(path), f"{path}~")
 
 
 @events.init.add_listener
@@ -198,9 +212,15 @@ class SigulUser(User):
     #: an unbounded wait would hide a total stall as a missing sample.
     timeout = float(os.environ.get("SOAK_REQUEST_TIMEOUT", "180"))
 
-    def _measure(self, name: str, argv: list[str], passwords: list[str]) -> None:
+    def _measure(
+        self,
+        name: str,
+        argv: list[str],
+        passwords: list[str],
+        remove_after: tuple[str, ...] = (),
+    ) -> None:
         started = time.perf_counter()
-        ok, detail = _run_sigul(argv, passwords, self.timeout)
+        ok, detail = _run_sigul(argv, passwords, self.timeout, remove_after)
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         self.environment.events.request.fire(
             request_type="sigul",
@@ -226,8 +246,8 @@ class SigulUser(User):
             "sign_text",
             ["sign-text", "-o", str(out), KEY_NAME, str(WORK_DIR / "small.txt")],
             [KEY_PASSPHRASE],
+            _outputs(out),
         )
-        out.unlink(missing_ok=True)
 
     @task(int(os.environ.get("SOAK_W_SIGN_1MB", "3")))
     def sign_data_1mb(self) -> None:
@@ -236,8 +256,8 @@ class SigulUser(User):
             "sign_data_1mb",
             ["sign-data", "-o", str(out), KEY_NAME, str(WORK_DIR / "blob1m.bin")],
             [KEY_PASSPHRASE],
+            _outputs(out),
         )
-        out.unlink(missing_ok=True)
 
     @task(int(os.environ.get("SOAK_W_SIGN_64MB", "1")))
     def sign_data_64mb(self) -> None:
@@ -246,8 +266,8 @@ class SigulUser(User):
             "sign_data_64mb",
             ["sign-data", "-o", str(out), KEY_NAME, str(WORK_DIR / "blob64m.bin")],
             [KEY_PASSPHRASE],
+            _outputs(out),
         )
-        out.unlink(missing_ok=True)
 
 
 class ProfileShape(LoadTestShape):

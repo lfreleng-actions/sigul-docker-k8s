@@ -210,6 +210,38 @@ def _stop_load(locust: subprocess.Popen | None) -> str | None:
     return None
 
 
+def _reject_unavailable_faults(
+    profile: Profile, target: Target, registry: dict
+) -> None:
+    """Refuse a profile whose faults this target cannot inject.
+
+    Every fault declares the capabilities its mechanism needs and every
+    target declares what it offers. Caught before the run rather than
+    at injection time, and refused rather than skipped: a fault whose
+    mechanism cannot reach the stack still produces a window, and some
+    of them swallow connection errors by design, so the run would
+    record a clean recovery from an event that never happened.
+    """
+    unavailable: list[str] = []
+    for slot in (
+        *profile.preflight_faults,
+        *profile.warm_faults,
+        *profile.faults,
+    ):
+        fault = registry.get(slot.fault)
+        if fault is None:
+            continue
+        lacking = [c for c in fault.requires if not target.provides(c)]
+        if lacking:
+            unavailable.append(f"{slot.fault} (needs {', '.join(sorted(lacking))})")
+    if unavailable:
+        raise SystemExit(
+            f"profile {profile.name} names faults "
+            f"{type(target).__name__} cannot inject: "
+            + "; ".join(sorted(set(unavailable)))
+        )
+
+
 def run(profile: Profile, output_dir: Path) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     for stale in ("requests.csv", "samples.csv", "timeline.csv", "locust-started"):
@@ -233,6 +265,7 @@ def run(profile: Profile, output_dir: Path) -> int:
 
     target = build_target()
     registry = build_registry(target)
+    _reject_unavailable_faults(profile, target, registry)
     timeline = Timeline(output_dir / "timeline.csv")
     scheduler = Scheduler(profile, registry, timeline, log=log)
     sampler = Sampler(target, (bridge, server), output_dir / "samples.csv")
@@ -259,19 +292,12 @@ def run(profile: Profile, output_dir: Path) -> int:
     try:
         # Readiness runs inside the reporting path, so a stack that never
         # serves still produces report.md and results.json saying why.
-        # Toxiproxy sits in the request path only to serve the network
-        # faults. A profile that names none - the Kubernetes one, where
-        # there is no proxy in the cluster to configure - should not
-        # require it to exist, let alone fail before the first request
-        # because it does not.
-        if any(
-            slot.fault.startswith("net_")
-            for slot in (
-                *profile.preflight_faults,
-                *profile.warm_faults,
-                *profile.faults,
-            )
-        ):
+        # Toxiproxy sits in the request path of the Compose stack, so
+        # its proxies are created before anything is asked to serve:
+        # unconfigured, they listen for nothing and the stack answers
+        # nothing. The Kubernetes deployment has no proxy to configure,
+        # and must not fail before the first request looking for one.
+        if target.provides("proxy"):
             configure_proxies(bridge)
         wait_for_service(password)
         sampler.start()
@@ -323,7 +349,11 @@ def run(profile: Profile, output_dir: Path) -> int:
             log(f"sampler: {sampler.errors} readings skipped (units restarting/frozen)")
 
     return analyse_and_report(
-        profile.name, output_dir, registry, harness_failure=failure
+        profile.name,
+        output_dir,
+        registry,
+        harness_failure=failure,
+        probe_violations=tuple(getattr(target, "probe_violations", ())),
     )
 
 
@@ -332,6 +362,7 @@ def analyse_and_report(
     output_dir: Path,
     registry: dict | None = None,
     harness_failure: str | None = None,
+    probe_violations: tuple[str, ...] = (),
 ) -> int:
     if registry is None:
         registry = build_registry(build_target())
@@ -364,6 +395,7 @@ def analyse_and_report(
         baseline,
         units,
         harness_failure,
+        probe_violations,
     )
     analyze.write_results(results, output_dir)
     text = report.write_report(results, output_dir)

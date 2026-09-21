@@ -57,6 +57,14 @@ class Fault(ABC):
     #: was the disturbance.
     activated_at: float | None = None
 
+    #: What the target must provide for this fault to be injectable at
+    #: all. Checked against Target.CAPABILITIES before a run starts,
+    #: because the alternative is worse than a refusal: a fault whose
+    #: mechanism cannot reach the stack still produces a window, and a
+    #: window in which nothing happened records a clean recovery from
+    #: an event that never occurred.
+    requires: tuple[str, ...] = ()
+
     #: Whether honest clients could, in principle, still be served
     #: while this fault is active. True for a misbehaving client - the
     #: bridge ought to shed it and serve the others - so a stall during

@@ -69,6 +69,26 @@ def _dig(mapping: dict, *keys: str) -> int:
 class Target(ABC):
     """A running Sigul stack that the harness can measure and disturb."""
 
+    #: What this target can offer a fault. Faults declare what they
+    #: need (Fault.requires) and the two are matched before a run
+    #: starts, so a profile and a target that cannot serve it are
+    #: refused rather than producing windows in which nothing happened.
+    #:
+    #:   proxy         Toxiproxy sits in the daemons' links and can be
+    #:                 driven through its control API.
+    #:   bridge_socket the bridge's client port is dialable from
+    #:                 wherever the harness runs.
+    #:   local_client  the sigul CLI runs as a child of the harness, so
+    #:                 it can be signalled.
+    #:   freeze        a unit's processes can be suspended without
+    #:                 closing its sockets.
+    CAPABILITIES: frozenset[str] = frozenset()
+
+    #: Bound on each of the three readings implemented here. Named so
+    #: that the backends' sample budgets are arithmetic over the same
+    #: constant the readings use, and cannot drift from it.
+    READING_TIMEOUT_SECONDS = 15.0
+
     @abstractmethod
     def run_in(
         self, unit: str, argv: list[str], timeout: float = 30.0, check: bool = True
@@ -114,6 +134,22 @@ class Target(ABC):
         one, and to notice a restart nobody asked for.
         """
 
+    @abstractmethod
+    def sample_budget_seconds(self) -> float:
+        """Worst case for one unit's full set of readings.
+
+        The sampler waits this long for an in-flight reading when it is
+        asked to stop, and gives up on the run if the thread outlives
+        it. Under-stating it turns a slow apiserver into a failed run
+        that had already collected all its data, so it is derived from
+        each backend's own timeouts rather than guessed: a figure that
+        cannot be exceeded is worth more here than a small one.
+        """
+
+    def provides(self, capability: str) -> bool:
+        """Whether this target offers a capability a fault may need."""
+        return capability in self.CAPABILITIES
+
     def sockets(self, unit: str) -> SocketCounts:
         """Count TCP states inside a unit.
 
@@ -121,7 +157,7 @@ class Target(ABC):
         `run_in`: `ss` runs in the container's own network namespace, so
         the same command works under Compose and Kubernetes alike.
         """
-        out = self.run_in(unit, ["ss", "-Htan"], timeout=15.0)
+        out = self.run_in(unit, ["ss", "-Htan"], timeout=self.READING_TIMEOUT_SECONDS)
         counts = {
             "ESTAB": 0,
             "CLOSE-WAIT": 0,
@@ -156,7 +192,7 @@ class Target(ABC):
                 "-c",
                 "find /proc/[0-9]*/fd -mindepth 1 -maxdepth 1 2>/dev/null | wc -l",
             ],
-            timeout=15.0,
+            timeout=self.READING_TIMEOUT_SECONDS,
         )
         try:
             return int(out.strip() or 0)
@@ -172,7 +208,7 @@ class Target(ABC):
         out = self.run_in(
             unit,
             ["sh", "-c", "ps -eo stat= 2>/dev/null | grep -c '^Z' || true"],
-            timeout=15.0,
+            timeout=self.READING_TIMEOUT_SECONDS,
         )
         try:
             return int(out.strip() or 0)
@@ -183,11 +219,21 @@ class Target(ABC):
 class DockerTarget(Target):
     """A stack running under Docker Compose on the local daemon."""
 
+    # Everything: Toxiproxy is in the Compose overlay, the harness
+    # shares the stack's network so the bridge's port is dialable, the
+    # sigul CLI runs beside it, and containers can be paused.
+    CAPABILITIES = frozenset({"proxy", "bridge_socket", "local_client", "freeze"})
+
     #: Ceiling on any single Docker API call other than exec (see
     #: run_in). Long enough for a `restart` - stop grace of 10s plus
     #: start - short enough that an unresponsive daemon costs the
     #: sampler one reading rather than the rest of the run.
     API_TIMEOUT_SECONDS = 30
+
+    #: Bound on the exec thread, which is abandoned rather than
+    #: interrupted: the in-container `timeout` should end the command
+    #: first, and this covers the case where it cannot.
+    EXEC_GRACE_SECONDS = 5
 
     def __init__(self) -> None:
         import docker
@@ -229,7 +275,7 @@ class DockerTarget(Target):
 
         worker = threading.Thread(target=call, daemon=True)
         worker.start()
-        worker.join(timeout + 5)
+        worker.join(timeout + self.EXEC_GRACE_SECONDS)
         if failure:
             # A refused exec (container not running, say) is an answer,
             # not a hang; report it straight away.
@@ -305,6 +351,19 @@ class DockerTarget(Target):
         head, _, tail = stamp.partition(".")
         micros = (tail.rstrip("Z") + "000000")[:6]
         return datetime.fromisoformat(f"{head}.{micros}+00:00").timestamp()
+
+    def sample_budget_seconds(self) -> float:
+        """Arithmetic over this backend's own bounds; see Target.
+
+        Every call goes through _container(), whose reload() is one
+        Docker API request. One reading of one unit is therefore:
+        stats (reload + the stats request), the three exec readings
+        (reload + the abandoned-thread bound each), and started_at
+        (reload alone, since the attributes come from it).
+        """
+        api = float(self.API_TIMEOUT_SECONDS)
+        exec_reading = api + self.READING_TIMEOUT_SECONDS + self.EXEC_GRACE_SECONDS
+        return (api + api) + 3 * exec_reading + api
 
 
 def build_target() -> Target:

@@ -64,6 +64,10 @@ class _ToxicFault(Fault):
     toxicity: float = 1.0
     attributes: dict = {}  # noqa: RUF012 - overridden per subclass
 
+    #: Injected by driving Toxiproxy's control API, so there has to be
+    #: a Toxiproxy in the daemons' links to drive.
+    requires = ("proxy",)
+
     def start(self) -> None:
         for stream in self.streams:
             client().add_toxic(

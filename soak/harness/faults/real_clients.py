@@ -48,6 +48,11 @@ class _RealClientFault(Fault):
     #: uninjected. Under contention the client may queue for a while.
     upload_wait: float = 30.0
 
+    #: The CLI is run as a child of the harness and then signalled
+    #: through its process group, so the client has to be local. Routed
+    #: through kubectl the signal would reach kubectl, not the client.
+    requires = ("local_client",)
+
     def __init__(self) -> None:
         self._procs: list[subprocess.Popen] = []
         self._stop = threading.Event()

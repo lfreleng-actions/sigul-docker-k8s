@@ -141,8 +141,10 @@ jobs:
     # feedback on the daemons, and Compose gives that in thirty
     # minutes; standing up a cluster and rolling pods through their
     # controllers is slower and answers a different question - whether
-    # the chart's probes, its OrderedReady StatefulSet and its
-    # NetworkPolicies behave when pods come and go.
+    # the chart's probes and its StatefulSet behave when pods come and
+    # go. NetworkPolicies are rendered and applied but not enforced
+    # here: kind's default CNI accepts them without acting on them, so
+    # this job says nothing about whether they are correct (see #26).
     steps:
       # yamllint disable-line rule:line-length
       - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
@@ -171,7 +173,10 @@ jobs:
       - name: 'Create the cluster and install the chart'
         shell: bash
         env:
-          SOAK_ADMIN_PASSWORD_FILE: 'test-artifacts/admin-password'
+          # Absolute: deploy.sh writes it here, and the harness below
+          # runs from soak/, so a relative path would not agree.
+          SOAK_ADMIN_PASSWORD_FILE:
+            '${{ github.workspace }}/test-artifacts/k8s-admin-password'
         run: |
           # kind ships with the runner image; the chart and the images
           # come from this checkout, so nothing published is required.
@@ -191,10 +196,13 @@ jobs:
         env:
           SOAK_TARGET: 'kubernetes'
           SOAK_SIGUL_VIA: 'kubectl'
-          SOAK_K8S_CONTEXT: 'kind-sigul-soak'
+          SOAK_K8S_CONTEXT: 'kind-soak-k8s'
           SOAK_K8S_NAMESPACE: 'sigul-soak'
-          SOAK_OUTPUT_DIR: 'soak/results'
-          SOAK_ADMIN_PASSWORD_FILE: 'test-artifacts/admin-password'
+          # Absolute: the harness runs from soak/, so a relative path
+          # here would land in soak/soak/ and soak/test-artifacts/.
+          SOAK_OUTPUT_DIR: '${{ github.workspace }}/soak/results'
+          SOAK_ADMIN_PASSWORD_FILE:
+            '${{ github.workspace }}/test-artifacts/k8s-admin-password'
         run: |
           cd soak && python3 -m harness k8s
 
@@ -228,6 +236,15 @@ jobs:
               -l "app.kubernetes.io/component=${component}" \
               --all-containers --tail=5000 \
               > "soak/results/logs/${component}.log" 2>&1 || true
+            # The instance before a restart, which is where a
+            # liveness-probe kill leaves its evidence. Events say a
+            # restart happened; only this says what the daemon was
+            # doing when it did. Absent unless there was a restart, so
+            # the failure is expected and ignored.
+            kubectl -n sigul-soak logs \
+              -l "app.kubernetes.io/component=${component}" \
+              --all-containers --previous --tail=5000 \
+              > "soak/results/logs/${component}-previous.log" 2>&1 || true
           done
 
       - name: 'Upload soak results'

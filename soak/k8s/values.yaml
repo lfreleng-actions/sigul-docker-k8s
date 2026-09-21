@@ -3,8 +3,9 @@
 #
 # Values for the soak harness's Kubernetes target. A deliberately
 # small cluster-shaped deployment: the point is to exercise what the
-# chart adds - probes, OrderedReady, NetworkPolicies, the PKI
-# bootstrap Job - not to reproduce production's sizing.
+# chart adds - probes, StatefulSet replacement, the PKI bootstrap Job
+# - not to reproduce production's sizing. NetworkPolicies are
+# rendered and applied but not enforced here; see below.
 #
 # Anything that would reach outside the cluster is off. The bridge's
 # external LoadBalancer needs a cloud controller and external-dns
@@ -55,8 +56,13 @@ server:
 storageClass:
   create: false
 
-# Left on deliberately. These are part of what this target exists to
-# exercise: a policy too tight breaks signing, and one too loose is an
-# exfiltration path for the bootstrap Job's token.
+# Applied, but not yet verified. kind's default CNI (kindnet)
+# accepts NetworkPolicy objects and does not enforce them, so these
+# exercise the chart's templating and the apiserver's validation and
+# nothing more. Enforcing them needs the cluster created with
+# disableDefaultCNI and a policy-capable CNI installed, plus a
+# negative connectivity assertion to prove the enforcement is real -
+# worth doing, and tracked as issue #26. Left on so the policies are
+# at least rendered and applied exactly as production has them.
 networkPolicy:
   enabled: true
