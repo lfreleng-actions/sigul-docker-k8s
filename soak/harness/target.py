@@ -16,6 +16,7 @@ generator or the analysis.
 
 from __future__ import annotations
 
+import os
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -304,3 +305,20 @@ class DockerTarget(Target):
         head, _, tail = stamp.partition(".")
         micros = (tail.rstrip("Z") + "000000")[:6]
         return datetime.fromisoformat(f"{head}.{micros}+00:00").timestamp()
+
+
+def build_target() -> Target:
+    """The target named by SOAK_TARGET; Docker unless told otherwise.
+
+    The Kubernetes backend is imported only when asked for, so the
+    Compose path does not carry it and a checkout without kubectl can
+    still run the default profile.
+    """
+    name = os.environ.get("SOAK_TARGET", "docker").strip().lower()
+    if name in ("k8s", "kube", "kubernetes"):
+        from .target_k8s import KubernetesTarget
+
+        return KubernetesTarget()
+    if name == "docker":
+        return DockerTarget()
+    raise SystemExit(f"unknown SOAK_TARGET {name!r}; expected docker or kubernetes")

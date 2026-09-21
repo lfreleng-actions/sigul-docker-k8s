@@ -41,7 +41,7 @@ from .faults.network import configure_proxies
 from .profiles import PROFILES, Profile
 from .sampler import Sampler
 from .scheduler import Scheduler, Timeline
-from .target import DockerTarget
+from .target import Target, build_target
 
 HERE = Path(__file__).resolve().parent
 
@@ -167,7 +167,7 @@ def start_locust(
 
 
 def _restore_stack(
-    scheduler: Scheduler, target: DockerTarget, units: tuple[str, ...]
+    scheduler: Scheduler, target: Target, units: tuple[str, ...]
 ) -> None:
     """Best-effort restoration on an interrupted run.
 
@@ -225,7 +225,7 @@ def run(profile: Profile, output_dir: Path) -> int:
         f"{len(profile.preflight_faults) + len(profile.warm_faults) + len(profile.faults)} faults"
     )
 
-    target = DockerTarget()
+    target = build_target()
     registry = build_registry(target)
     timeline = Timeline(output_dir / "timeline.csv")
     scheduler = Scheduler(profile, registry, timeline, log=log)
@@ -315,7 +315,7 @@ def analyse_and_report(
     harness_failure: str | None = None,
 ) -> int:
     if registry is None:
-        registry = build_registry(DockerTarget())
+        registry = build_registry(build_target())
     fault_meta = {
         name: FaultMeta(f.description, f.implication, f.service_possible_during)
         for name, f in registry.items()
