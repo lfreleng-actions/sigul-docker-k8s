@@ -80,45 +80,61 @@ fatal() {
 # Bridge Availability Check
 #######################################
 
+# Wait until the bridge's hostname resolves.
+#
+# Deliberately DNS-only. The obvious check - opening a TCP connection
+# to the bridge's port - is the one thing that must not happen here:
+# the bridge accepts one connection at a time and immediately tries to
+# complete a TLS handshake on it, so a probe that connects and hangs up
+# is accepted, fails its handshake against a peer that has already
+# gone, and is logged as an error with a traceback. It also consumes an
+# accept slot that exists to serve signing requests, and if it arrives
+# while the bridge is busy it waits in the listen backlog and produces
+# that error later, at a moment unrelated to any startup.
+#
+# Nothing is lost by not connecting. Ordering is already guaranteed
+# either side of this: under Compose by `depends_on: service_healthy`
+# against a healthcheck that only reads `ss -tln`, and under the chart
+# by the wait-for-bridge initContainer, which resolves the *headless*
+# Service - whose DNS records exist only while the bridge pod is Ready
+# - for exactly these reasons. This check resolves bridge-hostname,
+# which under the chart is the ordinary ClusterIP Service and resolves
+# whether or not the bridge is Ready, so it is not a readiness gate and
+# is not trying to be one. The daemon itself retries a refused
+# connection with backoff, so a server that starts first recovers on
+# its own. What this does catch is a misconfigured bridge-hostname,
+# turning it into a clear message here rather than a reconnect loop
+# later.
 wait_for_bridge() {
     log "Checking bridge availability..."
 
-    # Extract bridge hostname and port from configuration
-    local bridge_hostname bridge_port
+    # Extract bridge hostname from configuration
+    local bridge_hostname
 
     if ! bridge_hostname=$(grep "^bridge-hostname:" "$CONFIG_FILE" 2>/dev/null | cut -d: -f2 | tr -d ' '); then
         fatal "Cannot extract bridge-hostname from configuration"
-    fi
-
-    if ! bridge_port=$(grep "^bridge-port:" "$CONFIG_FILE" 2>/dev/null | cut -d: -f2 | tr -d ' '); then
-        fatal "Cannot extract bridge-port from configuration"
     fi
 
     if [ -z "$bridge_hostname" ]; then
         fatal "Bridge hostname not configured in $CONFIG_FILE"
     fi
 
-    if [ -z "$bridge_port" ]; then
-        fatal "Bridge port not configured in $CONFIG_FILE"
-    fi
-
-    log "Waiting for bridge at ${bridge_hostname}:${bridge_port}..."
+    log "Waiting for ${bridge_hostname} to resolve..."
 
     local max_wait=60
     local elapsed=0
 
-    while ! nc -z "$bridge_hostname" "$bridge_port" 2>/dev/null; do
+    while ! getent hosts "$bridge_hostname" >/dev/null 2>&1; do
         if [ $elapsed -ge $max_wait ]; then
-            error "Bridge not available after ${max_wait} seconds"
+            error "Bridge hostname did not resolve after ${max_wait} seconds"
             error "Bridge hostname: $bridge_hostname"
-            error "Bridge port: $bridge_port"
-            fatal "Cannot connect to bridge"
+            fatal "Cannot resolve bridge"
         fi
         sleep 1
         elapsed=$((elapsed + 1))
     done
 
-    success "Bridge is available at ${bridge_hostname}:${bridge_port}"
+    success "Bridge hostname ${bridge_hostname} resolves"
 }
 
 #######################################

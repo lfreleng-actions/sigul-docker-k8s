@@ -20,6 +20,13 @@
 # spends waiting for a client, and that the loss of the server is
 # reported. Nothing here touches the network beyond loopback.
 #
+# The last two checks cover the server side of the same question
+# (patch 14): a peer that connects to the server port and leaves is
+# reported as a fact, not as a failure with a traceback, while a
+# genuine handshake failure keeps both. Since the server's entrypoint
+# no longer probes the bridge with a TCP connect, nothing else
+# exercises that path.
+#
 # Run inside the sigul bridge or server image, which provides
 # python-nss and certutil:
 #   python3 test/test_bridge_client_admission.py
@@ -35,6 +42,7 @@
 import logging
 import os
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -42,7 +50,7 @@ import threading
 import time
 import types
 from collections.abc import Callable
-from typing import Protocol, cast, final
+from typing import Protocol, cast, final, override
 
 sys.path.insert(0, os.environ.get("SIGUL_LIB", "/usr/share/sigul"))
 
@@ -206,6 +214,7 @@ class Fixture:
     """
 
     def __init__(self, config: types.SimpleNamespace) -> None:
+        self.config = config
         self.listen_sock = bridge.create_listen_sock(config, 0)
         self.port: int = self.listen_sock.get_sock_name().port
         self.admission = cast(Admission, bridge.ClientAdmission(self.listen_sock))
@@ -439,6 +448,158 @@ def test_server_loss_reported(fx: Fixture) -> None:
     fx.serve_one(waiter)
 
 
+class _Captured(logging.Handler):
+    """Collects log records so a test can assert on level and message."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    @override
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+    def noisy(self) -> list[tuple[str, int, bool]]:
+        """Records that would draw the eye: high level, or a traceback.
+
+        Both halves matter. A record logged at INFO still prints a
+        traceback if it carries exc_info, which is most of what made
+        the original startup log alarming, so testing the level alone
+        would let the thing being fixed back in.
+        """
+        return [
+            (r.getMessage()[:60], r.levelno, r.exc_info is not None)
+            for r in self.records
+            if r.levelno >= logging.WARNING or r.exc_info is not None
+        ]
+
+    def saying(self, fragment: str) -> list[logging.LogRecord]:
+        return [r for r in self.records if fragment in r.getMessage()]
+
+
+def _install_capture() -> tuple[_Captured, Callable[[], None]]:
+    """Attach a capturing handler to the root logger; return it and its undo."""
+    handler = _Captured()
+    root = logging.getLogger()
+    previous = root.level
+    root.setLevel(logging.DEBUG)
+    root.addHandler(handler)
+
+    def restore() -> None:
+        root.removeHandler(handler)
+        root.setLevel(previous)
+
+    return handler, restore
+
+
+def _bridge_one_request_against(
+    fx: Fixture, misbehave: Callable[[int], None]
+) -> _Captured | None:
+    """Run one accept cycle against a peer that misbehaves on the server port.
+
+    Returns the captured log, or None if the call did not return in time.
+    """
+    server_listen = bridge.create_listen_sock(fx.config, 0)
+    port: int = server_listen.get_sock_name().port
+    threading.Thread(target=misbehave, args=(port,), daemon=True).start()
+
+    def one_cycle() -> None:
+        bridge.bridge_one_request(fx.config, server_listen, fx.admission)
+
+    log, restore = _install_capture()
+    try:
+        done = run_bounded(one_cycle, DEADLINE * 3)
+    finally:
+        restore()
+    server_listen.close()
+    return log if done is not None else None
+
+
+def test_vanished_server_peer_is_quiet(fx: Fixture) -> None:
+    """A peer that connects to the server port and leaves is not an error.
+
+    This is the path a health check, a port scanner or a load balancer
+    takes. Nothing else exercises it now that the server's entrypoint no
+    longer probes the bridge with a TCP connect, so without this check a
+    regression would be silent.
+
+    Both ways of leaving are covered, because the fix names both: a
+    clean FIN raises PR_END_OF_FILE_ERROR, an abortive close raises
+    PR_CONNECT_RESET_ERROR, and dropping either from the fix should
+    fail here.
+    """
+
+    def connect_and_hang_up(port: int) -> None:
+        socket.create_connection(("127.0.0.1", port)).close()
+
+    def connect_and_reset(port: int) -> None:
+        sock = socket.create_connection(("127.0.0.1", port))
+        # Linger zero turns close() into an immediate RST.
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        sock.close()
+
+    for label, misbehave in (("FIN", connect_and_hang_up), ("RST", connect_and_reset)):
+        log = _bridge_one_request_against(fx, misbehave)
+        check(
+            f"[{label}] a vanished server peer ends the accept cycle",
+            log is not None,
+            True,
+        )
+        if log is None:
+            continue
+        check(
+            f"[{label}] ... logged once, at INFO, as 'went away'",
+            [r.levelno for r in log.saying("went away during its TLS handshake")],
+            [logging.INFO],
+        )
+        check(f"[{label}] ... with nothing loud and no traceback", log.noisy(), [])
+
+
+def test_real_handshake_failure_still_loud(fx: Fixture) -> None:
+    """A genuine protocol failure keeps its error and its traceback.
+
+    The peer sends a TLS record header declaring a length no record may
+    have, which NSS rejects the moment it reads it -
+    SSL_ERROR_RX_RECORD_TOO_LONG. That is the shape of failure the fix
+    must leave alone: not a peer going away, so it is still logged at
+    ERROR and still re-raised, and the re-raise is what produces the
+    traceback from the handler above.
+
+    Asserting the traceback matters because it is the only externally
+    visible consequence of the re-raise. A fix that logged the error and
+    then swallowed the exception would look identical without it.
+    """
+    held: list[socket.socket] = []
+
+    def send_oversized_record(port: int) -> None:
+        sock = socket.create_connection(("127.0.0.1", port))
+        held.append(sock)  # keep it open, or this is just another EOF
+        sock.sendall(bytes.fromhex("160301ffff") + b"A" * 64)
+        time.sleep(DEADLINE * 2)
+
+    log = _bridge_one_request_against(fx, send_oversized_record)
+    check("a bad handshake ends the accept cycle", log is not None, True)
+    if log is None:
+        return
+    check(
+        "... logged as a handshake failure at ERROR",
+        [r.levelno for r in log.saying("Server TLS handshake failed")],
+        [logging.ERROR],
+    )
+    check(
+        "... and re-raised, so a traceback is still produced",
+        any(r.exc_info is not None for r in log.records),
+        True,
+    )
+    check(
+        "... and not mistaken for a peer going away",
+        log.saying("went away during its TLS handshake"),
+        [],
+    )
+    for sock in held:
+        sock.close()
+
+
 def main() -> int:
     logging.basicConfig(level=logging.WARNING, format="        bridge: %(message)s")
     print("bridge client admission regression tests")
@@ -456,6 +617,8 @@ def main() -> int:
         test_deadline_charged_only_while_attended,
         test_rejected_client_does_not_end_the_wait,
         test_server_loss_reported,
+        test_vanished_server_peer_is_quiet,
+        test_real_handshake_failure_still_loud,
     ):
         print(f"-- {test.__name__}")
         fx = Fixture(config)

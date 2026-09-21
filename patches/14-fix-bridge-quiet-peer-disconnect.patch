@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Stop logging a peer that vanishes during the server-side TLS
+# handshake as an error with a traceback. A health check or a port
+# scanner that connects and hangs up is an expected fact of life for a
+# listening socket, and the client side already reports it at INFO.
+# See patches/README.md.
+#
+--- a/src/bridge.py
++++ b/src/bridge.py
+@@ -1731,6 +1731,23 @@
+         # connection timing is less predictable.
+         try:
+             _handshake_with_deadline(server_sock, 'Server')
++        except nss.error.NSPRError as e:
++            if e.errno in (nss.error.PR_END_OF_FILE_ERROR,
++                           nss.error.PR_CONNECT_RESET_ERROR):
++                # The peer connected and left without speaking. That is
++                # a health check, a port scanner, or anything else that
++                # opens a socket to see whether the port answers - not
++                # a failure of the bridge, and not worth an error and a
++                # traceback in a log someone reads during an incident.
++                # Named the same way as its client-side counterpart in
++                # ClientAdmission, since it is the same event.
++                logging.info('Server went away during its TLS handshake; '
++                             'waiting for it to reconnect')
++                _adbg('Server-side handshake EOF/reset: %r', e)
++                return
++            logging.error('Server TLS handshake failed: %s', e)
++            _adbg('Server TLS handshake EXCEPTION: %r', e)
++            raise
+         except Exception as e:
+             logging.error('Server TLS handshake failed: %s', e)
+             _adbg('Server TLS handshake EXCEPTION: %r', e)
