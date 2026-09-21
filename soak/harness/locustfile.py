@@ -30,7 +30,7 @@ from locust import LoadTestShape, User, between, events, task
 
 # Locust puts this file's directory on sys.path, not the package root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from harness.cli import run_sigul  # noqa: E402
+from harness.cli import ensure_remote_payloads, run_sigul  # noqa: E402
 
 OUTPUT_DIR = Path(os.environ.get("SOAK_OUTPUT_DIR", "/results"))
 WORK_DIR = Path("/tmp/soak-work")
@@ -81,11 +81,17 @@ _request_log: RequestLog | None = None
 
 
 def _read_admin_password() -> str:
-    path = Path("/test-artifacts/admin-password")
+    # Overridable because the harness does not always run in the
+    # container that owns this path: against a cluster it runs outside,
+    # and the deploy step writes the chart's admin secret somewhere of
+    # its choosing.
+    path = Path(
+        os.environ.get("SOAK_ADMIN_PASSWORD_FILE", "/test-artifacts/admin-password")
+    )
     if not path.is_file():
         raise RuntimeError(
-            "/test-artifacts/admin-password missing - run "
-            "scripts/deploy-sigul-infrastructure.sh first"
+            f"{path} missing - run scripts/deploy-sigul-infrastructure.sh "
+            "first, or set SOAK_ADMIN_PASSWORD_FILE"
         )
     return path.read_text().strip()
 
@@ -114,14 +120,21 @@ def _on_init(environment, **_kwargs) -> None:
 
     # Fixed, incompressible payloads. Random bytes so a bandwidth toxic
     # measures the link rather than the compressor.
-    for name, size in (
+    payloads = (
         ("small.txt", 4096),
         ("blob1m.bin", 1 << 20),
         ("blob64m.bin", 64 << 20),
-    ):
+    )
+    for name, size in payloads:
         path = WORK_DIR / name
         if not path.is_file() or path.stat().st_size != size:
             path.write_bytes(os.urandom(size))
+    # `sigul` takes a path, not a stream, so the payloads must exist
+    # wherever it runs. Against a cluster that is the toolbox pod, not
+    # here. Generated in place rather than copied: 64 MiB through the
+    # apiserver's exec stream is slow, and nothing about these bytes
+    # needs to match the ones written above.
+    ensure_remote_payloads(str(WORK_DIR), payloads)
 
     _request_log = RequestLog(OUTPUT_DIR / "requests.csv")
 

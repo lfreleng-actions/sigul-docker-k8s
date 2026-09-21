@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Values for the soak harness's Kubernetes target. A deliberately
+# small cluster-shaped deployment: the point is to exercise what the
+# chart adds - probes, OrderedReady, NetworkPolicies, the PKI
+# bootstrap Job - not to reproduce production's sizing.
+#
+# Anything that would reach outside the cluster is off. The bridge's
+# external LoadBalancer needs a cloud controller and external-dns
+# needs a zone; neither exists in kind, and neither is what this
+# target is here to test.
+
+images:
+  bridge:
+    repository: sigul-bridge
+    tag: soak
+    digest: ""
+    pullPolicy: Never
+  server:
+    repository: sigul-server
+    tag: soak
+    digest: ""
+    pullPolicy: Never
+  client:
+    repository: sigul-client
+    tag: soak
+    digest: ""
+    pullPolicy: Never
+
+# The load generator's home. The harness runs outside the cluster and
+# sends every request through this pod, which is the one place a
+# provisioned client already exists - so nothing has to be installed
+# to make the release measurable.
+adminToolbox:
+  enabled: true
+
+bridge:
+  service:
+    external:
+      enabled: false
+
+pki:
+  externalFQDN: sigul-bridge.soak.test
+
+server:
+  persistence:
+    size: 1Gi
+    # Empty means the cluster's default class, which kind provides
+    # through its local-path provisioner.
+    storageClassName: ""
+    volumePermissions:
+      enabled: false
+
+storageClass:
+  create: false
+
+# Left on deliberately. These are part of what this target exists to
+# exercise: a policy too tight breaks signing, and one too loose is an
+# exfiltration path for the bootstrap Job's token.
+networkPolicy:
+  enabled: true

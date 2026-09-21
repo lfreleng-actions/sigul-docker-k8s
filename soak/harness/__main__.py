@@ -215,7 +215,13 @@ def run(profile: Profile, output_dir: Path) -> int:
     for stale in ("requests.csv", "samples.csv", "timeline.csv", "locust-started"):
         (output_dir / stale).unlink(missing_ok=True)
 
-    password = Path("/test-artifacts/admin-password").read_text().strip()
+    password = (
+        Path(
+            os.environ.get("SOAK_ADMIN_PASSWORD_FILE", "/test-artifacts/admin-password")
+        )
+        .read_text()
+        .strip()
+    )
     bridge = os.environ.get("SOAK_BRIDGE_CONTAINER", "sigul-bridge")
     server = os.environ.get("SOAK_SERVER_CONTAINER", "sigul-server")
 
@@ -253,7 +259,20 @@ def run(profile: Profile, output_dir: Path) -> int:
     try:
         # Readiness runs inside the reporting path, so a stack that never
         # serves still produces report.md and results.json saying why.
-        configure_proxies(bridge)
+        # Toxiproxy sits in the request path only to serve the network
+        # faults. A profile that names none - the Kubernetes one, where
+        # there is no proxy in the cluster to configure - should not
+        # require it to exist, let alone fail before the first request
+        # because it does not.
+        if any(
+            slot.fault.startswith("net_")
+            for slot in (
+                *profile.preflight_faults,
+                *profile.warm_faults,
+                *profile.faults,
+            )
+        ):
+            configure_proxies(bridge)
         wait_for_service(password)
         sampler.start()
         # Preflight faults need an idle stack - no request in flight -

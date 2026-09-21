@@ -23,6 +23,12 @@ from .target import ProcessStats, Target
 
 _log = logging.getLogger(__name__)
 
+#: The port each daemon must be holding open before Ready means
+#: anything. The bridge's client port is the one a signing request
+#: arrives on; the server dials out rather than listening, so it has
+#: no equivalent and is not checked.
+_LISTEN_PORTS = {"bridge": 44334}
+
 
 class KubernetesTarget(Target):
     """A stack deployed by the Helm chart, driven through kubectl.
@@ -188,6 +194,22 @@ class KubernetesTarget(Target):
         while time.monotonic() < deadline:
             try:
                 if self.ready(unit) and self.started_at(unit) > was_started:
+                    # Ready is the chart's claim that the replacement can
+                    # serve. Check it against the only thing that makes
+                    # it true - the daemon holding its port open - at the
+                    # one moment the two can disagree. A probe that
+                    # passes early sends the next request into a refused
+                    # connection, and nothing else in the run would
+                    # attribute that to the probe.
+                    port = _LISTEN_PORTS.get(self._component(unit))
+                    if port and not self.listening(unit, port):
+                        _log.warning(
+                            "%s reported Ready while nothing was listening on "
+                            "%d: the readiness probe passes before the daemon "
+                            "can serve",
+                            unit,
+                            port,
+                        )
                     return
             except RuntimeError as exc:
                 # The controller has not created the replacement yet, so

@@ -178,4 +178,46 @@ NIGHTLY = Profile(
     cooldown_seconds=900.0,
 )
 
-PROFILES: dict[str, Profile] = {p.name: p for p in (SMOKE, PR, NIGHTLY)}
+#: The Kubernetes target's own profile. It names only faults that
+#: target can honestly inject, which is a shorter list than Compose's
+#: and deliberately so:
+#:
+#: - Freezing is impossible from outside a cluster (see
+#:   KubernetesTarget.freeze), so no freeze faults appear here rather
+#:   than appearing and failing.
+#: - The raw-socket client faults dial the bridge directly, and its
+#:   Service is ClusterIP - unreachable from where this harness runs.
+#:   Compose covers that ground thoroughly.
+#: - Network toxics need Toxiproxy in the request path, which is a
+#:   separate piece of plumbing in a cluster.
+#:
+#: What is left is what this target exists for: pods dying and being
+#: replaced by their controllers, with the chart's probes deciding
+#: when the replacement may serve. Restarts cost far more here than
+#: under Compose - a StatefulSet pod measured 22 s against a
+#: container's 2 s - so the windows are longer and the load lighter,
+#: since every request also pays for a kubectl exec.
+#:
+#: The restarts are warm faults, before the baseline, for the same
+#: reason the Compose profiles place them there: the leak comparison
+#: runs from baseline to cooldown and means nothing across a restart,
+#: and "no restart between baseline and cooldown" is an invariant
+#: rather than something to be marked expected-fail. Their stalls and
+#: recovery times are measured exactly as any other fault's.
+K8S = Profile(
+    name="k8s",
+    description="Kubernetes target: chart probes and controller replacement.",
+    ramp_steps=(1, 2),
+    ramp_step_seconds=30.0,
+    preflight_faults=(),
+    warm_faults=(
+        FaultSlot("proc_restart_bridge", 0, 90),
+        FaultSlot("proc_restart_server", 0, 120),
+    ),
+    baseline_seconds=90.0,
+    steady_users=2,
+    faults=(),
+    cooldown_seconds=180.0,
+)
+
+PROFILES: dict[str, Profile] = {p.name: p for p in (SMOKE, PR, NIGHTLY, K8S)}
