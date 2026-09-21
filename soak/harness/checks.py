@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import math
+
 from .models import Check, Results
 from .stats import Run
 
@@ -32,14 +34,58 @@ MIN_TREND_SPAN_SECONDS = 600.0
 MAX_FD_GROWTH = 10
 MAX_CLOSE_WAIT_END = 1
 
-#: Regression tolerances against the committed baseline. p95 may grow
-#: by 50% or by 250 ms, whichever is larger: the floor stops a 300 ms
-#: control-plane call failing the run over 150 ms of scheduler noise
-#: on a shared CI host, and the ratio governs everything slower.
-P95_TOLERANCE_RATIO = 1.5
-P95_TOLERANCE_FLOOR_MS = 250.0
+#: Regression tolerances against the committed baseline. Latency may
+#: grow by 50% or by 250 ms, whichever is larger: the floor stops a
+#: 300 ms control-plane call failing the run over 150 ms of scheduler
+#: noise on a shared CI host, and the ratio governs everything slower.
+LATENCY_TOLERANCE_RATIO = 1.5
+LATENCY_TOLERANCE_FLOOR_MS = 250.0
 SUCCESS_RATE_TOLERANCE = 0.05
-MIN_REGRESSION_SAMPLES = 5
+
+#: Completions a task needs before its percentiles mean anything.
+#:
+#: Sigul serves one request at a time and the load mix contains a
+#: 64 MiB signing task taking 8-22 s, so every other request can queue
+#: behind one. That makes the upper tail a property of scheduling luck
+#: rather than of the task: measured across four green CI runs, a p95
+#: drawn from ~20 completions swung by 7.3x, while the same task's p95
+#: over 50 or more completions held to within 1.23x. A p95 over twenty
+#: samples is not a percentile, it is the second-worst observation.
+#:
+#: So each percentile is compared only where enough requests completed
+#: - in the baseline and in the run - to estimate it. Below that the
+#: comparison is skipped and said to be skipped, rather than being
+#: made on a number that carries no information.
+MIN_SAMPLES_P50 = 20
+MIN_SAMPLES_P95 = 50
+
+#: Activity floor per task, below which the run is failed outright.
+#: A task that has all but stopped is nearly as bad as one that has
+#: stopped, and neither the percentile thresholds nor the phase total
+#: would notice: percentiles are skipped for want of samples, and the
+#: other tasks can hold the total above its own floor. Judged against
+#: the baseline's own completions so it scales with each task's share
+#: of the load, with an absolute floor for the rare ones. Every green
+#: run measured has come in at or above its baseline figure, so half
+#: of it leaves a wide margin.
+MIN_TASK_COMPLETIONS = 5
+MIN_TASK_COMPLETION_RATIO = 0.5
+
+#: Share of the baseline's completions a phase must still deliver.
+#: For a strictly serial service this is the capacity metric: work
+#: that takes longer shows up first as less of it getting done, and a
+#: uniform slowdown too small to trip the latency bounds still shows
+#: here. One-sided - more throughput never fails.
+#:
+#: Four green runs completed 243, 253, 266 and 290 requests in the
+#: cooldown phase: a 1.19x spread, mean 263, standard deviation 21.
+#: Against the committed reference of 243 (the worst of them) this
+#: leaves a floor of 207, below mean minus two standard deviations, so
+#: an ordinarily slow run should not reach it. It catches a capacity
+#: loss of about a third and will not notice one of a fifth; the
+#: latency bounds cover the rest. Worth revisiting once more runs have
+#: accumulated - tightening it needs evidence, not optimism.
+MIN_THROUGHPUT_RATIO = 0.85
 
 #: Lowest success rate tolerated at any ramp step. The ramp is where a
 #: too-small listen backlog shows itself, as connections refused to
@@ -266,44 +312,107 @@ def invariants(results: Results) -> list[Check]:
     )
 
 
+def _latency_check(label: str, measured: float, reference: float) -> Check:
+    """One-sided latency comparison: only slower than baseline fails."""
+    limit = max(
+        reference * LATENCY_TOLERANCE_RATIO,
+        reference + LATENCY_TOLERANCE_FLOOR_MS,
+    )
+    return Check(
+        f"{label} within +{(LATENCY_TOLERANCE_RATIO - 1):.0%} "
+        f"or +{LATENCY_TOLERANCE_FLOOR_MS:.0f} ms of baseline",
+        measured <= limit,
+        f"{measured:.0f} ms vs baseline {reference:.0f} ms",
+    )
+
+
 def regressions(results: Results, baseline: dict) -> list[Check]:
+    """Compare this run against the committed baseline.
+
+    Only the phases the baseline file carries are compared, so which
+    phases are worth judging is a property of the data rather than of
+    this code. Every comparison is one-sided: slower, less successful
+    or less productive than the baseline fails; better never does.
+    """
     checks: list[Check] = []
-    baseline_phases = baseline.get("phases", {})
-    for phase in ("baseline", "cooldown"):
-        reference = baseline_phases.get(phase, {})
+    for phase, reference in baseline.get("phases", {}).items():
         current = results.phases.get(phase, {})
+        ref_tasks: dict[str, dict] = reference.get("tasks", {})
+
+        ref_total = reference.get("total_ok")
+        if ref_total:
+            # Phase durations are fixed by the profile, and the baseline
+            # is per-profile, so completions compare directly without
+            # needing the elapsed time.
+            total = sum(s.ok for s in current.values())
+            checks.append(
+                Check(
+                    f"{phase}: completes at least "
+                    f"{MIN_THROUGHPUT_RATIO:.0%} of the baseline's requests",
+                    total >= ref_total * MIN_THROUGHPUT_RATIO,
+                    f"{total} vs baseline {ref_total}",
+                )
+            )
+
         # Iterate the baseline's tasks, not the run's: a task that has
-        # vanished or become too slow to complete five times in the
-        # phase is a regression, not a gap in the data.
-        for task, ref in reference.items():
+        # vanished, or become too slow to complete at all, is a
+        # regression rather than a gap in the data.
+        for task, ref in ref_tasks.items():
             stats = current.get(task)
-            if stats is None or stats.count < MIN_REGRESSION_SAMPLES:
+            # Ceiling, not rounding: round() breaks ties to even, so a
+            # reference of 45 would give 22 and let a run through at
+            # 48.9% while the constant promises half.
+            expected = ref.get("min_ok", ref["ok"])
+            floor = max(
+                MIN_TASK_COMPLETIONS,
+                math.ceil(expected * MIN_TASK_COMPLETION_RATIO),
+            )
+            if stats is None or stats.ok < floor:
+                done = stats.ok if stats else 0
                 checks.append(
                     Check(
-                        f"{phase}/{task}: enough requests to compare",
+                        f"{phase}/{task}: still completing requests",
                         False,
-                        f"{stats.count if stats else 0} completed, need {MIN_REGRESSION_SAMPLES}",
+                        f"{done} succeeded against the baseline's {expected}, "
+                        f"below the floor of {floor}",
                     )
                 )
                 continue
-            limit = max(
-                ref["p95_ms"] * P95_TOLERANCE_RATIO,
-                ref["p95_ms"] + P95_TOLERANCE_FLOOR_MS,
-            )
-            checks.append(
-                Check(
-                    f"{phase}/{task}: p95 within +{(P95_TOLERANCE_RATIO - 1):.0%} "
-                    f"or +{P95_TOLERANCE_FLOOR_MS:.0f} ms of baseline",
-                    stats.p95_ms <= limit,
-                    f"{stats.p95_ms:.0f} ms vs baseline {ref['p95_ms']:.0f} ms",
-                )
-            )
+
             ref_rate = ref["ok"] / ref["count"] if ref["count"] else 1.0
             checks.append(
                 Check(
-                    f"{phase}/{task}: success rate within {SUCCESS_RATE_TOLERANCE:.0%} of baseline",
+                    f"{phase}/{task}: success rate within "
+                    f"{SUCCESS_RATE_TOLERANCE:.0%} of baseline",
                     stats.success_rate >= ref_rate - SUCCESS_RATE_TOLERANCE,
                     f"{stats.success_rate:.1%} vs baseline {ref_rate:.1%}",
                 )
             )
+
+            for metric, floor in (("p50", MIN_SAMPLES_P50), ("p95", MIN_SAMPLES_P95)):
+                key = f"{metric}_ms"
+                if key not in ref:
+                    continue
+                # Only the run being judged needs checking here: a
+                # percentile appears in the baseline at all only when
+                # every run behind it cleared the same floor, which
+                # make_baseline.py enforces when it writes the file.
+                if stats.ok < floor:
+                    checks.append(
+                        Check(
+                            f"{phase}/{task}: {metric} comparable",
+                            True,
+                            f"skipped - {stats.ok} completions, "
+                            f"{floor} needed to estimate {metric}",
+                            informational=True,
+                        )
+                    )
+                    continue
+                checks.append(
+                    _latency_check(
+                        f"{phase}/{task}: {metric}",
+                        getattr(stats, key),
+                        ref[key],
+                    )
+                )
     return checks

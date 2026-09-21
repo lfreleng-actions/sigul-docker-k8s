@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from platform import machine
 
 
 @dataclass
@@ -125,6 +126,13 @@ class Results:
     profile: str
     started: float
     ended: float
+    #: Machine architecture the run was measured on. Recorded because
+    #: it is not a detail: on the same profile, arm64 has completed
+    #: 1.6x the work amd64 did, which is far beyond run-to-run noise,
+    #: so a baseline built from one says little about the other.
+    #: Defaulted rather than passed in, so every result carries it
+    #: without the analyser having to remember.
+    platform: str = field(default_factory=machine)
     ramp: list[RampStep] = field(default_factory=list)
     phases: dict[str, dict[str, TaskStats]] = field(default_factory=dict)
     faults: list[FaultResult] = field(default_factory=list)
