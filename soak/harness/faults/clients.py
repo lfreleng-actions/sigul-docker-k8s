@@ -66,6 +66,10 @@ class _RawClientFault(Fault):
     #: Concurrent bad clients.
     clients: int = 1
 
+    #: These dial the bridge's client port themselves, so it has to be
+    #: reachable from wherever the harness runs.
+    requires = ("bridge_socket",)
+
     def __init__(self) -> None:
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []

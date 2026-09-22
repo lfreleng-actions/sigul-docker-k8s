@@ -245,14 +245,19 @@ soak/
 ├── run-soak.sh              host-side orchestrator
 ├── compose.soak.yml         overlay: toxiproxy + runner + /etc/hosts redirect
 ├── Dockerfile               runner image = client image + locust + docker SDK
+├── k8s/
+│   ├── deploy.sh            kind cluster + chart install, or reuse a context
+│   └── values.yaml          chart values for a soak-shaped deployment
 └── harness/
     ├── __main__.py          run one profile end to end
-    ├── profiles.py          smoke / pr / nightly: durations, faults, weights
+    ├── profiles.py          smoke / pr / nightly / k8s: durations, faults, weights
     ├── locustfile.py        SigulUser tasks and the load shape
+    ├── cli.py               how `sigul` is invoked: locally, or via the toolbox
     ├── scheduler.py         walks the fault plan, writes timeline.csv
     ├── sampler.py           resource readings, writes samples.csv
     ├── analyze.py           verdict, report.md, results.json, charts
-    ├── target.py            how to measure and disturb the stack (Docker; K8s later)
+    ├── target.py            the Target interface and the Docker backend
+    ├── target_k8s.py        the Kubernetes backend, driven through kubectl
     ├── expectations.json    known defects, as xfail markers
     ├── make_baseline.py     build baseline-<profile>.json from green runs
     ├── baseline-pr.json     regression reference for the `pr` profile
@@ -276,7 +281,125 @@ know about it.
 ## Kubernetes
 
 The harness reaches the stack through `target.Target` and nothing
-else. A `KubernetesTarget` providing the same six operations against a
-kind cluster running the production chart would let the identical fault
-plan exercise probe-driven recovery, which Compose cannot. That is the
-intended next step once the Compose runs have settled.
+else, so a second backend was all that separated it from the chart.
+`SOAK_TARGET=kubernetes` selects `target_k8s.KubernetesTarget`, which
+drives a Helm release through `kubectl`.
+
+```bash
+./soak/k8s/deploy.sh                       # kind cluster + chart, or reuse a context
+set -a; . test-artifacts/soak-k8s.env; set +a   # select the Kubernetes backend
+cd soak && python3 -m harness k8s          # ~9 minutes
+cd .. && ./soak/k8s/deploy.sh --teardown
+```
+
+The second line is not optional: without it `SOAK_TARGET` is unset,
+the harness builds a `DockerTarget` and soaks whatever Compose stack
+happens to be running instead. `deploy.sh` writes that file (mode
+`0600`, since it names the admin password file) as well as printing
+the command.
+
+The deploy script waits for what the harness actually needs, not just
+for Helm to return: the PKI bootstrap Job complete, the daemons rolled
+out, and the toolbox client able to reach the server and authenticate.
+It prints the environment the harness needs and writes it to
+`test-artifacts/soak-k8s.env`. Point `SOAK_K8S_CONTEXT` at an existing
+cluster to skip kind entirely, which is worth doing locally where one
+is usually running already.
+
+The kind cluster is called `soak-k8s`, and the name matters: kind
+names its node container `<cluster>-control-plane`, and
+`deploy-sigul-infrastructure.sh --force-clean-volumes` — which
+`run-soak.sh` runs — removes every container matching `name=sigul`. A
+cluster named after Sigul is destroyed by any Compose soak on the same
+machine, minutes into an unrelated Kubernetes run.
+
+Everything happens from **outside** the cluster, and nothing is
+installed to make the release measurable — no runner Deployment, no
+RBAC, no sidecar. What is measured is the chart as shipped. Load goes
+through the admin toolbox pod, which is where a provisioned client
+already lives; the CI job runs the harness on the runner rather than
+in a container, because every interaction is a `kubectl` call.
+
+### What this target adds
+
+Compose covers the daemons, and every defect found so far lived
+there. It cannot cover what the chart contributes. Here the
+controllers and the probes are in play — and the difference shows
+immediately:
+
+|                | Compose | Kubernetes                                |
+| -------------- | ------: | ----------------------------------------: |
+| bridge restart | ~2 s    | **7 s** (Deployment replaces the pod)     |
+| server restart | ~2 s    | **25 s** (StatefulSet, probe-gated start) |
+
+The asymmetry is the point, and it is not `OrderedReady`: the chart
+fixes the server at one replica, so there is no second ordinal for
+ordering to serialise. It is that a Deployment brings the replacement
+up *alongside* the outgoing pod, while a StatefulSet's replacement
+cannot exist until the old pod is fully gone — and then waits out its
+init containers, its startup and a readiness probe with a 10-second
+initial delay and a 15-second period. Twenty-five seconds of it, none
+of it visible under Compose.
+
+Restarts are warm faults, before the baseline, for the same
+reason the Compose profiles place them there: the leak comparison runs
+from baseline to cooldown and means nothing across a restart.
+
+What this does **not** cover is a server that is `Running` but never
+`Ready` — the state `OrderedReady` genuinely will not resolve, and the
+one behind the production incident. Both restart faults delete a
+*healthy* pod. Tracked as
+[#27](https://github.com/lfreleng-actions/sigul-docker-k8s/issues/27).
+
+When a replacement reports `Ready`, the target checks that the daemon
+holds the socket it needs in order to serve — the bridge listening for
+clients, the server connected to the bridge. If it does not, the run
+**fails** on a `readiness means the daemon can serve` invariant rather
+than merely logging it: a readiness probe that passes early sends the
+next request into a refused connection, and a warning in a nightly's
+output is a warning nobody reads.
+
+**NetworkPolicies are applied but not yet verified.** kind's default
+CNI accepts policy objects without enforcing them, so what this
+exercises today is the chart's templating, not its policies. Proving
+them needs the cluster created with `disableDefaultCNI` and a
+policy-capable CNI installed, together with a negative connectivity
+assertion so that enforcement is demonstrated rather than assumed.
+Tracked as [#26](https://github.com/lfreleng-actions/sigul-docker-k8s/issues/26).
+
+**Liveness-driven recovery is not covered either.** Both restart
+faults delete a *healthy* pod. The production failure — `Running` but
+never `Ready`, which `OrderedReady` will not replace — needs a wedge,
+and freezing is unavailable here (see below), so it needs a different
+mechanism. Tracked as
+[#27](https://github.com/lfreleng-actions/sigul-docker-k8s/issues/27).
+
+Until both land, [#21](https://github.com/lfreleng-actions/sigul-docker-k8s/issues/21)
+stays open: this target meets its probe and StatefulSet-replacement
+criteria and not its policy or wedge ones.
+
+### What it deliberately does not do
+
+**Freezing is impossible and refuses rather than pretending.** The
+daemon is PID 1 in its namespace — deliberately, since patch 08's
+orphan reaper depends on it — and the kernel discards signals with
+default actions sent to namespace init from inside it. Measured: a
+non-PID-1 process goes `S` → `T` under `SIGSTOP`, PID 1 stays `Ss`.
+The freezer cgroup is no better, since it would suspend the exec'd
+shell doing the freezing and leave no way back in. A freeze that
+silently did nothing would report an injected fault and record a clean
+recovery from an event that never happened. Compose keeps that ground.
+
+**Raw-socket client faults** dial the bridge directly, and its Service
+is `ClusterIP` — unreachable from where the harness runs. **Network
+toxics** need Toxiproxy in the request path, which is
+separate plumbing in a cluster. Both are thoroughly covered under
+Compose, so the `k8s` profile names neither rather than naming them
+and failing — and pairing a profile that does name one with a target
+that has no proxy is refused before the run starts, rather than
+turning into a fault failure twenty minutes in.
+
+No baseline is committed for this profile. The `kubectl exec` in front
+of every request makes its latencies incomparable with Compose's, and
+a reference should be captured the same way as `baseline-pr.json`
+once a few nightlies have run.

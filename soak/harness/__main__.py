@@ -41,7 +41,7 @@ from .faults.network import configure_proxies
 from .profiles import PROFILES, Profile
 from .sampler import Sampler
 from .scheduler import Scheduler, Timeline
-from .target import DockerTarget
+from .target import Target, build_target
 
 HERE = Path(__file__).resolve().parent
 
@@ -167,7 +167,7 @@ def start_locust(
 
 
 def _restore_stack(
-    scheduler: Scheduler, target: DockerTarget, units: tuple[str, ...]
+    scheduler: Scheduler, target: Target, units: tuple[str, ...]
 ) -> None:
     """Best-effort restoration on an interrupted run.
 
@@ -210,12 +210,50 @@ def _stop_load(locust: subprocess.Popen | None) -> str | None:
     return None
 
 
+def _reject_unavailable_faults(
+    profile: Profile, target: Target, registry: dict
+) -> None:
+    """Refuse a profile whose faults this target cannot inject.
+
+    Every fault declares the capabilities its mechanism needs and every
+    target declares what it offers. Caught before the run rather than
+    at injection time, and refused rather than skipped: a fault whose
+    mechanism cannot reach the stack still produces a window, and some
+    of them swallow connection errors by design, so the run would
+    record a clean recovery from an event that never happened.
+    """
+    unavailable: list[str] = []
+    for slot in (
+        *profile.preflight_faults,
+        *profile.warm_faults,
+        *profile.faults,
+    ):
+        fault = registry.get(slot.fault)
+        if fault is None:
+            continue
+        lacking = [c for c in fault.requires if not target.provides(c)]
+        if lacking:
+            unavailable.append(f"{slot.fault} (needs {', '.join(sorted(lacking))})")
+    if unavailable:
+        raise SystemExit(
+            f"profile {profile.name} names faults "
+            f"{type(target).__name__} cannot inject: "
+            + "; ".join(sorted(set(unavailable)))
+        )
+
+
 def run(profile: Profile, output_dir: Path) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     for stale in ("requests.csv", "samples.csv", "timeline.csv", "locust-started"):
         (output_dir / stale).unlink(missing_ok=True)
 
-    password = Path("/test-artifacts/admin-password").read_text().strip()
+    password = (
+        Path(
+            os.environ.get("SOAK_ADMIN_PASSWORD_FILE", "/test-artifacts/admin-password")
+        )
+        .read_text()
+        .strip()
+    )
     bridge = os.environ.get("SOAK_BRIDGE_CONTAINER", "sigul-bridge")
     server = os.environ.get("SOAK_SERVER_CONTAINER", "sigul-server")
 
@@ -225,8 +263,9 @@ def run(profile: Profile, output_dir: Path) -> int:
         f"{len(profile.preflight_faults) + len(profile.warm_faults) + len(profile.faults)} faults"
     )
 
-    target = DockerTarget()
+    target = build_target()
     registry = build_registry(target)
+    _reject_unavailable_faults(profile, target, registry)
     timeline = Timeline(output_dir / "timeline.csv")
     scheduler = Scheduler(profile, registry, timeline, log=log)
     sampler = Sampler(target, (bridge, server), output_dir / "samples.csv")
@@ -253,7 +292,13 @@ def run(profile: Profile, output_dir: Path) -> int:
     try:
         # Readiness runs inside the reporting path, so a stack that never
         # serves still produces report.md and results.json saying why.
-        configure_proxies(bridge)
+        # Toxiproxy sits in the request path of the Compose stack, so
+        # its proxies are created before anything is asked to serve:
+        # unconfigured, they listen for nothing and the stack answers
+        # nothing. The Kubernetes deployment has no proxy to configure,
+        # and must not fail before the first request looking for one.
+        if target.provides("proxy"):
+            configure_proxies(bridge)
         wait_for_service(password)
         sampler.start()
         # Preflight faults need an idle stack - no request in flight -
@@ -304,7 +349,11 @@ def run(profile: Profile, output_dir: Path) -> int:
             log(f"sampler: {sampler.errors} readings skipped (units restarting/frozen)")
 
     return analyse_and_report(
-        profile.name, output_dir, registry, harness_failure=failure
+        profile.name,
+        output_dir,
+        registry,
+        harness_failure=failure,
+        probe_violations=tuple(getattr(target, "probe_violations", ())),
     )
 
 
@@ -313,9 +362,10 @@ def analyse_and_report(
     output_dir: Path,
     registry: dict | None = None,
     harness_failure: str | None = None,
+    probe_violations: tuple[str, ...] = (),
 ) -> int:
     if registry is None:
-        registry = build_registry(DockerTarget())
+        registry = build_registry(build_target())
     fault_meta = {
         name: FaultMeta(f.description, f.implication, f.service_possible_during)
         for name, f in registry.items()
@@ -345,6 +395,7 @@ def analyse_and_report(
         baseline,
         units,
         harness_failure,
+        probe_violations,
     )
     analyze.write_results(results, output_dir)
     text = report.write_report(results, output_dir)

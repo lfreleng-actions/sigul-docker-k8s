@@ -30,7 +30,7 @@ from locust import LoadTestShape, User, between, events, task
 
 # Locust puts this file's directory on sys.path, not the package root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from harness.cli import run_sigul  # noqa: E402
+from harness.cli import ensure_remote_payloads, run_sigul  # noqa: E402
 
 OUTPUT_DIR = Path(os.environ.get("SOAK_OUTPUT_DIR", "/results"))
 WORK_DIR = Path("/tmp/soak-work")
@@ -81,17 +81,26 @@ _request_log: RequestLog | None = None
 
 
 def _read_admin_password() -> str:
-    path = Path("/test-artifacts/admin-password")
+    # Overridable because the harness does not always run in the
+    # container that owns this path: against a cluster it runs outside,
+    # and the deploy step writes the chart's admin secret somewhere of
+    # its choosing.
+    path = Path(
+        os.environ.get("SOAK_ADMIN_PASSWORD_FILE", "/test-artifacts/admin-password")
+    )
     if not path.is_file():
         raise RuntimeError(
-            "/test-artifacts/admin-password missing - run "
-            "scripts/deploy-sigul-infrastructure.sh first"
+            f"{path} missing - run scripts/deploy-sigul-infrastructure.sh "
+            "first, or set SOAK_ADMIN_PASSWORD_FILE"
         )
     return path.read_text().strip()
 
 
 def _run_sigul(
-    argv: list[str], passwords: list[str], timeout: float
+    argv: list[str],
+    passwords: list[str],
+    timeout: float,
+    remove_after: tuple[str, ...] = (),
 ) -> tuple[bool, str]:
     """Run one sigul command in its own process group; see harness.cli.
 
@@ -99,8 +108,19 @@ def _run_sigul(
     came back, which under Sigul's serial model implies the whole
     service was blocked, not just this caller.
     """
-    outcome = run_sigul(argv, passwords, timeout)
+    outcome = run_sigul(argv, passwords, timeout, remove_after)
     return outcome.ok, outcome.detail
+
+
+def _outputs(path: Path) -> tuple[str, ...]:
+    """An output file and the backup sigul leaves beside it.
+
+    utils.write_new_file() replaces the target atomically and keeps the
+    previous version as `path~`, so a task deleting only its named
+    output leaves half of what it wrote. Two files per signing request,
+    and for sign_data_64mb they are 64 MiB each.
+    """
+    return (str(path), f"{path}~")
 
 
 @events.init.add_listener
@@ -114,14 +134,21 @@ def _on_init(environment, **_kwargs) -> None:
 
     # Fixed, incompressible payloads. Random bytes so a bandwidth toxic
     # measures the link rather than the compressor.
-    for name, size in (
+    payloads = (
         ("small.txt", 4096),
         ("blob1m.bin", 1 << 20),
         ("blob64m.bin", 64 << 20),
-    ):
+    )
+    for name, size in payloads:
         path = WORK_DIR / name
         if not path.is_file() or path.stat().st_size != size:
             path.write_bytes(os.urandom(size))
+    # `sigul` takes a path, not a stream, so the payloads must exist
+    # wherever it runs. Against a cluster that is the toolbox pod, not
+    # here. Generated in place rather than copied: 64 MiB through the
+    # apiserver's exec stream is slow, and nothing about these bytes
+    # needs to match the ones written above.
+    ensure_remote_payloads(str(WORK_DIR), payloads)
 
     _request_log = RequestLog(OUTPUT_DIR / "requests.csv")
 
@@ -185,9 +212,15 @@ class SigulUser(User):
     #: an unbounded wait would hide a total stall as a missing sample.
     timeout = float(os.environ.get("SOAK_REQUEST_TIMEOUT", "180"))
 
-    def _measure(self, name: str, argv: list[str], passwords: list[str]) -> None:
+    def _measure(
+        self,
+        name: str,
+        argv: list[str],
+        passwords: list[str],
+        remove_after: tuple[str, ...] = (),
+    ) -> None:
         started = time.perf_counter()
-        ok, detail = _run_sigul(argv, passwords, self.timeout)
+        ok, detail = _run_sigul(argv, passwords, self.timeout, remove_after)
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         self.environment.events.request.fire(
             request_type="sigul",
@@ -213,8 +246,8 @@ class SigulUser(User):
             "sign_text",
             ["sign-text", "-o", str(out), KEY_NAME, str(WORK_DIR / "small.txt")],
             [KEY_PASSPHRASE],
+            _outputs(out),
         )
-        out.unlink(missing_ok=True)
 
     @task(int(os.environ.get("SOAK_W_SIGN_1MB", "3")))
     def sign_data_1mb(self) -> None:
@@ -223,8 +256,8 @@ class SigulUser(User):
             "sign_data_1mb",
             ["sign-data", "-o", str(out), KEY_NAME, str(WORK_DIR / "blob1m.bin")],
             [KEY_PASSPHRASE],
+            _outputs(out),
         )
-        out.unlink(missing_ok=True)
 
     @task(int(os.environ.get("SOAK_W_SIGN_64MB", "1")))
     def sign_data_64mb(self) -> None:
@@ -233,8 +266,8 @@ class SigulUser(User):
             "sign_data_64mb",
             ["sign-data", "-o", str(out), KEY_NAME, str(WORK_DIR / "blob64m.bin")],
             [KEY_PASSPHRASE],
+            _outputs(out),
         )
-        out.unlink(missing_ok=True)
 
 
 class ProfileShape(LoadTestShape):

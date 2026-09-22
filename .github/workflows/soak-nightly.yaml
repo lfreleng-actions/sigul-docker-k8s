@@ -130,3 +130,134 @@ jobs:
         run: |
           docker compose -f docker-compose.sigul.yml -f soak/compose.soak.yml \
             down -v --remove-orphans >/dev/null 2>&1 || true
+
+  soak-k8s:
+    name: 'Soak: Kubernetes (kind)'
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: read
+    timeout-minutes: 60
+    # Nightly only, deliberately. The pull-request gate's value is fast
+    # feedback on the daemons, and Compose gives that in thirty
+    # minutes; standing up a cluster and rolling pods through their
+    # controllers is slower and answers a different question - whether
+    # the chart's probes and its StatefulSet behave when pods come and
+    # go. NetworkPolicies are rendered and applied but not enforced
+    # here: kind's default CNI accepts them without acting on them, so
+    # this job says nothing about whether they are correct (see #26).
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 'Pull and tag images'
+        shell: bash
+        env:
+          TAG: ${{ inputs.image_tag || 'latest' }}
+          REGISTRY_NAME: ${{ env.REGISTRY }}
+          IMAGE: ${{ env.IMAGE_NAME }}
+        run: |
+          for component in client server bridge; do
+            ref="${REGISTRY_NAME}/${IMAGE}/${component}:${TAG}"
+            docker pull "$ref"
+            docker tag "$ref" "${component}-linux-amd64-image:test"
+          done
+
+      - name: 'Create the cluster and install the chart'
+        shell: bash
+        env:
+          # Absolute: deploy.sh writes it here, and the harness below
+          # runs from soak/, so a relative path would not agree.
+          SOAK_ADMIN_PASSWORD_FILE:
+            '${{ github.workspace }}/test-artifacts/k8s-admin-password'
+        run: |
+          # kind ships with the runner image; the chart and the images
+          # come from this checkout, so nothing published is required.
+          ./soak/k8s/deploy.sh
+
+      - name: 'Install the harness dependencies'
+        shell: bash
+        run: |
+          # The Kubernetes target runs the harness on the runner rather
+          # than in a container: every interaction is a kubectl call,
+          # so there is nothing for a container to provide except these
+          # two packages.
+          python3 -m pip install -r soak/requirements.txt
+
+      - name: 'Run the Kubernetes soak profile'
+        shell: bash
+        env:
+          SOAK_TARGET: 'kubernetes'
+          SOAK_SIGUL_VIA: 'kubectl'
+          SOAK_K8S_CONTEXT: 'kind-soak-k8s'
+          SOAK_K8S_NAMESPACE: 'sigul-soak'
+          # Absolute: the harness runs from soak/, so a relative path
+          # here would land in soak/soak/ and soak/test-artifacts/.
+          SOAK_OUTPUT_DIR: '${{ github.workspace }}/soak/results'
+          SOAK_ADMIN_PASSWORD_FILE:
+            '${{ github.workspace }}/test-artifacts/k8s-admin-password'
+        run: |
+          cd soak && python3 -m harness k8s
+
+      - name: 'Publish soak report to job summary'
+        if: always()
+        shell: bash
+        run: |
+          if [ -f soak/results/report.md ]; then
+            cat soak/results/report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '## Sigul soak (Kubernetes): no report produced' \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: 'Capture cluster state and daemon logs'
+        if: always()
+        shell: bash
+        run: |
+          # What a failure needs: which pods existed, why the kubelet
+          # restarted anything, and what the daemons said. Events are
+          # the only place a probe failure is recorded.
+          mkdir -p soak/results/logs
+          kubectl -n sigul-soak get pods -o wide \
+            > soak/results/logs/pods.txt 2>&1 || true
+          kubectl -n sigul-soak describe pods \
+            > soak/results/logs/describe.txt 2>&1 || true
+          kubectl -n sigul-soak get events --sort-by=.lastTimestamp \
+            > soak/results/logs/events.txt 2>&1 || true
+          for component in bridge server admin-toolbox; do
+            kubectl -n sigul-soak logs \
+              -l "app.kubernetes.io/component=${component}" \
+              --all-containers --tail=5000 \
+              > "soak/results/logs/${component}.log" 2>&1 || true
+            # The instance before a restart, which is where a
+            # liveness-probe kill leaves its evidence. Events say a
+            # restart happened; only this says what the daemon was
+            # doing when it did. Absent unless there was a restart, so
+            # the failure is expected and ignored.
+            kubectl -n sigul-soak logs \
+              -l "app.kubernetes.io/component=${component}" \
+              --all-containers --previous --tail=5000 \
+              > "soak/results/logs/${component}-previous.log" 2>&1 || true
+          done
+
+      - name: 'Upload soak results'
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: always()
+        with:
+          name: 'soak-nightly-kubernetes'
+          path: soak/results/
+          retention-days: 90
+
+      - name: 'Clean up'
+        if: always()
+        shell: bash
+        run: |
+          ./soak/k8s/deploy.sh --teardown >/dev/null 2>&1 || true

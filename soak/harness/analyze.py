@@ -279,6 +279,68 @@ def _unit_resources(
     )
 
 
+def _orphaned_expectations(
+    results: Results,
+    fault_expectations: dict,
+    invariant_expectations: dict,
+) -> list[str]:
+    """Expectation keys naming nothing this run produced.
+
+    An expectation that names nothing is as stale as one whose subject
+    now passes: the fault was renamed or dropped from the profile, and
+    without this the marker lives on unseen, silently excusing whatever
+    later takes its name.
+    """
+    emitted_faults = {f.name for f in results.faults}
+    emitted_checks = {c.name for c in results.invariants + results.regressions}
+    return [
+        f"faults/{name}" for name in fault_expectations if name not in emitted_faults
+    ] + [
+        f"invariants/{name}"
+        for name in invariant_expectations
+        if name not in emitted_checks
+    ]
+
+
+def _judge_expectations(
+    results: Results, fault_expectations: dict, expectations: dict
+) -> None:
+    """Apply the expected-fail markers, and report the dead ones.
+
+    A marker earns its keep only while the thing it excuses still
+    fails. Two ways it stops earning it, both reported as failures so
+    that neither can accumulate: the subject now passes (xpass), or the
+    subject is no longer produced at all (orphaned).
+    """
+    invariant_expectations = expectations.get("invariants", {})
+    for check in results.invariants + results.regressions:
+        check.judge(invariant_expectations)
+    orphaned = _orphaned_expectations(
+        results, fault_expectations, invariant_expectations
+    )
+    if orphaned:
+        results.invariants.append(
+            Check(
+                "no orphaned expected-fail markers",
+                False,
+                "; ".join(f"{name} names nothing in this run" for name in orphaned),
+                verdict="fail",
+            )
+        )
+    stale = [c for c in results.invariants if c.verdict == "xpass"]
+    if stale:
+        results.invariants.append(
+            Check(
+                "no stale expected-fail invariant markers",
+                False,
+                "; ".join(
+                    f"{c.name} now holds - remove its expectation" for c in stale
+                ),
+                verdict="fail",
+            )
+        )
+
+
 def analyse(
     output_dir: Path,
     profile_name: str,
@@ -287,6 +349,7 @@ def analyse(
     baseline: dict | None,
     units: tuple[str, ...] = ("sigul-bridge", "sigul-server"),
     harness_failure: str | None = None,
+    probe_violations: tuple[str, ...] = (),
 ) -> Results:
     run = Run.load(output_dir)
     now = time.time()
@@ -341,45 +404,21 @@ def analyse(
             harness_failure or "load, sampling and fault injection all ran as planned",
         ),
     )
+    # Only the Kubernetes target can observe this, and only when a pod
+    # is replaced; an empty list on the Compose target means the
+    # question does not arise there, not that the answer was good.
+    if probe_violations:
+        results.invariants.append(
+            Check(
+                "readiness means the daemon can serve",
+                False,
+                "; ".join(probe_violations),
+            )
+        )
     if baseline:
         results.regressions = regressions(results, baseline)
 
-    invariant_expectations = expectations.get("invariants", {})
-    for check in results.invariants + results.regressions:
-        check.judge(invariant_expectations)
-    # An expectation that names nothing this run produced is as stale
-    # as one whose subject now passes: the fault was renamed or dropped
-    # from the profile, and the marker would otherwise live on unseen.
-    emitted_faults = {f.name for f in results.faults}
-    emitted_checks = {c.name for c in results.invariants + results.regressions}
-    orphaned = [
-        f"faults/{name}" for name in fault_expectations if name not in emitted_faults
-    ] + [
-        f"invariants/{name}"
-        for name in invariant_expectations
-        if name not in emitted_checks
-    ]
-    if orphaned:
-        results.invariants.append(
-            Check(
-                "no orphaned expected-fail markers",
-                False,
-                "; ".join(f"{name} names nothing in this run" for name in orphaned),
-                verdict="fail",
-            )
-        )
-    stale = [c for c in results.invariants if c.verdict == "xpass"]
-    if stale:
-        results.invariants.append(
-            Check(
-                "no stale expected-fail invariant markers",
-                False,
-                "; ".join(
-                    f"{c.name} now holds - remove its expectation" for c in stale
-                ),
-                verdict="fail",
-            )
-        )
+    _judge_expectations(results, fault_expectations, expectations)
 
     failed = [
         c
