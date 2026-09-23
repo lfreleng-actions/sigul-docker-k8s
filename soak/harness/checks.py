@@ -224,7 +224,23 @@ def _clean_phase_checks(results: Results) -> list[Check]:
 def _fault_checks(results: Results) -> list[Check]:
     checks: list[Check] = []
     unexpected = [f for f in results.faults if f.verdict == "fail"]
-    stale = [f for f in results.faults if f.verdict == "xpass"]
+    # Stale means the defect no longer reproduces, which is a property of
+    # the fault rather than of one injection. A timing-dependent defect
+    # passes some injections while still failing others - the bandwidth
+    # squeeze only stalls the service when a large upload happens to be
+    # in flight - and one lucky draw is not evidence of a fix. Judged per
+    # injection, a single pass among five failures would fail the run as
+    # a stale marker while the defect it names was plainly still there.
+    # So a marker is stale only once every injection of its fault passed.
+    verdicts: dict[str, list[str]] = {}
+    for f in results.faults:
+        verdicts.setdefault(f.name, []).append(f.verdict)
+    stale = sorted(n for n, vs in verdicts.items() if all(v == "xpass" for v in vs))
+    partial = sorted(
+        f"{n}: {vs.count('xpass')} of {len(vs)} injections passed"
+        for n, vs in verdicts.items()
+        if "xpass" in vs and n not in stale
+    )
     checks.append(
         Check(
             "service recovers after every fault",
@@ -237,8 +253,12 @@ def _fault_checks(results: Results) -> list[Check]:
         Check(
             "no stale expected-fail markers",
             not stale,
-            "; ".join(f"{f.name} now recovers - remove its expectation" for f in stale)
-            or "none",
+            "; ".join(
+                f"{n} now recovers every time - remove its expectation" for n in stale
+            )
+            or (
+                "none; still reproducing: " + "; ".join(partial) if partial else "none"
+            ),
         )
     )
     return checks
