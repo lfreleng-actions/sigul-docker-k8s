@@ -40,6 +40,11 @@ HEARTBEAT_PATH = sys.argv[4] if len(sys.argv) > 4 else "/run/sigul_bridge.heartb
 #: seconds while healthy, so this is six missed beats of headroom.
 HEARTBEAT_MAX_AGE_SECONDS = 30
 
+#: How far in the future the heartbeat may be dated. More than ordinary
+#: skew means the clock stepped backwards, and an age check alone would
+#: then pass a wedged bridge until real time caught up.
+HEARTBEAT_MAX_FUTURE_SECONDS = 5
+
 TCP_LISTEN = "0A"  # socket state in /proc/net/tcp*
 
 
@@ -91,6 +96,8 @@ def bridge_problem() -> str | None:
         return "bridge heartbeat missing"
     if age > HEARTBEAT_MAX_AGE_SECONDS:
         return f"bridge heartbeat stale ({age:.0f}s old)"
+    if age < -HEARTBEAT_MAX_FUTURE_SECONDS:
+        return f"bridge heartbeat dated {-age:.0f}s in the future"
     return None
 
 

@@ -128,7 +128,7 @@ spec:
               command:
                 - /bin/bash
                 - -c
-                - "ss -tln | grep -q ':{{ .Values.bridge.ports.client }} ' && test $(( $(date +%s) - $(stat -c %Y /run/sigul_bridge.heartbeat) )) -le 30"
+                - "ss -tln | grep -q ':{{ .Values.bridge.ports.client }} ' && a=$(( $(date +%s) - $(stat -c %Y /run/sigul_bridge.heartbeat) )) && test $a -ge -5 && test $a -le 30"
             periodSeconds: 10
           livenessProbe:
             exec:
@@ -136,7 +136,15 @@ spec:
               # daemon is healthy, so thirty is six missed beats. Three
               # failures ten seconds apart then restart it: about a
               # minute from a wedge to a replacement.
-              command: ["/bin/bash", "-c", "test $(( $(date +%s) - $(stat -c %Y /run/sigul_bridge.heartbeat) )) -le 30"]
+              #
+              # Bounded below as well as above. After the clock steps
+              # backwards the heartbeat is dated in the future, its age
+              # is negative, and an upper bound alone would pass a
+              # wedged daemon until real time caught up with the step.
+              # Five seconds covers ordinary skew; beyond that the
+              # daemon is restarted and starts a correctly dated one -
+              # one restart, rather than a wedge nobody sees.
+              command: ["/bin/bash", "-c", "a=$(( $(date +%s) - $(stat -c %Y /run/sigul_bridge.heartbeat) )) && test $a -ge -5 && test $a -le 30"]
             periodSeconds: 10
             failureThreshold: 3
           volumeMounts:
