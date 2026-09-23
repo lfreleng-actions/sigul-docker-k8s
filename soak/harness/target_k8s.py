@@ -87,10 +87,9 @@ class KubernetesTarget(Target):
     """A stack deployed by the Helm chart, driven through kubectl.
 
     Everything happens from outside the cluster, which is what makes
-    this worth having: the chart's probes and its StatefulSet are in
-    play, and neither exists under Compose. Its NetworkPolicies are
-    applied but not enforced by kind's default CNI, so they are
-    rendered rather than tested (issue #26). Nothing is installed into
+    this worth having: the chart's probes, its StatefulSet and its
+    NetworkPolicies are all in play, and none of them exist under
+    Compose. Nothing is installed into
     the cluster to support the harness - no runner Deployment, no
     RBAC, no sidecar - so what is measured is the release as shipped
     rather than a variant of it arranged to be measurable.

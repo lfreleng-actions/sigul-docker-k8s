@@ -359,23 +359,47 @@ than merely logging it: a readiness probe that passes early sends the
 next request into a refused connection, and a warning in a nightly's
 output is a warning nobody reads.
 
-**NetworkPolicies are applied but not yet verified.** kind's default
-CNI accepts policy objects without enforcing them, so what this
-exercises today is the chart's templating, not its policies. Proving
-them needs the cluster created with `disableDefaultCNI` and a
-policy-capable CNI installed, together with a negative connectivity
-assertion so that enforcement is demonstrated rather than assumed.
-Tracked as [#26](https://github.com/lfreleng-actions/sigul-docker-k8s/issues/26).
+**NetworkPolicies: enforced, and checked on every deploy.** kind's
+CNI, kindnet, enforces NetworkPolicy. This README used to say the
+opposite, on the strength of a claim that was never tested; measured,
+it is false. `deploy.sh` now asserts the policies before any soak,
+from a pod the policies do not name, in a namespace of its own:
+
+<!-- markdownlint-disable MD013 -->
+
+| from     | to               | must be    | why                                     |
+| -------- | ---------------- | :--------: | --------------------------------------- |
+| outsider | bridge `:44334`  | open       | the client port is public by design     |
+| outsider | bridge `:44333`  | **closed** | only the server may reach the bridge    |
+| outsider | apiserver `:443` | open       | *control*                               |
+| outsider | itself `:8080`   | open       | *control*                               |
+| server   | apiserver `:443` | **closed** | a compromised server cannot use the API |
+| server   | outsider `:8080` | **closed** | nor exfiltrate to an arbitrary pod      |
+
+<!-- markdownlint-enable MD013 -->
+
+Every block is paired with a control that must connect. Without one,
+a probe pod that could reach nothing would pass every negative check,
+and enforcement would be recorded on the strength of a broken network.
+The signing request that precedes it is the positive half: it crossed
+every allowed path.
+
+Verified to catch breakage, not just to pass: loosening the bridge
+policy fails the check on exactly the path that opened. Removing the
+server's egress rules fails both exfiltration checks — but only when
+all three policies that select the server for egress are gone. Take
+away any two and the third still isolates it, which is correct
+behaviour and a useful property of how the chart layers them.
 
 **Wedged pods: covered, and neither daemon is recovered in time.**
 The `proc_wedge_*` faults freeze a daemon and *leave* it frozen,
 waiting up to 180 s — the server's liveness budget plus grace — for
 the chart to replace it:
 
-| | first `Ready=False` | replaced |
-| --- | ---: | ---: |
-| bridge | never | **never** |
-| server | 226 s | 324 s |
+|        | first `Ready=False` | replaced  |
+| ------ | ------------------: | --------: |
+| bridge | never               | **never** |
+| server | 226 s               | 324 s     |
 
 The bridge is never caught because every one of its health checks —
 startup, readiness, liveness and the NLB's `/healthz` — tests a live
@@ -392,7 +416,7 @@ the pod: what production had to do by hand.
 
 That closes the wedge criterion of
 [#21](https://github.com/lfreleng-actions/sigul-docker-k8s/issues/21),
-which remains open only for its NetworkPolicy one.
+and with the NetworkPolicy checks above, the last of its criteria.
 
 ### What it deliberately does not do
 

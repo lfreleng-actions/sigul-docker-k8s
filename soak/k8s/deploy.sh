@@ -380,6 +380,74 @@ if ! timeout "$((AUTH_TIMEOUT + 15))" \
     exit 1
 fi
 
+# The chart's NetworkPolicies, asserted rather than assumed. kind's
+# CNI enforces them - measured, with every policy removed and then
+# restored - so what matters is proving each time that they still say
+# what they should. The signing request above is the positive half:
+# it crossed every allowed path. This is the negative half, from a pod
+# the policies do not name, in a namespace of its own.
+#
+# Each block is paired with a control that must connect. Without one,
+# a probe pod that could reach nothing at all would pass every
+# negative check, and enforcement would be recorded on the strength of
+# a broken network.
+log "checking the NetworkPolicies are enforced"
+PROBE_NS="${NAMESPACE}-np-probe"
+check_policies() {
+    local bridge_svc outsider_ip api_ip server_pod
+    server_pod="$(kube -n "$NAMESPACE" get pod \
+        -l "app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=server" \
+        -o jsonpath='{.items[0].metadata.name}')"
+    bridge_svc="$(kube -n "$NAMESPACE" get svc \
+        -l "app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=bridge" \
+        -o jsonpath='{range .items[?(@.spec.clusterIP!="None")]}{.spec.clusterIP}{end}')"
+    api_ip="$(kube -n default get svc kubernetes -o jsonpath='{.spec.clusterIP}')"
+    kube create namespace "$PROBE_NS" --dry-run=client -o yaml | kube apply -f - >/dev/null
+    kube -n "$PROBE_NS" delete pod outsider --ignore-not-found --wait >/dev/null
+    # Listens on 8080 as well, so it is also the destination for the
+    # egress checks: somewhere a server with no policy could reach.
+    kube -n "$PROBE_NS" run outsider --image="$CLIENT_IMAGE" \
+        --image-pull-policy=IfNotPresent --restart=Never --command -- \
+        python3 -m http.server 8080 >/dev/null
+    kube -n "$PROBE_NS" wait --for=condition=Ready pod/outsider --timeout=120s >/dev/null
+    outsider_ip="$(kube -n "$PROBE_NS" get pod outsider -o jsonpath='{.status.podIP}')"
+
+    local failed=0 row
+    # namespace pod container host port expect what
+    for row in \
+        "$PROBE_NS outsider outsider $bridge_svc 44334 open bridge-client-port-is-public" \
+        "$PROBE_NS outsider outsider $bridge_svc 44333 closed only-the-server-reaches-the-bridge" \
+        "$PROBE_NS outsider outsider $api_ip 443 open control:apiserver-reachable" \
+        "$PROBE_NS outsider outsider $outsider_ip 8080 open control:outsider-reachable" \
+        "$NAMESPACE $server_pod server $api_ip 443 closed server-cannot-reach-apiserver" \
+        "$NAMESPACE $server_pod server $outsider_ip 8080 closed server-cannot-exfiltrate"; do
+        # shellcheck disable=SC2086  # word splitting is the point
+        set -- $row
+        local got
+        got="$(kube -n "$1" exec "$2" -c "$3" -- python3 -c '
+import socket, sys
+s = socket.socket(); s.settimeout(3)
+try:
+    s.connect((sys.argv[1], int(sys.argv[2]))); print("open")
+except OSError:
+    print("closed")
+finally:
+    s.close()' "$4" "$5" 2>/dev/null || echo "error")"
+        if [[ "$got" == "$6" ]]; then
+            log "  ok    $7 ($2 -> $4:$5 $got)"
+        else
+            echo "[k8s]   FAIL  $7: $2 -> $4:$5 was $got, expected $6" >&2
+            failed=1
+        fi
+    done
+    kube delete namespace "$PROBE_NS" --wait=false >/dev/null
+    return "$failed"
+}
+if ! check_policies; then
+    echo "[k8s] the NetworkPolicies do not say what they should; not starting a soak" >&2
+    exit 1
+fi
+
 # Written as well as printed. The harness needs all of this and
 # defaults to the Compose target without it, so a copy that can be
 # sourced is the difference between the documented invocation working

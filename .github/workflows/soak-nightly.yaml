@@ -141,10 +141,9 @@ jobs:
     # feedback on the daemons, and Compose gives that in thirty
     # minutes; standing up a cluster and rolling pods through their
     # controllers is slower and answers a different question - whether
-    # the chart's probes and its StatefulSet behave when pods come and
-    # go. NetworkPolicies are rendered and applied but not enforced
-    # here: kind's default CNI accepts them without acting on them, so
-    # this job says nothing about whether they are correct (see #26).
+    # the chart's probes, its StatefulSet and its NetworkPolicies
+    # behave when pods come and go. The policies are enforced by kind's
+    # CNI, and deploy.sh asserts them before the soak starts.
     steps:
       # yamllint disable-line rule:line-length
       - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
