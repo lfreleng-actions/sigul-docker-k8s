@@ -136,13 +136,36 @@ class NodeFreezer:
             ).strip()
         )
         pids = self._tree(node, init)
-        self._docker(["exec", node, "kill", "-STOP", *map(str, pids)])
+        # Recorded before any signal is sent, so that whatever happens
+        # next, thaw() knows what to resume. The alternative is worse
+        # than a failed fault: a descendant that exits between the
+        # listing above and the kill below makes kill stop everything
+        # else and still exit non-zero, and if that raised before this
+        # was recorded, the daemon would stay stopped for the rest of
+        # the run with nothing able to resume it.
         self._frozen[component] = (node, pids)
-        state = self._docker(
-            ["exec", node, "awk", "/^State/{print $2}", f"/proc/{init}/status"]
-        ).strip()
-        if state != "T":
-            raise RuntimeError(f"{component} daemon did not stop: state {state!r}")
+        try:
+            # `|| true`: a PID that has exited is not a failure to
+            # freeze. Whether the freeze took is judged below, on the
+            # daemon itself.
+            self._docker(
+                [
+                    "exec",
+                    node,
+                    "sh",
+                    "-c",
+                    f"kill -STOP {' '.join(map(str, pids))} 2>/dev/null; true",
+                ]
+            )
+            state = self._docker(
+                ["exec", node, "awk", "/^State/{print $2}", f"/proc/{init}/status"]
+            ).strip()
+            if state != "T":
+                raise RuntimeError(f"{component} daemon did not stop: state {state!r}")
+        except Exception:
+            # Never leave a half-frozen unit behind a raised error.
+            self.thaw(component)
+            raise
 
     def thaw(self, component: str) -> None:
         """SIGCONT whatever freeze() stopped. Idempotent.

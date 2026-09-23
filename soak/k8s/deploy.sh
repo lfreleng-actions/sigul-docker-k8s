@@ -392,7 +392,7 @@ fi
 # negative check, and enforcement would be recorded on the strength of
 # a broken network.
 log "checking the NetworkPolicies are enforced"
-PROBE_NS="${NAMESPACE}-np-probe"
+PROBE_NS="sigul-np-probe-$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
 check_policies() {
     local bridge_svc outsider_ip api_ip server_pod
     server_pod="$(kube -n "$NAMESPACE" get pod \
@@ -402,8 +402,23 @@ check_policies() {
         -l "app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=bridge" \
         -o jsonpath='{range .items[?(@.spec.clusterIP!="None")]}{.spec.clusterIP}{end}')"
     api_ip="$(kube -n default get svc kubernetes -o jsonpath='{.spec.clusterIP}')"
-    kube create namespace "$PROBE_NS" --dry-run=client -o yaml | kube apply -f - >/dev/null
-    kube -n "$PROBE_NS" delete pod outsider --ignore-not-found --wait >/dev/null
+    # Created exclusively under a name unique to this run - never
+    # adopted - because the cleanup below deletes it outright. With a
+    # fixed name, `apply` would take over a namespace that happened to
+    # exist already, and the cleanup would then delete it and whatever
+    # was running there. `create` refuses instead, and a random suffix
+    # makes the refusal a theoretical case rather than a real one.
+    #
+    # Checked explicitly rather than left to `set -e`, which bash
+    # suspends inside a function called from an `if` - as this one is.
+    # Without the check a failed create would carry on regardless and
+    # reach the delete at the end, in a namespace this run never made.
+    if ! kube create namespace "$PROBE_NS" >/dev/null; then
+        echo "[k8s] could not create probe namespace ${PROBE_NS}" >&2
+        return 1
+    fi
+    kube label namespace "$PROBE_NS" \
+        app.kubernetes.io/managed-by=sigul-soak-deploy >/dev/null
     # Listens on 8080 as well, so it is also the destination for the
     # egress checks: somewhere a server with no policy could reach.
     kube -n "$PROBE_NS" run outsider --image="$CLIENT_IMAGE" \
