@@ -367,28 +367,48 @@ policy-capable CNI installed, together with a negative connectivity
 assertion so that enforcement is demonstrated rather than assumed.
 Tracked as [#26](https://github.com/lfreleng-actions/sigul-docker-k8s/issues/26).
 
-**Liveness-driven recovery is not covered either.** Both restart
-faults delete a *healthy* pod. The production failure — `Running` but
-never `Ready`, which `OrderedReady` will not replace — needs a wedge,
-and freezing is unavailable here (see below), so it needs a different
-mechanism. Tracked as
-[#27](https://github.com/lfreleng-actions/sigul-docker-k8s/issues/27).
+**Wedged pods: covered, and neither daemon is recovered in time.**
+The `proc_wedge_*` faults freeze a daemon and *leave* it frozen,
+waiting up to 180 s — the server's liveness budget plus grace — for
+the chart to replace it:
 
-Until both land, [#21](https://github.com/lfreleng-actions/sigul-docker-k8s/issues/21)
-stays open: this target meets its probe and StatefulSet-replacement
-criteria and not its policy or wedge ones.
+| | first `Ready=False` | replaced |
+| --- | ---: | ---: |
+| bridge | never | **never** |
+| server | 226 s | 324 s |
+
+The bridge is never caught because every one of its health checks —
+startup, readiness, liveness and the NLB's `/healthz` — tests a live
+process or a listening socket, both of which a frozen daemon keeps.
+The server is caught, eventually, only once the bridge gives up on
+its connections and liveness sees them go. Both fail the bound, and
+are recorded as expected failures against
+[#33](https://github.com/lfreleng-actions/sigul-docker-k8s/issues/33),
+which will turn into XPASS — and fail the run until the markers are
+removed — once the probes test responsiveness rather than state.
+
+When a wedge is not replaced, the fault resumes the daemon and deletes
+the pod: what production had to do by hand.
+
+That closes the wedge criterion of
+[#21](https://github.com/lfreleng-actions/sigul-docker-k8s/issues/21),
+which remains open only for its NetworkPolicy one.
 
 ### What it deliberately does not do
 
-**Freezing is impossible and refuses rather than pretending.** The
-daemon is PID 1 in its namespace — deliberately, since patch 08's
-orphan reaper depends on it — and the kernel discards signals with
-default actions sent to namespace init from inside it. Measured: a
-non-PID-1 process goes `S` → `T` under `SIGSTOP`, PID 1 stays `Ss`.
-The freezer cgroup is no better, since it would suspend the exec'd
-shell doing the freezing and leave no way back in. A freeze that
-silently did nothing would report an injected fault and record a clean
-recovery from an event that never happened. Compose keeps that ground.
+**Freezing works on kind, and only on kind.** It cannot be done from
+inside the pod: the daemon is PID 1 in its namespace — deliberately,
+since patch 08's orphan reaper depends on it — and the kernel discards
+default-action signals sent to namespace init from inside it. The
+freezer cgroup is no better, since it would suspend the exec'd shell
+doing the freezing. But a kind node is a Docker container whose PID
+namespace is an *ancestor* of the pod's, and a signal from there is
+honoured: the server daemon, PID 1 in its pod and 2231 on the node,
+goes `S` → `T` under `SIGSTOP` and back under `SIGCONT`. The harness
+sends it through Docker, from outside the cluster, and freezes only
+the daemon's own process tree so a concurrent sampler `exec` is not
+caught. Against any other cluster the capability is absent and the
+`k8s` profile is refused before it starts.
 
 **Raw-socket client faults** dial the bridge directly, and its Service
 is `ClusterIP` — unreachable from where the harness runs. **Network

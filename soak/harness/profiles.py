@@ -182,9 +182,6 @@ NIGHTLY = Profile(
 #: target can honestly inject, which is a shorter list than Compose's
 #: and deliberately so:
 #:
-#: - Freezing is impossible from outside a cluster (see
-#:   KubernetesTarget.freeze), so no freeze faults appear here rather
-#:   than appearing and failing.
 #: - The raw-socket client faults dial the bridge directly, and its
 #:   Service is ClusterIP - unreachable from where this harness runs.
 #:   Compose covers that ground thoroughly.
@@ -198,21 +195,34 @@ NIGHTLY = Profile(
 #: container's 2 s - so the windows are longer and the load lighter,
 #: since every request also pays for a kubectl exec.
 #:
-#: The restarts are warm faults, before the baseline, for the same
-#: reason the Compose profiles place them there: the leak comparison
-#: runs from baseline to cooldown and means nothing across a restart,
-#: and "no restart between baseline and cooldown" is an invariant
-#: rather than something to be marked expected-fail. Their stalls and
+#: And pods that wedge rather than die. The wedge faults freeze a
+#: daemon from its kind node and leave it frozen, to see whether the
+#: chart's probes notice. It is the one question Compose cannot ask,
+#: because nothing there would replace a failing container anyway.
+#: They are why this profile needs a kind cluster: on any other, the
+#: freeze capability is absent and the run is refused before it starts.
+#:
+#: All of them are warm faults, before the baseline, for the same
+#: reason the Compose profiles place restarts there: the leak
+#: comparison runs from baseline to cooldown and means nothing across
+#: a restart, and "no restart between baseline and cooldown" is an
+#: invariant rather than something to be marked expected-fail. A wedge
+#: ends in a restart one way or another - by the kubelet if the probes
+#: notice, by the fault itself if they do not. Their stalls and
 #: recovery times are measured exactly as any other fault's.
 K8S = Profile(
     name="k8s",
-    description="Kubernetes target: chart probes and controller replacement.",
+    description="Kubernetes target: chart probes, controller replacement, wedges.",
     ramp_steps=(1, 2),
     ramp_step_seconds=30.0,
     preflight_faults=(),
     warm_faults=(
         FaultSlot("proc_restart_bridge", 0, 90),
         FaultSlot("proc_restart_server", 0, 120),
+        # No hold: start() itself waits for the replacement, up to the
+        # fault's own bound, so the window is as long as the wedge.
+        FaultSlot("proc_wedge_bridge", 0, 90),
+        FaultSlot("proc_wedge_server", 0, 120),
     ),
     baseline_seconds=90.0,
     steady_users=2,

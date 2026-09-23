@@ -25,6 +25,7 @@ from dataclasses import dataclass
 # class of problem directly.
 from .faults.base import ProductDefect
 from .k8s_api import Release
+from .k8s_node import NodeFreezer
 from .target import ProcessStats, Target
 
 _log = logging.getLogger(__name__)
@@ -100,12 +101,15 @@ class KubernetesTarget(Target):
     it is what everything here is addressed by.
     """
 
-    #: None of them. There is no Toxiproxy in the cluster; the bridge's
-    #: Service is ClusterIP and unreachable from outside it; the sigul
-    #: CLI runs in the toolbox pod, where a signal from here cannot
-    #: follow it; and freeze() is impossible (see its docstring). The
-    #: Kubernetes profile therefore names only restart faults.
-    CAPABILITIES = frozenset()
+    #: What a Kubernetes target can offer is decided per cluster, in
+    #: __init__, rather than here. Always missing: there is no
+    #: Toxiproxy in the cluster; the bridge's Service is ClusterIP and
+    #: unreachable from outside it; and the sigul CLI runs in the
+    #: toolbox pod, where a signal from here cannot follow it. Always
+    #: present: `supervised`, since a controller replaces a failing pod,
+    #: which is what the wedge faults exist to test. Present on kind
+    #: only: `freeze`, from the node container (see k8s_node.py).
+    CAPABILITIES = frozenset({"supervised"})
 
     #: stats() reads two cgroup files rather than running a tool, but
     #: goes through the same exec, so it gets its own bound.
@@ -121,6 +125,7 @@ class KubernetesTarget(Target):
         release: str | None = None,
     ) -> None:
         self._release = Release(namespace=namespace, context=context, name=release)
+        self._freezer = NodeFreezer(self._release)
         #: Times the chart said a unit was Ready while the socket it
         #: needs in order to serve was absent. Collected rather than
         #: logged, so the run can fail on them: a warning in a
@@ -176,12 +181,10 @@ class KubernetesTarget(Target):
         controller creating a replacement, and the probes deciding when
         that replacement may be sent traffic.
 
-        The pod deleted here is a *healthy* one. A server that is
-        Running but never Ready - the state OrderedReady will not
-        resolve on its own, and the one behind the production incident
-        - needs a wedge this target cannot currently inject, and is
-        deliberately out of scope (see issue #27). Nothing below should
-        be read as covering it.
+        The pod deleted here is a *healthy* one. A wedged pod - frozen,
+        with every socket still open - is a different fault, and the
+        one behind the production incident: see the proc_wedge_* faults,
+        which test whether the chart's probes ever notice.
 
         Waiting is done against the container's start time rather than
         the pod's name or its Ready condition alone. Neither is enough
@@ -262,41 +265,32 @@ class KubernetesTarget(Target):
         _log.warning("%s", violation)
         self.probe_violations.append(violation)
 
-    def freeze(self, unit: str) -> None:
-        """Not available here, and deliberately not faked.
+    def provides(self, capability: str) -> bool:
+        """As Target.provides, but freeze is asked of the cluster.
 
-        Docker freezes a container through the freezer cgroup, and
-        nothing outside the cluster can do the same to a pod. Both
-        routes from inside are dead ends, and it is worth recording why
-        so this is not attempted again:
-
-        - SIGSTOP to the daemon does nothing. The daemon is PID 1 in
-          its namespace - deliberately, since the orphan reaper in
-          patch 08 depends on it - and the kernel discards signals with
-          default actions sent to namespace init from inside that
-          namespace. Measured: a non-PID-1 process goes S to T, PID 1
-          stays Ss.
-        - Writing /sys/fs/cgroup/cgroup.freeze freezes every process in
-          the container, the exec'd shell included, and nothing outside
-          that cgroup can write it back. The unit would stay frozen
-          with no way in.
-
-        Raising is the point. A freeze that silently did nothing would
-        report an injected fault, produce a window in which the service
-        was never actually disturbed, and record a clean recovery from
-        an event that did not happen - a green result meaning nothing.
-        The Compose target covers this fault; the Kubernetes profile
-        leaves it out.
+        Only a kind node gives the harness an ancestor PID namespace to
+        signal a pod's daemon from. Asked rather than assumed, so a run
+        against any other cluster refuses the freeze faults up front
+        instead of discovering the gap twenty minutes in.
         """
-        raise RuntimeError(
-            f"cannot freeze {unit} under Kubernetes: the daemon is PID 1 in its "
-            "namespace and ignores SIGSTOP from within it, and the freezer "
-            "cgroup would trap the process doing the freezing. Use the Compose "
-            "target for freeze faults."
-        )
+        if capability == "freeze":
+            return self._freezer.available()
+        return super().provides(capability)
+
+    def freeze(self, unit: str) -> None:
+        """Suspend the unit's daemon without closing any of its sockets.
+
+        Done from the kind node - see k8s_node.py for why that works
+        when every route from inside the pod does not. Raises on any
+        other cluster: a freeze that silently did nothing would report
+        an injected fault, produce a window in which the service was
+        never disturbed, and record a clean recovery from an event that
+        never happened.
+        """
+        self._freezer.freeze(self._component(unit))
 
     def thaw(self, unit: str) -> None:
-        """Nothing to undo: freeze() never happened. See its docstring."""
+        self._freezer.thaw(self._component(unit))
 
     def logs_since(self, unit: str, seconds: float) -> str:
         component = self._component(unit)
