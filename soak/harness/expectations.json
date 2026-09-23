@@ -45,6 +45,15 @@
         "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/31 - a slow but steady client holds the bridge's only slot; intermittent, since it needs a large upload in flight when the squeeze starts"
       }
     },
-    "invariants": {}
+    "invariants": {
+      "sigul-bridge: no sustained RSS growth": {
+        "expect": "fail",
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/32 - grows about 19 MB/h under sustained load with flat process and descriptor counts"
+      },
+      "sigul-server: no sustained RSS growth": {
+        "expect": "fail",
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/32 - grows about 7-13 MB/h under sustained load with flat process and descriptor counts"
+      }
+    }
   }
 }

@@ -15,14 +15,37 @@ lets through.
 
 from __future__ import annotations
 
-from .models import Check, Results
+from .models import Check, Results, UnitResources
 
 #: Steepest RSS trend tolerated, from a least-squares fit over every
 #: sample. A fit is the right detector for a linear leak: it uses the
 #: whole run rather than two endpoints, and its units do not change
-#: with the profile's length. Observed without a leak: within +/-10
-#: MB/h on the bridge. Observed with the zombie leak: +50 to +270 MB/h.
+#: with the profile's length. Set to catch the zombie leak (+50 to
+#: +270 MB/h) on runs as short as the PR gate's, where a tighter bound
+#: would trip on a few requests' worth of allocation. It deliberately
+#: admits slower growth; MAX_SUSTAINED_RSS_SLOPE_MB_PER_HOUR judges
+#: that, over spans long enough to measure it.
 MAX_RSS_SLOPE_MB_PER_HOUR = 30.0
+
+#: Growth tolerated once a daemon has had hours to reach steady state.
+#: A long-lived daemon serving a fixed load should stop growing; this
+#: bound catches one that never does, which the bound above admits
+#: indefinitely. Found that way: both daemons grow at 7-21 MB/h every
+#: nightly, passing the 30 MB/h check while implying the bridge would
+#: reach its 512 Mi limit in about a day of sustained load (#32).
+#:
+#: Over a nightly's four hours the fitted slope's standard error is
+#: 0.01-0.1 MB/h, so this is a policy line rather than a noise margin:
+#: 5 MB/h is 120 MB a day, material against that limit, and every
+#: growth observed so far sits more than twenty standard errors above
+#: it.
+MAX_SUSTAINED_RSS_SLOPE_MB_PER_HOUR = 5.0
+
+#: Shortest span over which sustained growth is judged. Long enough
+#: that warm-up and the heaviest requests no longer steer the fit; the
+#: PR gate's half hour is reported but not judged, so this belongs to
+#: the nightly.
+MIN_SUSTAINED_SPAN_SECONDS = 7200.0
 
 #: Shortest span over which a fitted RSS trend is worth judging. Below
 #: this the fit is dominated by a few requests' worth of allocation
@@ -37,6 +60,32 @@ MIN_TREND_SPAN_SECONDS = 600.0
 #: was +105 on the bridge in twenty minutes; a fall is never a leak.
 MAX_FD_GROWTH = 10
 MAX_CLOSE_WAIT_END = 1
+
+
+def _sustained_growth_check(unit: str, res: UnitResources) -> Check:
+    """Whether a daemon kept growing once it had time to settle.
+
+    Named without its bound, unlike the trend check, because it is the
+    key an expectation is filed under: changing the threshold must not
+    orphan the marker that tracks the defect it measures.
+    """
+    name = f"{unit}: no sustained RSS growth"
+    reading = f"{res.rss_slope_mb_per_hour:+.1f} MB/h"
+    if res.span_seconds < MIN_SUSTAINED_SPAN_SECONDS:
+        return Check(
+            name,
+            True,
+            f"not judged: {reading} over {res.span_seconds / 60:.0f} min, "
+            f"need {MIN_SUSTAINED_SPAN_SECONDS / 3600:.0f} h",
+            informational=True,
+        )
+    return Check(
+        name,
+        res.rss_slope_mb_per_hour < MAX_SUSTAINED_RSS_SLOPE_MB_PER_HOUR,
+        f"{reading} over {res.span_seconds / 3600:.1f} h "
+        f"(bound {MAX_SUSTAINED_RSS_SLOPE_MB_PER_HOUR:.0f} MB/h; baseline "
+        f"{res.rss_start_mb} MB, cooldown {res.rss_end_mb} MB)",
+    )
 
 
 def resource_checks(results: Results) -> list[Check]:
@@ -73,6 +122,7 @@ def resource_checks(results: Results) -> list[Check]:
                     trend_detail,
                 )
             )
+        checks.append(_sustained_growth_check(unit, res))
         checks.append(
             Check(
                 f"{unit}: open descriptors return to baseline",
