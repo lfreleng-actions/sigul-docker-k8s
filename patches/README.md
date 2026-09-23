@@ -714,9 +714,17 @@ and the idle client wait now come round every ten seconds, so an idle
 bridge with no server still beats. The request relay (`double_tls`)
 reports through a `progress_hook` that is `None` by default, so the
 server and client, which share that module, are unaffected. The
-request handlers' own phases - where RPM signing talks to Koji - get
-a thirty-minute bound, since those calls report nothing; generous for
-a large batch, finite so that a call that never returns is caught.
+request handlers' own phases - where RPM signing talks to Koji - hold
+a thirty-minute *lease*, since those calls report nothing; generous
+for a large batch, finite so that a call that never returns is
+caught. A lease exists because reporting alone is last-writer-wins: a
+phase that allowed thirty minutes and then did a routine 120 s read
+would otherwise have its allowance cut to 120 s, and a slow Koji call
+after the read would restart a healthy bridge. The batch handler runs
+I/O and Koji in worker threads at the same time, where no single
+deadline could be right. Reports inside a lease may extend the
+deadline but never shorten it, and the lease ends with its block
+however the block ends.
 
 The heartbeat is removed at startup: `/run` is an `emptyDir` that
 outlives a container restart, and a predecessor's heartbeat would

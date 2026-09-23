@@ -36,6 +36,7 @@ import os
 import sys
 import tempfile
 import time
+from contextlib import AbstractContextManager
 from typing import Protocol, cast
 
 sys.path.insert(0, os.environ.get("SIGUL_LIB", "/usr/share/sigul"))
@@ -57,6 +58,7 @@ class Heartbeat(Protocol):
 
     def progress(self, bound: float | None = None) -> None: ...
     def start(self) -> None: ...
+    def lease(self, bound: float) -> AbstractContextManager[None]: ...
 
 
 def check(label: str, ok: bool, detail: str) -> None:
@@ -134,6 +136,53 @@ def test_withheld_once_overdue(directory: str) -> None:
     )
 
 
+def test_lease_survives_nested_reports(directory: str) -> None:
+    """A short report inside a lease must not cut the lease short.
+
+    The case a last-writer-wins deadline gets wrong: a handler phase
+    allows thirty minutes for Koji, then does a routine 120 s read,
+    then calls Koji again. If the read's bound replaced the phase's,
+    a Koji call that outlasted the read's bound would stop the
+    heartbeat and restart a healthy bridge.
+    """
+    path = os.path.join(directory, "leased")
+    hb = _started(path)
+    with hb.lease(20 * INTERVAL):  # the handler phase's allowance
+        hb.progress(INTERVAL)  # a nested, much shorter I/O report
+        time.sleep(12 * INTERVAL)  # a long Koji call, far past it
+        age = _age(path)
+    check(
+        "a lease survives a shorter nested report",
+        age < 3 * INTERVAL,
+        f"age {age:.2f}s, {12 * INTERVAL:.1f}s after a {INTERVAL:.1f}s report "
+        + f"inside a {20 * INTERVAL:.1f}s lease",
+    )
+
+
+def test_lease_released_on_exit(directory: str) -> None:
+    """A lease must end with its block, even one that raised.
+
+    Otherwise a failed thirty-minute phase would leave its allowance
+    behind, and a wedge in the next thirty minutes would go unseen.
+    """
+    path = os.path.join(directory, "released")
+    hb = _started(path)
+    try:
+        with hb.lease(100 * INTERVAL):
+            raise RuntimeError("phase failed")
+    except RuntimeError:
+        pass
+    hb.progress(2 * INTERVAL)  # then a short wait that never ends
+    time.sleep(15 * INTERVAL)
+    age = _age(path)
+    check(
+        "a lease is released when its block raises",
+        age > 8 * INTERVAL,
+        f"age {age:.2f}s, {15 * INTERVAL:.1f}s after the block, "
+        + f"whose {100 * INTERVAL:.1f}s lease must not linger",
+    )
+
+
 def test_hook_default_is_inert() -> None:
     """The server and client share double_tls and never set the hook."""
     check(
@@ -188,6 +237,8 @@ def main() -> int:
         test_publishes_while_progressing(directory)
         test_fresh_within_declared_bound(directory)
         test_withheld_once_overdue(directory)
+        test_lease_survives_nested_reports(directory)
+        test_lease_released_on_exit(directory)
         test_hook_default_is_inert()
         test_hook_feeds_heartbeat(directory)
     print()

@@ -12,7 +12,15 @@
 #
 --- a/src/bridge.py
 +++ b/src/bridge.py
-@@ -178,6 +178,7 @@
+@@ -18,6 +18,7 @@
+
+ import base64
+ import binascii
++import contextlib
+ import errors
+ import logging
+ import io
+@@ -178,6 +179,7 @@
              # only block on a write if the send buffer is full, which
              # handshake-sized messages never manage; and if it ever did,
              # this still ends at the deadline rather than spinning.
@@ -20,17 +28,18 @@
              nss.io.Socket.poll(
                  [(sock, nss.io.PR_POLL_READ)],
                  nss.io.milliseconds_to_interval(int(remaining * 1000) + 1))
-@@ -197,7 +198,104 @@
+@@ -196,6 +198,150 @@
+ # beyond any silence a real request produces: even the server's largest
  # signing operations stream data or finish in seconds.
  _REQUEST_IDLE_SECONDS = 120
-
++
 +# How often the bridge's liveness heartbeat is published, and the
 +# longest any wait that would otherwise block indefinitely may last
 +# before the main loop comes round again. The liveness probe reads the
 +# heartbeat's age, so both must stay well inside its tolerance.
 +_HEARTBEAT_INTERVAL_SECONDS = 5
 +_IDLE_WAIT_SLICE_SECONDS = 10
-
++
 +# The longest the request handlers' own phases - payload forwarding and
 +# the post-request phase - may run without reporting. They are where
 +# RPM signing talks to Koji and to the worker threads, and neither
@@ -67,6 +76,8 @@
 +        self.__path = path
 +        self.__lock = threading.Lock()
 +        self.__overdue_at = time.monotonic() + _IDLE_WAIT_SLICE_SECONDS
++        # Deadlines of work in progress under lease(), keyed by lease.
++        self.__leases = {}
 +
 +    def progress(self, bound=None):
 +        '''The main loop is alive, and may block for up to bound seconds.
@@ -82,6 +93,39 @@
 +            self.__overdue_at = time.monotonic() + bound + \
 +                _HEARTBEAT_INTERVAL_SECONDS
 +
++    @contextlib.contextmanager
++    def lease(self, bound):
++        '''Allow bound seconds for everything inside the block.
++
++        progress() alone is last-writer-wins, which is right for a single
++        wait but wrong for a phase containing several: a handler phase
++        that allows thirty minutes for Koji, then does a routine 120 s
++        read, would otherwise have its allowance cut to 120 s - and a
++        slow Koji call after the read would stop the heartbeat and
++        restart a healthy bridge. The RPM batch handler makes it worse,
++        with I/O and Koji running in worker threads at the same time,
++        where no single deadline could be right.
++
++        A lease holds its deadline for as long as the block runs, and
++        reports inside it may extend the effective deadline but never
++        shorten it. Released on exit however the block ends, so a
++        failed phase cannot leave a thirty-minute allowance behind.
++
++        '''
++        key = object()
++        with self.__lock:
++            self.__leases[key] = time.monotonic() + bound + \
++                _HEARTBEAT_INTERVAL_SECONDS
++        try:
++            yield
++        finally:
++            with self.__lock:
++                del self.__leases[key]
++                # Resume ordinary reporting from now, not from whenever
++                # the last report before the lease was made.
++                self.__overdue_at = max(self.__overdue_at, time.monotonic() +
++                                        _IDLE_WAIT_SLICE_SECONDS)
++
 +    def start(self):
 +        self.__publish()
 +        thread = threading.Thread(target=self.__run, name='heartbeat')
@@ -93,7 +137,9 @@
 +        while True:
 +            time.sleep(_HEARTBEAT_INTERVAL_SECONDS)
 +            with self.__lock:
-+                on_time = time.monotonic() < self.__overdue_at
++                deadline = max([self.__overdue_at] +
++                               list(self.__leases.values()))
++                on_time = time.monotonic() < deadline
 +            if on_time:
 +                self.__publish()
 +                warned = None
@@ -122,35 +168,54 @@
 +        _heartbeat.progress(bound)
 +
 +
++@contextlib.contextmanager
++def _lease(bound):
++    '''Heartbeat.lease(), or nothing if no heartbeat is running.'''
++    if _heartbeat is None:
++        yield
++    else:
++        with _heartbeat.lease(bound):
++            yield
+
+
  def create_listen_sock(config, port):
-     sock = nss.ssl.SSLSocket(nss.io.PR_AF_INET)
-     # FIXME? does this belong in a finished product?
-@@ -1350,6 +1448,8 @@
+@@ -1350,9 +1496,12 @@
              raise ForwardingError('No client certificate')
          user_name = cert.subject_common_name
          logging.info('Client with CN %s connected', repr(user_name))
+-        if (config.required_fas_group is not None
+-                and not fas_user_is_in_group(config, user_name,
+-                                             config.required_fas_group)):
 +        # A FAS lookup is an external call that reports nothing.
-+        _progress(_HANDLER_PHASE_SECONDS)
-         if (config.required_fas_group is not None
-                 and not fas_user_is_in_group(config, user_name,
-                                              config.required_fas_group)):
-@@ -1365,6 +1465,7 @@
++        with _lease(_HANDLER_PHASE_SECONDS):
++            allowed = (config.required_fas_group is None
++                       or fas_user_is_in_group(config, user_name,
++                                               config.required_fas_group))
++        if not allowed:
+             raise InvalidRequestError(
+                 'User {0!s} not allowed to connect'.format(
+                     repr(user_name)))
+@@ -1365,7 +1514,8 @@
          conn = BridgeConnection(config, user_name, client_buf, server_buf)
          try:
              conn.__forward_request_headers()
-+            _progress(_HANDLER_PHASE_SECONDS)
-             conn.__handler.forward_request_payload(conn)
+-            conn.__handler.forward_request_payload(conn)
++            with _lease(_HANDLER_PHASE_SECONDS):
++                conn.__handler.forward_request_payload(conn)
 
              double_tls.bridge_inner_stream(conn.client_buf, conn.server_buf,
-@@ -1373,6 +1474,7 @@
+                                            idle_timeout=_REQUEST_IDLE_SECONDS)
+@@ -1373,7 +1523,8 @@
              conn.__forward_reply_headers()
              conn.__forward_reply_payload()
 
-+            _progress(_HANDLER_PHASE_SECONDS)
-             conn.__handler.post_request_phase(conn)
+-            conn.__handler.post_request_phase(conn)
++            with _lease(_HANDLER_PHASE_SECONDS):
++                conn.__handler.post_request_phase(conn)
 
              conn.__terminate_client_connection()
-@@ -1618,8 +1720,9 @@
+         finally:
+@@ -1618,8 +1769,9 @@
                  descs.append((self.__listen_sock, nss.io.PR_POLL_READ))
              attended = list(self.__pending)
              descs.extend((p.sock, nss.io.PR_POLL_READ) for p in attended)
@@ -162,7 +227,7 @@
              now = time.monotonic()
              elapsed = now - wait_began
              wait_began = now
-@@ -1658,8 +1761,11 @@
+@@ -1658,8 +1810,11 @@
          waits = [p.remaining for p in self.__pending]
          if now < self.__accept_after:
              waits.append(self.__accept_after - now)
@@ -176,7 +241,7 @@
          return nss.io.milliseconds_to_interval(
              int(max(0, min(waits)) * 1000) + 1)
 
-@@ -1721,7 +1827,19 @@
+@@ -1721,7 +1876,19 @@
      client_sock = None
      try:
          logging.debug('Waiting for the server to connect')
@@ -197,7 +262,7 @@
          _adbg('Server-side TCP accept from %r', server_addr)
 
          # CRITICAL FIX: Complete server TLS handshake immediately after accept.
-@@ -1820,6 +1938,7 @@
+@@ -1820,6 +1987,7 @@
 
 
  def main():
@@ -205,7 +270,7 @@
      # Any blocking socket operations time out after an hour
      socket.setdefaulttimeout(60 * 60)
      options = utils.get_daemon_options('A signing server bridge',
-@@ -1835,6 +1954,14 @@
+@@ -1835,6 +2003,14 @@
 
      signal.signal(signal.SIGTERM, utils.sigterm_handler)
      utils.create_pid_file(options, 'sigul_bridge')
@@ -220,7 +285,7 @@
 
      utils.set_regid(config)
      if config.daemon_uid is not None:
-@@ -1879,6 +2006,12 @@
+@@ -1879,6 +2055,12 @@
                  logging.error(str(e))
                  sys.exit(1)
 
