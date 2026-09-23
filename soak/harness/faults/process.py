@@ -300,9 +300,9 @@ class WedgeBridge(_WedgeFault):
     name = "proc_wedge_bridge"
     description = "Freeze the bridge and leave it frozen, until it is replaced."
     implication = (
-        "Nothing notices a wedged bridge: its probes check for a live "
-        "process and a listening socket, which a frozen daemon keeps. "
-        "Signing is down while every health check reports Ready (#33)."
+        "A wedged bridge keeps its process and its listening sockets, so "
+        "only its heartbeat (patch 15) can show it has stopped; without it, "
+        "signing is down while every health check reports Ready (#33)."
     )
     unit = BRIDGE
 
