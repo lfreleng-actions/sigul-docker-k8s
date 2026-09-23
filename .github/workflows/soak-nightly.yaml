@@ -141,10 +141,9 @@ jobs:
     # feedback on the daemons, and Compose gives that in thirty
     # minutes; standing up a cluster and rolling pods through their
     # controllers is slower and answers a different question - whether
-    # the chart's probes and its StatefulSet behave when pods come and
-    # go. NetworkPolicies are rendered and applied but not enforced
-    # here: kind's default CNI accepts them without acting on them, so
-    # this job says nothing about whether they are correct (see #26).
+    # the chart's probes, its StatefulSet and its NetworkPolicies
+    # behave when pods come and go. The policies are enforced by kind's
+    # CNI, and deploy.sh asserts them before the soak starts.
     steps:
       # yamllint disable-line rule:line-length
       - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
@@ -170,6 +169,29 @@ jobs:
             docker tag "$ref" "${component}-linux-amd64-image:test"
           done
 
+      - name: 'Install the harness dependencies'
+        shell: bash
+        run: |
+          # Into a virtualenv, and before the cluster is built.
+          #
+          # A virtualenv because the runner image ships zope.interface
+          # in /usr/lib/python3/dist-packages as a regular package, not
+          # a PEP 420 namespace one. pip then puts zope.event in the
+          # user site, where a second zope/ directory cannot merge with
+          # the first - so the install reports success and locust dies
+          # on "No module named 'zope.event'". The Compose jobs never
+          # meet this because they run the harness inside the runner
+          # image; this is the only job that runs it on the host.
+          #
+          # Before the cluster because a dependency failure should cost
+          # twenty seconds rather than the three minutes it takes to
+          # build a kind cluster and install the chart into it.
+          python3 -m venv "${RUNNER_TEMP}/soakvenv"
+          "${RUNNER_TEMP}/soakvenv/bin/python" -m pip install \
+            --quiet --upgrade pip
+          "${RUNNER_TEMP}/soakvenv/bin/python" -m pip install \
+            --quiet -r soak/requirements.txt
+
       - name: 'Create the cluster and install the chart'
         shell: bash
         env:
@@ -181,15 +203,6 @@ jobs:
           # kind ships with the runner image; the chart and the images
           # come from this checkout, so nothing published is required.
           ./soak/k8s/deploy.sh
-
-      - name: 'Install the harness dependencies'
-        shell: bash
-        run: |
-          # The Kubernetes target runs the harness on the runner rather
-          # than in a container: every interaction is a kubectl call,
-          # so there is nothing for a container to provide except these
-          # two packages.
-          python3 -m pip install -r soak/requirements.txt
 
       - name: 'Run the Kubernetes soak profile'
         shell: bash
@@ -204,7 +217,11 @@ jobs:
           SOAK_ADMIN_PASSWORD_FILE:
             '${{ github.workspace }}/test-artifacts/k8s-admin-password'
         run: |
-          cd soak && python3 -m harness k8s
+          # The venv's bin on PATH, not just its interpreter: the
+          # harness starts the load generator by running `locust`, so
+          # it has to be the venv's one.
+          export PATH="${RUNNER_TEMP}/soakvenv/bin:${PATH}"
+          cd soak && python -m harness k8s
 
       - name: 'Publish soak report to job summary'
         if: always()

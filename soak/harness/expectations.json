@@ -2,9 +2,12 @@
   "_comment": [
     "Known defects on current code, per profile. A fault or invariant",
     "listed here is expected to fail; the run reports it as XFAIL and",
-    "stays green. If it starts passing the run reports XPASS and FAILS,",
-    "so the entry is removed and the issue closed. Every entry names the",
-    "issue that tracks the defect. Optional max_recovery_seconds and",
+    "stays green. Once it passes - for a fault, on every one of its",
+    "injections - the run reports XPASS and FAILS, so the entry is",
+    "removed and the issue closed. Some passes among failures only",
+    "mean a timing-dependent defect was missed that time, and are",
+    "reported without failing the run. Every entry names the issue",
+    "that tracks the defect. Optional max_recovery_seconds and",
     "max_stall_seconds override the default bounds for a fault.",
     "",
     "For faults the expectation covers the stall during the window only;",
@@ -36,6 +39,32 @@
       "client_stop_mid_sign": {
         "max_stall_seconds": 135,
         "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/12 - patch 11 sheds a silent mid-request peer after 120 s; the bound is that plus slack"
+      },
+      "net_bandwidth_squeeze": {
+        "expect": "fail",
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/31 - a slow but steady client holds the bridge's only slot; intermittent, since it needs a large upload in flight when the squeeze starts"
+      }
+    },
+    "invariants": {
+      "sigul-bridge: no sustained RSS growth": {
+        "expect": "fail",
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/32 - grows about 19 MB/h under sustained load with flat process and descriptor counts"
+      },
+      "sigul-server: no sustained RSS growth": {
+        "expect": "fail",
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/32 - grows about 7-13 MB/h under sustained load with flat process and descriptor counts"
+      }
+    }
+  },
+  "k8s": {
+    "faults": {
+      "proc_wedge_bridge": {
+        "expect": "fail",
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/33 - every bridge health check tests a live process or a listening socket, both of which a wedged daemon keeps, so it is never replaced"
+      },
+      "proc_wedge_server": {
+        "expect": "fail",
+        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/33 - liveness only fails once the bridge sheds the wedged server's connections, measured at about 324 s against a 180 s bound"
       }
     },
     "invariants": {}

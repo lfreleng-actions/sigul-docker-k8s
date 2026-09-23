@@ -82,6 +82,10 @@ class Target(ABC):
     #:                 it can be signalled.
     #:   freeze        a unit's processes can be suspended without
     #:                 closing its sockets.
+    #:   supervised    something replaces a unit whose health checks
+    #:                 fail - the kubelet, under Kubernetes. Compose has
+    #:                 no equivalent, so there a wedge is simply a wedge
+    #:                 and asking whether it is recovered means nothing.
     CAPABILITIES: frozenset[str] = frozenset()
 
     #: Bound on each of the three readings implemented here. Named so

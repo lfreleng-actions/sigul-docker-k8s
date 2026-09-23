@@ -359,36 +359,80 @@ than merely logging it: a readiness probe that passes early sends the
 next request into a refused connection, and a warning in a nightly's
 output is a warning nobody reads.
 
-**NetworkPolicies are applied but not yet verified.** kind's default
-CNI accepts policy objects without enforcing them, so what this
-exercises today is the chart's templating, not its policies. Proving
-them needs the cluster created with `disableDefaultCNI` and a
-policy-capable CNI installed, together with a negative connectivity
-assertion so that enforcement is demonstrated rather than assumed.
-Tracked as [#26](https://github.com/lfreleng-actions/sigul-docker-k8s/issues/26).
+**NetworkPolicies: enforced, and checked on every deploy.** kind's
+CNI, kindnet, enforces NetworkPolicy. This README used to say the
+opposite, on the strength of a claim that was never tested; measured,
+it is false. `deploy.sh` now asserts the policies before any soak,
+from a pod the policies do not name, in a namespace of its own:
 
-**Liveness-driven recovery is not covered either.** Both restart
-faults delete a *healthy* pod. The production failure — `Running` but
-never `Ready`, which `OrderedReady` will not replace — needs a wedge,
-and freezing is unavailable here (see below), so it needs a different
-mechanism. Tracked as
-[#27](https://github.com/lfreleng-actions/sigul-docker-k8s/issues/27).
+<!-- markdownlint-disable MD013 -->
 
-Until both land, [#21](https://github.com/lfreleng-actions/sigul-docker-k8s/issues/21)
-stays open: this target meets its probe and StatefulSet-replacement
-criteria and not its policy or wedge ones.
+| from     | to               | must be    | why                                     |
+| -------- | ---------------- | :--------: | --------------------------------------- |
+| outsider | bridge `:44334`  | open       | the client port is public by design     |
+| outsider | bridge `:44333`  | **closed** | only the server may reach the bridge    |
+| outsider | apiserver `:443` | open       | *control*                               |
+| outsider | itself `:8080`   | open       | *control*                               |
+| server   | apiserver `:443` | **closed** | a compromised server cannot use the API |
+| server   | outsider `:8080` | **closed** | nor exfiltrate to an arbitrary pod      |
+
+<!-- markdownlint-enable MD013 -->
+
+Every block is paired with a control that must connect. Without one,
+a probe pod that could reach nothing would pass every negative check,
+and enforcement would be recorded on the strength of a broken network.
+The signing request that precedes it is the positive half: it crossed
+every allowed path.
+
+Verified to catch breakage, not just to pass: loosening the bridge
+policy fails the check on exactly the path that opened. Removing the
+server's egress rules fails both exfiltration checks — but only when
+all three policies that select the server for egress are gone. Take
+away any two and the third still isolates it, which is correct
+behaviour and a useful property of how the chart layers them.
+
+**Wedged pods: covered, and neither daemon is recovered in time.**
+The `proc_wedge_*` faults freeze a daemon and *leave* it frozen,
+waiting up to 180 s — the server's liveness budget plus grace — for
+the chart to replace it:
+
+|        | first `Ready=False` | replaced  |
+| ------ | ------------------: | --------: |
+| bridge | never               | **never** |
+| server | 226 s               | 324 s     |
+
+The bridge is never caught because every one of its health checks —
+startup, readiness, liveness and the NLB's `/healthz` — tests a live
+process or a listening socket, both of which a frozen daemon keeps.
+The server is caught, eventually, only once the bridge gives up on
+its connections and liveness sees them go. Both fail the bound, and
+are recorded as expected failures against
+[#33](https://github.com/lfreleng-actions/sigul-docker-k8s/issues/33),
+which will turn into XPASS — and fail the run until the markers are
+removed — once the probes test responsiveness rather than state.
+
+When a wedge is not replaced, the fault resumes the daemon and deletes
+the pod: what production had to do by hand.
+
+That closes the wedge criterion of
+[#21](https://github.com/lfreleng-actions/sigul-docker-k8s/issues/21),
+and with the NetworkPolicy checks above, the last of its criteria.
 
 ### What it deliberately does not do
 
-**Freezing is impossible and refuses rather than pretending.** The
-daemon is PID 1 in its namespace — deliberately, since patch 08's
-orphan reaper depends on it — and the kernel discards signals with
-default actions sent to namespace init from inside it. Measured: a
-non-PID-1 process goes `S` → `T` under `SIGSTOP`, PID 1 stays `Ss`.
-The freezer cgroup is no better, since it would suspend the exec'd
-shell doing the freezing and leave no way back in. A freeze that
-silently did nothing would report an injected fault and record a clean
-recovery from an event that never happened. Compose keeps that ground.
+**Freezing works on kind, and only on kind.** It cannot be done from
+inside the pod: the daemon is PID 1 in its namespace — deliberately,
+since patch 08's orphan reaper depends on it — and the kernel discards
+default-action signals sent to namespace init from inside it. The
+freezer cgroup is no better, since it would suspend the exec'd shell
+doing the freezing. But a kind node is a Docker container whose PID
+namespace is an *ancestor* of the pod's, and a signal from there is
+honoured: the server daemon, PID 1 in its pod and 2231 on the node,
+goes `S` → `T` under `SIGSTOP` and back under `SIGCONT`. The harness
+sends it through Docker, from outside the cluster, and freezes only
+the daemon's own process tree so a concurrent sampler `exec` is not
+caught. Against any other cluster the capability is absent and the
+`k8s` profile is refused before it starts.
 
 **Raw-socket client faults** dial the bridge directly, and its Service
 is `ClusterIP` — unreachable from where the harness runs. **Network

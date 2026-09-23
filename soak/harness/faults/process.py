@@ -224,10 +224,106 @@ class ServerTeardownAgainstSilentPeer(_ProcessFault):
             self._target.restart(BRIDGE)
 
 
+class _WedgeFault(_ProcessFault):
+    """Freeze a daemon and leave it frozen: does anything notice?
+
+    The freeze faults above release their unit after a fixed hold, so
+    they test recovery from a transient stall. A wedge is not
+    transient: in production a sigul-server that stopped answering
+    stayed stopped until someone deleted the pod by hand. What decides
+    the outcome is whether the chart's health checks notice at all.
+
+    So this does not release the unit. It freezes the daemon - every
+    socket still open, nothing answered - and waits for the supervisor
+    to replace it. Replaced within the bound, the chart recovered by
+    itself and the fault passes. Not replaced, that is the defect, and
+    it is raised as one.
+    """
+
+    requires = ("freeze", "supervised")
+    service_possible_during = False
+
+    #: How long the supervisor has to replace the wedged unit. The
+    #: server's liveness budget, six failures twenty seconds apart,
+    #: plus the thirty-second termination grace and slack. That is
+    #: what the chart undertakes to spend on a failing daemon; a wedge
+    #: that outlasts it is being caught by something slower than
+    #: liveness, or by nothing.
+    replacement_bound = 180.0
+
+    #: How often to ask whether the unit has been replaced.
+    poll_seconds = 5.0
+
+    def __init__(self, target: Target) -> None:
+        super().__init__(target)
+        self._frozen = False
+        self._replaced = False
+
+    def start(self) -> None:
+        self._frozen = self._replaced = False
+        was_started = self._target.started_at(self.unit)
+        self._target.freeze(self.unit)
+        self._frozen = True
+        self.activated_at = time.time()
+        deadline = time.monotonic() + self.replacement_bound
+        while time.monotonic() < deadline:
+            time.sleep(self.poll_seconds)
+            try:
+                if self._target.started_at(self.unit) > was_started:
+                    self._replaced = True
+                    return
+            except (RuntimeError, TimeoutError):
+                # Mid-replacement there may briefly be no pod to read.
+                continue
+        raise ProductDefect(
+            f"{self.unit} wedged for {self.replacement_bound:.0f}s and never "
+            "replaced: its health checks did not notice"
+        )
+
+    def stop(self) -> None:
+        if not self._frozen or self._replaced:
+            # Never frozen, or the supervisor already did the work.
+            self._frozen = False
+            return
+        # Still wedged. Do what production had to: resume it so it can
+        # act on SIGTERM rather than being killed after the grace
+        # period, then replace the pod. The run can then carry on, and
+        # nothing left over from the wedge - a half-counted liveness
+        # failure streak, say - fires a restart inside the measured
+        # window, where it would look like a separate defect.
+        self._target.thaw(self.unit)
+        self._frozen = False
+        self._target.restart(self.unit)
+
+
+class WedgeBridge(_WedgeFault):
+    name = "proc_wedge_bridge"
+    description = "Freeze the bridge and leave it frozen, until it is replaced."
+    implication = (
+        "Nothing notices a wedged bridge: its probes check for a live "
+        "process and a listening socket, which a frozen daemon keeps. "
+        "Signing is down while every health check reports Ready (#33)."
+    )
+    unit = BRIDGE
+
+
+class WedgeServer(_WedgeFault):
+    name = "proc_wedge_server"
+    description = "Freeze the server and leave it frozen, until it is replaced."
+    implication = (
+        "The server stays Ready while wedged and is replaced only after "
+        "liveness loses its connection to the bridge - measured at about "
+        "five and a half minutes, all of it an outage (#33)."
+    )
+    unit = SERVER
+
+
 PROCESS_FAULTS: tuple[type[_ProcessFault], ...] = (
     RestartBridge,
     RestartServer,
     FreezeBridge,
     FreezeServer,
     ServerTeardownAgainstSilentPeer,
+    WedgeBridge,
+    WedgeServer,
 )
