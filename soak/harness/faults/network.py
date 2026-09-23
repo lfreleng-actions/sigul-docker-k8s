@@ -112,7 +112,23 @@ class BandwidthSqueeze(_ToxicFault):
 
 class ResetPeerClient(_ToxicFault):
     name = "net_reset_peer_client"
-    description = "RST client connections roughly two seconds after they open."
+    # No client can be served while this is on, so only the recovery
+    # afterwards can be judged. Toxiproxy's reset_peer does not forward
+    # the first chunk it receives: it takes it, waits the timeout, then
+    # closes with SO_LINGER 0. On the downstream stream that chunk is the
+    # bridge's TLS ServerHello, so no client that connects while it is
+    # on completes a handshake, however quickly it would otherwise have
+    # finished. Measured: 617 of 619 requests failed across twelve
+    # windows on two architectures, and both successes had started
+    # before their window opened - served before the toxic existed.
+    # Judging a stall here would measure the toxic, not the bridge;
+    # net_blackhole_client, which also takes the whole client path
+    # away, is classified the same.
+    service_possible_during = False
+    description = (
+        "Swallow the first reply on each client connection, then RST it "
+        "two seconds later."
+    )
     implication = (
         "Mid-request resets from the network leave server children or "
         "bridge state behind that a clean close would have released."
