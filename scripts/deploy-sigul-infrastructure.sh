@@ -77,15 +77,12 @@ debug() {
     fi
 }
 
-# Function to determine which Docker Compose command to use
+# The Docker Compose command. Compose V2 only: the compose file uses
+# features V1 cannot parse - interpolation in the monitor commands, and
+# the top-level project name - so a V1 fallback would fail on the file
+# rather than deploy anything.
 get_docker_compose_cmd() {
-    if docker compose version >/dev/null 2>&1; then
-        echo "docker compose"
-    elif command -v docker-compose >/dev/null 2>&1; then
-        echo "docker-compose"
-    else
-        echo "docker compose"
-    fi
+    echo "docker compose"
 }
 
 # Detect GitHub Actions environment and adjust timing accordingly
@@ -290,7 +287,7 @@ collect_bridge_failure_diagnostics() {
     docker exec sigul-bridge ss -tlnp > "$diagnostics_dir/final-network-sockets.txt" 2>/dev/null || echo "Cannot retrieve network info" > "$diagnostics_dir/final-network-sockets.txt"
 
     # Docker compose services status
-    docker-compose -f "${COMPOSE_FILE}" ps > "$diagnostics_dir/compose-services-status.txt" 2>&1 || echo "Cannot retrieve compose status" > "$diagnostics_dir/compose-services-status.txt"
+    $(get_docker_compose_cmd) -f "${COMPOSE_FILE}" ps > "$diagnostics_dir/compose-services-status.txt" 2>&1 || echo "Cannot retrieve compose status" > "$diagnostics_dir/compose-services-status.txt"
 
     error "Bridge failure diagnostics collected in: $diagnostics_dir"
 }
@@ -562,13 +559,27 @@ check_prerequisites() {
         fi
     done
 
-    # Check for Docker Compose (either v1 standalone or v2 plugin)
+    # Docker Compose V2 (the `docker compose` plugin); see
+    # get_docker_compose_cmd for why V1 is not enough.
     local compose_cmd
-    if ! command -v docker-compose >/dev/null 2>&1 && ! docker compose version >/dev/null 2>&1; then
-        missing_tools+=("docker-compose or docker compose")
+    if ! docker compose version >/dev/null 2>&1; then
+        missing_tools+=("docker compose (Compose V2)")
     else
         compose_cmd=$(get_docker_compose_cmd)
         debug "Docker Compose: $compose_cmd ($(${compose_cmd} version --short 2>/dev/null || echo 'unknown version'))"
+        # What this script relies on, checked against this file rather
+        # than a version number: the top-level project name, rendered as
+        # JSON, and selecting every profile at once. Early V2 releases
+        # lack some of these and would otherwise fail midway.
+        local rendered_name
+        if ! rendered_name=$(${compose_cmd} -f "${COMPOSE_FILE}" --profile '*' \
+                config --format json 2>/dev/null | jq -r '.name // empty') \
+                || [[ -z "$rendered_name" ]]; then
+            error "This Docker Compose ($(${compose_cmd} version --short 2>/dev/null || echo unknown))"
+            error "cannot render ${COMPOSE_FILE} with its project name and every profile"
+            error "selected; a newer Compose V2 release is needed."
+            return 1
+        fi
     fi
 
     if [[ ${#missing_tools[@]} -gt 0 ]]; then
@@ -816,6 +827,662 @@ detect_and_configure_deployment_mode() {
     esac
 }
 
+# The Compose project this deployment runs as: the name pinned in the
+# compose file, unless COMPOSE_PROJECT_NAME overrides it. Anything that
+# addresses the stack's resources by name must derive it from this.
+compose_project_name() {
+    $(get_docker_compose_cmd) -f "${COMPOSE_FILE}" config --format json 2>/dev/null \
+        | jq -r '.name // empty'
+}
+
+# Tear down a stack left running under another Compose project name.
+#
+# The project name is pinned in the compose file, but stacks deployed
+# before that took theirs from the checkout directory (sigul-docker-k8s,
+# or whatever a clone was called). Such a stack holds the fixed container
+# names and the fixed network subnet this deployment needs, and Compose
+# only ever acts on its own project, so `up` - and a clean's `down` -
+# would fail against it. Each container name the compose files declare
+# is checked for a foreign project label, and that project is brought
+# down. Its volumes go only with --force-clean-volumes; otherwise they
+# are left in place, and named, for the operator to decide about.
+# A write-ahead marker for adopting another project's volumes: a Docker
+# volume, so that it is as host-wide as the volumes it guards, and made
+# before the old stack is taken down. It is removed only once the
+# adoption has completed or been fully undone, so a deploy that failed
+# to clean up - or was killed midway - leaves it behind, and until an
+# operator deals with it no deploy from any checkout will take the
+# half-copied volumes for this project's own state.
+#
+# One name for the whole host, whatever the project: which projects it
+# concerns lives in its labels, so upgrades under different
+# COMPOSE_PROJECT_NAME values still contend for the same lock.
+adoption_marker() {
+    echo "sigul_adoption_incomplete"
+}
+
+# While an upgrade is adopting, the project it adopts from, recorded
+# under the lock; a volume's labels cannot change once it exists.
+adoption_source() {
+    echo "sigul_adoption_source"
+}
+
+# Volumes whose contents are bound to the recorded credentials: the
+# server database holds the admin password hash, the NSS databases their
+# password, and the shared config embeds it.
+credential_volumes() {
+    echo sigul_server_data sigul_server_nss sigul_bridge_nss sigul_shared_config
+}
+
+# Held while a stale lock is being replaced, so that no deploy can find
+# the host unlocked in between: one that sees the lock gone checks this
+# next, and it only goes once the replacement lock is in place.
+takeover_guard() {
+    echo "sigul_deploy_takeover"
+}
+
+# One per old project a forced clean is removing, recorded before it
+# starts and removed once that project is entirely gone: a clean that
+# failed partway would otherwise forget a project whose containers are
+# already down, and so can no longer be found.
+clean_record() {
+    echo "sigul_clean_pending_${1}"
+}
+
+# scripts/setup-client.sh provisions the client through a helper
+# container it creates outside Compose, on the stack's network and with
+# the client volumes mounted. One left behind by an interrupted run
+# would keep that network and those volumes from being removed. It
+# holds nothing of its own - setup-client.sh removes and recreates it
+# on every run - so it is safe to remove.
+_remove_client_helper() {
+    local out
+    if out=$(docker rm -f sigul-client-init 2>&1 >/dev/null) \
+            || [[ "$out" == *"No such container"* ]]; then
+        return 0
+    fi
+    error "Could not remove the stale client helper sigul-client-init: ${out}"
+    return 1
+}
+
+# This process, as recorded in the adoption lock: a PID alone could be
+# reused, so its start time goes with it, and the host with both.
+_lock_owner() {
+    echo "$(hostname)|$$|$(ps -o lstart= -p $$ | tr -s ' ')"
+}
+
+# Whether the owner recorded in the lock is provably no longer running:
+# same host, and no process with that PID and that start time.
+_lock_owner_gone() {
+    local host pid start
+    IFS='|' read -r host pid start <<< "$1"
+    [[ -n "$host" && -n "$pid" && "$host" == "$(hostname)" ]] || return 1
+    [[ "$(ps -o lstart= -p "$pid" 2>/dev/null | tr -s ' ')" != "$start" ]]
+}
+
+# Whether volume $1 exists: 0 if it does, 1 if Docker confirms it does
+# not, 2 - with the error on stderr - if Docker could not say. Callers
+# that guard state must treat 2 as a stop, never as "absent".
+_volume_state() {
+    local out
+    if out=$(docker volume inspect "$1" 2>&1 >/dev/null); then
+        return 0
+    elif [[ "$out" == *"no such volume"* ]]; then
+        return 1
+    fi
+    echo "Could not check volume $1: ${out}" >&2
+    return 2
+}
+
+# Remove a volume, succeeding only if it is confirmed gone.
+_remove_confirmed() {
+    local out
+    docker volume rm "$1" >/dev/null 2>&1 && return 0
+    out=$(docker volume inspect "$1" 2>&1 >/dev/null || true)
+    [[ "$out" == *"no such volume"* ]]
+}
+
+# Release the deploy lock. The record of an adoption's source goes
+# first, and must be confirmed gone: its labels cannot change, so one
+# left behind would be reused by the next upgrade and name the wrong
+# source in its recovery steps. If it cannot be removed the lock stays.
+_release_deploy_lock() {
+    if ! _remove_confirmed "$(adoption_source)"; then
+        warn "Could not remove $(adoption_source); keeping the lock $(adoption_marker)."
+        warn "Remove both by hand, or the next deploy will refuse to run."
+        return 1
+    fi
+    if ! _remove_confirmed "$(adoption_marker)"; then
+        warn "Could not remove $(adoption_marker); remove it by hand, or the next"
+        warn "deploy will refuse to run"
+        return 1
+    fi
+    HELD_ADOPTION_LOCK=""
+}
+
+# Take the host-wide deploy lock <marker> for project <own>.
+#
+# Creating a volume that already exists succeeds and keeps its first
+# labels, so creating it with a token of our own and reading the token
+# back is an atomic test-and-set: of any number of deploys, one wins.
+#
+# A marker already there means another deploy is running, or one did
+# not finish. Only a clean of that same project may take over from an
+# owner provably gone, since it discards whatever partial copy the
+# owner left; anything else must stop.
+_acquire_deploy_lock() {
+    local marker="$1" own="$2" out from to owner token
+    if out=$(docker volume inspect "$marker" 2>&1 >/dev/null); then
+        # Only a confirmed absence means no adoption was under way; a
+        # failure to look must not pass an adoption off as an ordinary
+        # deploy whose lock can be taken over.
+        local rc=0
+        _volume_state "$(adoption_source)" || rc=$?
+        case $rc in
+            0) from=$(docker volume inspect -f '{{index .Labels "org.sigul.adoption-from"}}' \
+                    "$(adoption_source)") || { error "Could not read $(adoption_source)"; return 1; } ;;
+            1) from="" ;;
+            *) error "Could not tell whether an upgrade was under way; nothing has been changed"
+               return 1 ;;
+        esac
+        local op
+        if ! to=$(docker volume inspect -f '{{index .Labels "org.sigul.adoption-to"}}' "$marker") \
+                || ! owner=$(docker volume inspect \
+                    -f '{{index .Labels "org.sigul.adoption-owner"}}' "$marker") \
+                || ! op=$(docker volume inspect \
+                    -f '{{index .Labels "org.sigul.lock-op"}}' "$marker"); then
+            error "Could not read the deploy lock ${marker}; nothing has been changed"
+            return 1
+        fi
+        if ! _lock_owner_gone "$owner"; then
+            error "Another deploy of Compose project '${to}' holds ${marker}"
+            error "(${owner:-owner unknown}), and it cannot be shown to have stopped;"
+            error "nothing has been changed. Wait for it to finish."
+            if [[ -n "$from" ]]; then
+                # Removing only the marker would leave the partial copy
+                # to pass for '${to}''s own state.
+                error "It is adopting the volumes of '${from}'. Once certain it is gone:"
+                error "  1. remove the ${to}_* volumes, ${marker} and $(adoption_source)"
+                error "  2. COMPOSE_PROJECT_NAME=${from} ${BASH_SOURCE[0]} <the options of this run>"
+                error "then deploy again to retry the upgrade."
+            else
+                error "Once certain it is gone, remove ${marker} and deploy again."
+            fi
+            return 1
+        fi
+        # A plain deploy that failed destroyed nothing, so its lock can
+        # simply be taken over. A clean may have removed only part of its
+        # project's state, and an adoption may have copied only part of
+        # it: those are finished only by a clean of that same project. A
+        # lock that does not say what it was for is treated as a clean.
+        if [[ -z "$from" && "$op" != "deploy" ]] \
+                && [[ "$to" != "$own" || "$FORCE_CLEAN_VOLUMES" != "true" ]]; then
+            error "A clean of Compose project '${to}' did not finish, and may have"
+            error "removed only part of its state. Nothing will deploy until it is"
+            error "finished: COMPOSE_PROJECT_NAME=${to} ${BASH_SOURCE[0]} --force-clean-volumes"
+            return 1
+        fi
+        if [[ -n "$from" ]] \
+                && [[ "$to" != "$own" || "$FORCE_CLEAN_VOLUMES" != "true" ]]; then
+            error "A deploy of Compose project '${to}' did not finish, so '${to}' may"
+            error "hold a partial copy. Nothing will deploy until that is resolved."
+            error "It was adopting the volumes of '${from}', which are intact. To go"
+            error "back to that stack:"
+            error "  1. remove the ${to}_* volumes, ${marker} and $(adoption_source)"
+            error "  2. COMPOSE_PROJECT_NAME=${from} ${BASH_SOURCE[0]} <the options of this run>"
+            error "then deploy again to retry the upgrade. Or discard '${to}' entirely:"
+            error "COMPOSE_PROJECT_NAME=${to} and --force-clean-volumes."
+            return 1
+        fi
+        # Taking over: the owner is gone. Take the guard first, so that
+        # the lock is never absent without it; then re-read the lock, in
+        # case another deploy replaced it meanwhile, and replace it.
+        token="$(date +%s)-$$-${RANDOM}"
+        if ! _test_and_set "$(takeover_guard)" "$token"; then
+            error "Another deploy is taking over ${marker}; nothing has been changed."
+            return 1
+        fi
+        if [[ "$(docker volume inspect -f '{{index .Labels "org.sigul.adoption-owner"}}' \
+                "$marker" 2>/dev/null)" != "$owner" ]] \
+                || ! _remove_confirmed "$marker"; then
+            _remove_confirmed "$(takeover_guard)" || true
+            error "Another deploy took over ${marker}; nothing has been changed."
+            return 1
+        fi
+        if [[ -n "$from" ]]; then
+            warn "Discarding an unfinished upgrade's partial volumes along with the rest"
+        elif [[ "$op" == "deploy" ]]; then
+            warn "Taking over the lock of a deploy that did not finish (${owner})"
+        else
+            warn "Finishing a clean that did not finish (${owner})"
+        fi
+        # Held by the guard, nobody else can take the lock now; the
+        # adoption source, if any, still blocks others until this clean
+        # has dealt with its partial copy, and goes with the release.
+        if ! _take_lock "$marker" "$own" "$token"; then
+            error "Could not take over ${marker}; ${marker} is gone and $(takeover_guard)"
+            error "is kept, so nothing will deploy until both are dealt with by hand."
+            return 1
+        fi
+        if ! _remove_confirmed "$(takeover_guard)"; then
+            warn "Could not remove $(takeover_guard); remove it by hand, or the next"
+            warn "deploy will refuse to run"
+        fi
+        return 0
+    elif [[ "$out" != *"no such volume"* ]]; then
+        error "Could not check the deploy lock ${marker}: ${out}"
+        return 1
+    fi
+    # No lock. It may be gone only because another deploy is replacing
+    # it, which holds the guard throughout; and an adoption record with
+    # no lock means one was lost. Either way, not ours to proceed.
+    local rc=0
+    _volume_state "$(takeover_guard)" || rc=$?
+    case $rc in
+        0) error "Another deploy is taking over the deploy lock; nothing has been changed."
+           error "If none is running, remove $(takeover_guard) by hand."
+           return 1 ;;
+        1) ;;
+        *) error "Could not check $(takeover_guard); nothing has been changed"; return 1 ;;
+    esac
+    rc=0
+    _volume_state "$(adoption_source)" || rc=$?
+    case $rc in
+        0) error "An upgrade's record $(adoption_source) exists without its lock, so a"
+           error "partial copy may be in place. Nothing has been changed. Resolve it by hand:"
+           error "go back to the old stack, or discard this one with --force-clean-volumes"
+           error "after removing $(adoption_source)."
+           return 1 ;;
+        1) ;;
+        *) error "Could not check $(adoption_source); nothing has been changed"; return 1 ;;
+    esac
+    token="$(date +%s)-$$-${RANDOM}"
+    if ! _take_lock "$marker" "$own" "$token"; then
+        error "Another deploy holds ${marker}; nothing has been changed. Retry once it"
+        error "has finished."
+        return 1
+    fi
+}
+
+# Create volume $1 carrying token $2 (plus any further --label options),
+# succeeding only if the token read back is ours: creating a volume that
+# exists already succeeds and keeps its first labels, so of any number
+# of callers exactly one wins.
+_test_and_set() {
+    local name="$1" token="$2" held
+    shift 2
+    docker volume create --label "org.sigul.adoption-token=${token}" "$@" "$name" >/dev/null \
+        && held=$(docker volume inspect -f '{{index .Labels "org.sigul.adoption-token"}}' "$name") \
+        && [[ "$held" == "$token" ]]
+}
+
+# Take the deploy lock $1 for project $2 with token $3.
+_take_lock() {
+    local this_op=deploy
+    [[ "$FORCE_CLEAN_VOLUMES" == "true" ]] && this_op=clean
+    _test_and_set "$1" "$3" --label "org.sigul.adoption-to=${2}" \
+        --label "org.sigul.lock-op=${this_op}" \
+        --label "org.sigul.adoption-owner=$(_lock_owner)"
+}
+
+retire_foreign_projects() {
+    local compose_cmd own names name project
+    compose_cmd=$(get_docker_compose_cmd)
+    own=$(compose_project_name || true)
+    if [[ -z "$own" ]]; then
+        error "Could not read the compose project name from ${COMPOSE_FILE}"
+        return 1
+    fi
+    # Every deploy that changes state takes the host-wide lock first,
+    # before looking at anything, and holds it until it has deployed:
+    # cleans and upgrades alike, so neither can act on volumes the other
+    # is reading. deploy_sigul_services releases it on success; on
+    # failure it stays, and blocks the next deploy with the way back.
+    local marker
+    marker=$(adoption_marker "$own")
+    _acquire_deploy_lock "$marker" "$own" || return 1
+    HELD_ADOPTION_LOCK="$marker"
+    names=$(grep -h 'container_name:' "${COMPOSE_FILE}" \
+        "${PROJECT_ROOT}/soak/compose.soak.yml" 2>/dev/null | awk '{print $2}')
+
+    local -a foreign=()
+    for name in $names; do
+        project=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' \
+            "$name" 2>/dev/null || true)
+        if [[ -n "$project" && "$project" != "$own" \
+                && ! " ${foreign[*]} " =~ \ ${project}\  ]]; then
+            foreign+=("$project")
+        fi
+    done
+
+    # Guarded expansion: an empty array is unbound under set -u in bash 3.
+    local listing before key declared records
+    _remove_client_helper || return 1
+    if ! declared=$(${compose_cmd} -f "${COMPOSE_FILE}" --profile '*' config --volumes); then
+        error "Could not read the volumes declared in ${COMPOSE_FILE}"
+        _release_deploy_lock
+        return 1
+    fi
+
+    # Old projects a clean had begun removing and did not finish: their
+    # containers may already be gone, so only the records still name them.
+    if ! records=$(docker volume ls -q --filter "name=sigul_clean_pending_"); then
+        error "Could not check for unfinished cleans; nothing has been changed"
+        _release_deploy_lock
+        return 1
+    fi
+    while IFS= read -r name; do
+        [[ "$name" == sigul_clean_pending_* ]] || continue
+        project="${name#sigul_clean_pending_}"
+        if [[ "$FORCE_CLEAN_VOLUMES" != "true" ]]; then
+            error "A clean did not finish removing Compose project '${project}'."
+            error "Nothing has been changed; finish it with --force-clean-volumes."
+            _release_deploy_lock
+            return 1
+        fi
+        if [[ ! " ${foreign[*]-} " =~ \ ${project}\  ]]; then
+            foreign+=("$project")
+        fi
+    done <<< "$records"
+
+    # Two old stacks cannot both be carried over - there is no merging
+    # two trust domains - so refuse before retiring either.
+    if [[ "$FORCE_CLEAN_VOLUMES" != "true" && ${#foreign[@]} -gt 1 ]]; then
+        error "Several Compose projects hold this stack's names: ${foreign[*]}"
+        error "Only one can be upgraded; nothing has been changed. Remove the others"
+        error "(docker compose -p <name> down), or discard all with --force-clean-volumes."
+        _release_deploy_lock
+        return 1
+    fi
+    for project in ${foreign[@]+"${foreign[@]}"}; do
+        # Read while the old stack still runs: once its containers are
+        # gone nothing would find it again, so a listing that failed
+        # afterwards would strand its data.
+        listing=""
+        if [[ "$FORCE_CLEAN_VOLUMES" != "true" ]]; then
+            # Every volume by name, labelled or not: Compose uses an
+            # exact-name volume made with docker volume create - as
+            # scripts/restore-volumes.sh makes them - without labelling
+            # it, so labels alone would miss restored state on either
+            # side.
+            if ! before=$(docker volume ls -q); then
+                error "Could not list the existing volumes"
+                _release_deploy_lock
+                return 1
+            fi
+            # The old project's state is whatever of this file's volumes
+            # exists under its name - every profile's, since without the
+            # profiles Compose leaves out volumes only their services use.
+            while IFS= read -r key; do
+                if [[ -n "$key" ]] && grep -qx "${project}_${key}" <<< "$before"; then
+                    listing+="${key}"$'\n'
+                fi
+            done <<< "$declared"
+            # Both projects holding state is a choice for the operator,
+            # not for this script: adopting around the existing volumes
+            # would pair one project's CA with the other's databases.
+            local clash=""
+            while IFS= read -r key; do
+                if [[ -n "$key" ]] && grep -qx "${own}_${key}" <<< "$before"; then
+                    clash+=" ${own}_${key}"
+                fi
+            done <<< "$listing"
+            # And any credential-bearing volume this project already has,
+            # whether or not the old one has its namesake: a partly built
+            # old stack would otherwise be completed from this one's. The
+            # client volumes are left out - setup-client.sh makes them
+            # outside Compose, for whichever stack is running.
+            if [[ -n "$listing" ]]; then
+                for key in $(credential_volumes); do
+                    if grep -qx "${own}_${key}" <<< "$before" \
+                            && [[ " ${clash} " != *" ${own}_${key} "* ]]; then
+                        clash+=" ${own}_${key}"
+                    fi
+                done
+            fi
+            if [[ -n "$clash" ]]; then
+                error "Compose projects '${project}' and '${own}' both hold state:${clash}"
+                error "Nothing has been changed. Keep one of them: remove the other's volumes"
+                error "(named <project>_<volume>), or discard both with --force-clean-volumes."
+                _release_deploy_lock
+                return 1
+            fi
+            # Adopted volumes are only usable with the credentials that
+            # made them, so without those the old stack must stay up.
+            if [[ -n "$listing" ]] \
+                    && [[ ! -f "${PROJECT_ROOT}/test-artifacts/admin-password" \
+                        || ! -f "${PROJECT_ROOT}/test-artifacts/nss-password" ]]; then
+                error "Upgrading keeps the state of Compose project '${project}', which needs"
+                error "the credentials recorded for it in test-artifacts/admin-password and"
+                error "test-artifacts/nss-password. They are missing from this checkout;"
+                error "nothing has been changed. Run from the checkout that deployed it, or"
+                error "discard its state with --force-clean-volumes."
+                _release_deploy_lock
+                return 1
+            fi
+        fi
+        # Read back: a stale record would be reused silently, with its
+        # own labels, and the recovery steps would name the wrong source.
+        if [[ -n "$listing" ]] && { ! docker volume create \
+                --label "org.sigul.adoption-from=${project}" "$(adoption_source)" >/dev/null \
+                || [[ "$(docker volume inspect -f '{{index .Labels "org.sigul.adoption-from"}}' \
+                    "$(adoption_source)" 2>/dev/null)" != "$project" ]]; }; then
+            error "Could not record the upgrade before starting it; nothing has been changed"
+            _release_deploy_lock
+            return 1
+        fi
+        if [[ "$FORCE_CLEAN_VOLUMES" == "true" ]] \
+                && ! docker volume create --label "org.sigul.clean-of=${project}" \
+                    "$(clean_record "$project")" >/dev/null; then
+            error "Could not record the clean of '${project}' before starting it"
+            return 1
+        fi
+        warn "Stack from Compose project '${project}' holds this stack's names; removing it"
+        # Every profile, so a debug, monitoring or test container of the
+        # old stack cannot be left holding its network and volumes.
+        local -a down_args=(--profile '*' down --remove-orphans --timeout 10)
+        if [[ "$FORCE_CLEAN_VOLUMES" == "true" ]]; then
+            down_args+=(--volumes)
+        fi
+        # This file under the foreign project's name: Compose finds that
+        # project's containers and volumes by label, --remove-orphans
+        # takes any service this file no longer declares, and a known
+        # file keeps the result independent of the caller's directory
+        # and of whether this Compose version can act on a name alone.
+        if ! ${compose_cmd} -f "${COMPOSE_FILE}" -p "$project" "${down_args[@]}"; then
+            error "Could not remove the stack of Compose project '${project}'"
+            return 1
+        fi
+        if [[ "$FORCE_CLEAN_VOLUMES" == "true" ]]; then
+            # By name as well: down removes only volumes carrying the
+            # project's label, and restored ones carry none.
+            local rc
+            while IFS= read -r key; do
+                [[ -n "$key" ]] || continue
+                rc=0
+                _volume_state "${project}_${key}" || rc=$?
+                if [[ $rc -eq 0 ]] && ! _remove_confirmed "${project}_${key}"; then
+                    error "Could not remove ${project}_${key}; the clean is incomplete"
+                    return 1
+                elif [[ $rc -gt 1 ]]; then
+                    error "Could not tell whether ${project}_${key} exists; the clean is incomplete"
+                    return 1
+                fi
+            done <<< "$declared"
+            if ! _remove_confirmed "$(clean_record "$project")"; then
+                error "Removed '${project}', but not its record $(clean_record "$project")"
+                return 1
+            fi
+        fi
+        if [[ "$FORCE_CLEAN_VOLUMES" != "true" ]]; then
+            adopt_foreign_volumes "$project" "$own" "$listing" "$before" "$declared" || return 1
+        fi
+    done
+}
+
+# Carry a retired project's data over to this one, for a plain upgrade.
+#
+# Keeping the old volumes is not enough: they belong to the old project,
+# so this one would start on empty volumes and every existing user and
+# signing key would be out of reach, while the recorded credentials no
+# longer matched anything. Compose creates this project's volumes - it
+# labels them itself and would otherwise want to recreate them - and each
+# one it creates here receives the contents of its namesake in the old
+# project, before any service starts. Creating a container fills a new
+# volume from the image, so a fresh volume is not empty; what makes it
+# safe to replace is that it did not exist before. The caller refuses to
+# adopt into a project that already holds state, and a volume that
+# appears meanwhile aborts the adoption; the set is copied whole or not
+# at all. The old volumes are left in place, so nothing is lost if the
+# copy is not what the operator wanted.
+#
+# adopt_foreign_volumes <old project> <this project> <old volume keys>
+#                       <every volume name before the upgrade>
+#                       <every volume key the compose file declares>
+# The listings are taken by the caller before the old stack is removed.
+adopt_foreign_volumes() {
+    local from="$1" to="$2" listing="$3" before="$4" declared="$5"
+    local compose_cmd key source target
+    compose_cmd=$(get_docker_compose_cmd)
+
+    local -a keys=()
+    while IFS= read -r key; do
+        [[ -n "$key" ]] && keys+=("$key")
+    done <<< "$listing"
+    if [[ ${#keys[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    log "Adopting the data of Compose project '${from}' into '${to}'..."
+
+    # Placeholders for Compose to create the volumes through, removed
+    # again once the data is across: every service mounting one of the
+    # captured volumes, so a volume only a profile's service uses is
+    # created too rather than silently left behind.
+    local services
+    if ! services=$(${compose_cmd} -f "${COMPOSE_FILE}" --profile '*' config --format json \
+            | jq -r --arg keys "$listing" '
+                # For each volume, the first service mounting it - server
+                # and bridge first - so no more images are needed than
+                # the volumes require.
+                ($keys | split("\n") | map(select(. != ""))) as $k
+                | [.services | to_entries[]
+                   | {name: .key,
+                      vols: [.value.volumes[]? | select(.type == "volume") | .source]}]
+                | sort_by(if .name == "sigul-server" then 0
+                          elif .name == "sigul-bridge" then 1 else 2 end)
+                | . as $svc
+                | [$k[] as $v | first($svc[] | select(.vols | index($v)) | .name)]
+                | unique | .[]'); then
+        error "Could not work out which services mount the volumes to adopt"
+        _abandon_adoption "$from" "$to" "$before" "$declared"
+        return 1
+    fi
+    # With no service named, create would create every one of them.
+    if [[ -z "${services//[[:space:]]/}" ]]; then
+        error "No service mounts the volumes to adopt"
+        _abandon_adoption "$from" "$to" "$before" "$declared"
+        return 1
+    fi
+    # shellcheck disable=SC2086  # one service name per word
+    if ! ${compose_cmd} -f "${COMPOSE_FILE}" --profile '*' create --no-recreate \
+            $services >/dev/null 2>&1; then
+        error "Could not create the volumes of Compose project '${to}'"
+        _abandon_adoption "$from" "$to" "$before" "$declared"
+        return 1
+    fi
+
+    local rc
+    for key in "${keys[@]}"; do
+        source="${from}_${key}"
+        target="${to}_${key}"
+        # Only a volume this adoption created may be overwritten: one
+        # Compose made for this project, after the snapshot taken under
+        # the lock. Anything else is not ours to replace, and a key with
+        # no target would break the all-or-nothing copy.
+        local owner
+        owner=$(docker volume inspect \
+            -f '{{index .Labels "com.docker.compose.project"}}' "$target" 2>/dev/null || true)
+        if [[ "$owner" != "$to" ]] || grep -qx "$target" <<< "$before"; then
+            error "Volume ${target} was not created by this upgrade; not overwriting it"
+            _abandon_adoption "$from" "$to" "$before" "$declared"
+            return 1
+        fi
+        # As root, with ownership and modes preserved, so the daemons'
+        # own user can still open what they wrote. The image defaults
+        # Docker copied into the new volume go first.
+        rc=0
+        docker run --rm --user 0 --entrypoint sh \
+            -v "${source}:/from:ro" -v "${target}:/to" "$SIGUL_BRIDGE_IMAGE" -c '
+                find /to -mindepth 1 -delete && cp -a /from/. /to/' || rc=$?
+        if [[ $rc -ne 0 ]]; then
+            error "Could not copy ${source} into ${target}"
+            _abandon_adoption "$from" "$to" "$before" "$declared"
+            return 1
+        fi
+        log "Adopted ${source} as ${target}"
+    done
+
+    if ! ${compose_cmd} -f "${COMPOSE_FILE}" --profile '*' down --remove-orphans \
+            >/dev/null 2>&1; then
+        error "Could not remove the placeholder containers of '${to}'"
+        _abandon_adoption "$from" "$to" "$before" "$declared"
+        return 1
+    fi
+    # The lock stays until this project's containers are up: until then
+    # nothing shows another deploy that this stack exists, and it would
+    # find neither project and deploy over the same names.
+    # By name: restored backups carry no Compose labels to filter on.
+    local names=""
+    for key in "${keys[@]}"; do names+=" ${from}_${key}"; done
+    warn "Volumes of '${from}' kept as a backup; remove them once satisfied:"
+    warn "  docker volume rm${names}"
+}
+
+# Undo a failed adoption, so that no half-copied state is left for the
+# next deploy to mistake for this project's own. The placeholder
+# containers go, and so does every one of this project's declared
+# volumes ($4) that did not exist before the adoption began ($3, every
+# volume name then present) - not only the adopted ones, since the
+# placeholder services create all of their own volumes. The set comes from those names, not from a
+# listing that could itself fail; nothing that existed before is
+# touched, and the old project's volumes - the only copy of its data -
+# were only ever read. The lock is kept, so that every deploy stops and
+# says how to go back.
+#
+# _abandon_adoption <old project> <this project> <names before> <declared keys>
+_abandon_adoption() {
+    local from="$1" to="$2" before="$3" adopted="$4" key target out
+    local -a stuck=()
+    if ! $(get_docker_compose_cmd) -f "${COMPOSE_FILE}" --profile '*' down --remove-orphans \
+            >/dev/null 2>&1; then
+        stuck+=("containers of Compose project '${to}' (docker compose -p ${to} down)")
+    fi
+    while IFS= read -r key; do
+        [[ -z "$key" ]] && continue
+        target="${to}_${key}"
+        grep -qx "$target" <<< "$before" && continue
+        docker volume rm "$target" >/dev/null 2>&1 && continue
+        # Gone is only certain when Docker says so; anything else - the
+        # volume still attached, the daemon unreachable - is not.
+        out=$(docker volume inspect "$target" 2>&1 >/dev/null || true)
+        if [[ "$out" != *"no such volume"* ]]; then
+            stuck+=("volume ${target}")
+        fi
+    done <<< "$adopted"
+    # The lock stays either way: the old stack is down, so a deploy now
+    # would find nothing to adopt and start this project afresh.
+    if [[ ${#stuck[@]} -gt 0 ]]; then
+        error "Could not undo the partial adoption; remove these before going back:"
+        printf '  %s\n' "${stuck[@]}" >&2
+    fi
+    # The old stack is already down, so a plain re-run would not find it
+    # to adopt from. Bringing it back from its volumes makes it findable.
+    error "The data of '${from}' is intact on its own volumes. Bring that stack back"
+    error "from them, then fix the cause and deploy again to retry the upgrade:"
+    error "  COMPOSE_PROJECT_NAME=${from} ${BASH_SOURCE[0]} <the options of this run>"
+}
+
 # Clean volumes if required by deployment mode
 manage_volumes() {
     if [[ "$FORCE_CLEAN_VOLUMES" != "true" ]]; then
@@ -828,30 +1495,38 @@ manage_volumes() {
     local compose_cmd
     compose_cmd=$(get_docker_compose_cmd)
 
-    # Stop and remove containers first
-    if docker ps -q --filter "name=sigul" | grep -q .; then
-        log "Stopping existing Sigul containers..."
-        docker stop "$(docker ps -q --filter "name=sigul")" 2>/dev/null || true
+    # Down the project with its volumes: Compose finds its own
+    # containers, network and volumes by project label, running or not,
+    # so nothing depends on guessing names. Every profile is selected so
+    # that containers only started under one - the test client, the
+    # monitors, the debug helper - are removed too; a container left
+    # behind would keep its volumes from being deleted.
+    _remove_client_helper || return 1
+    if ! ${compose_cmd} -f "${COMPOSE_FILE}" --profile '*' \
+            down --volumes --remove-orphans --timeout 10; then
+        error "Could not remove the existing stack and its volumes"
+        return 1
     fi
 
-    if docker ps -aq --filter "name=sigul" | grep -q .; then
-        log "Removing existing Sigul containers..."
-        docker rm "$(docker ps -aq --filter "name=sigul")" 2>/dev/null || true
-    fi
-
-    # Remove volumes
-    local volumes_to_remove=(
-        "sigul-docker_sigul_server_data"
-        "sigul-docker_sigul_bridge_data"
-        "sigul-docker_sigul_client_data"
-        "sigul-docker_sigul_monitor_data"
-    )
-
-    for volume in "${volumes_to_remove[@]}"; do
-        if docker volume ls -q | grep -q "^${volume}$"; then
-            log "Removing volume: $volume"
-            docker volume rm "$volume" 2>/dev/null || warn "Failed to remove volume: $volume"
-        fi
+    # The client volumes are created by setup-client.sh with docker
+    # volume create, outside Compose, so the project label does not
+    # cover them. They hold a certificate issued by the CA just
+    # destroyed, which the next CA would not trust.
+    local volume
+    local rc
+    for volume in sigul-docker_sigul_client_nss sigul-docker_sigul_client_config; do
+        rc=0
+        _volume_state "$volume" || rc=$?
+        case $rc in
+            0) log "Removing volume: $volume"
+               if ! docker volume rm "$volume" >/dev/null; then
+                   error "Could not remove volume $volume"
+                   return 1
+               fi ;;
+            1) ;;
+            *) error "Could not tell whether $volume exists; the clean is incomplete"
+               return 1 ;;
+        esac
     done
 
     success "Volume cleanup completed"
@@ -861,20 +1536,26 @@ manage_volumes() {
 deploy_sigul_services() {
     log "Deploying Sigul server and bridge with comprehensive monitoring..."
 
-    # Configure deployment mode and handle volumes
-    detect_and_configure_deployment_mode
-    manage_volumes
-
-    local compose_cmd
-    compose_cmd=$(get_docker_compose_cmd)
-
     # Set environment variables for platform-specific images, honouring
     # any the caller has already chosen - as load_infrastructure_images
-    # does - so a soak or A/B run can deploy a published tag.
+    # does - so a soak or A/B run can deploy a published tag. Set before
+    # the volumes are handled, since adopting them creates containers.
     local platform_id="${SIGUL_RUNNER_PLATFORM:-$(detect_platform)}"
     export SIGUL_SERVER_IMAGE="${SIGUL_SERVER_IMAGE:-server-${platform_id}-image:test}"
     export SIGUL_BRIDGE_IMAGE="${SIGUL_BRIDGE_IMAGE:-bridge-${platform_id}-image:test}"
     # SIGUL_CLIENT_IMAGE removed from infrastructure deployment (only needed for integration tests)
+
+    # Configure deployment mode and handle volumes
+    detect_and_configure_deployment_mode || return 1
+    # Checked explicitly: this function runs on the left of ||, where
+    # set -e does not apply, and deploying over state that failed to be
+    # cleaned is the failure a clean deploy exists to prevent.
+    HELD_ADOPTION_LOCK=""
+    retire_foreign_projects || return 1
+    manage_volumes || return 1
+
+    local compose_cmd
+    compose_cmd=$(get_docker_compose_cmd)
 
     # Credentials must match the state on the volumes, not the other
     # way round. entrypoint-server.sh creates the admin user only while
@@ -884,11 +1565,31 @@ deploy_sigul_services() {
     # NSS databases created on the surviving volumes.
     local admin_file="${PROJECT_ROOT}/test-artifacts/admin-password"
     local nss_file="${PROJECT_ROOT}/test-artifacts/nss-password"
-    local server_volume="sigul-docker_sigul_server_data"
-    local reusing_state=false
-    if [[ "$FORCE_CLEAN_VOLUMES" != "true" ]] \
-        && docker volume ls -q 2>/dev/null | grep -qx "$server_volume"; then
-        reusing_state=true
+    local project server_volume
+    project=$(compose_project_name || true)
+    if [[ -z "$project" ]]; then
+        error "Could not read the compose project name from ${COMPOSE_FILE}"
+        return 1
+    fi
+    # Any volume whose contents are bound to the recorded credentials
+    # means reuse: the server database holds the admin password hash,
+    # the NSS databases their password, and the shared config embeds it.
+    # cert-init writes the bridge's NSS database before the server ever
+    # starts, so a deploy that failed in between leaves that alone - and
+    # checking only the server's data would regenerate the password the
+    # surviving database still needs. Inspected one by one, so that a
+    # failure to ask is not mistaken for an answer.
+    local reusing_state=false volume out
+    if [[ "$FORCE_CLEAN_VOLUMES" != "true" ]]; then
+        for volume in $(credential_volumes); do
+            server_volume="${project}_${volume}"
+            if out=$(docker volume inspect "$server_volume" 2>&1 >/dev/null); then
+                reusing_state=true
+            elif [[ "$out" != *"no such volume"* ]]; then
+                error "Could not check volume ${server_volume}: ${out}"
+                return 1
+            fi
+        done
     fi
 
     local ephemeral_admin_password
@@ -1232,6 +1933,14 @@ deploy_sigul_services() {
     success "Sigul bridge deployed and ready (took $((attempt-1)) attempts)"
 
     success "All Sigul services deployed successfully"
+
+    # This stack's containers now carry its names, so another deploy
+    # can see it; the upgrade that held the lock is done. On any failure
+    # before this point the marker stays, and blocks further deploys
+    # with the way back.
+    if [[ -n "$HELD_ADOPTION_LOCK" ]]; then
+        _release_deploy_lock
+    fi
 }
 
 # Comprehensive infrastructure health verification
