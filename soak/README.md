@@ -391,25 +391,27 @@ all three policies that select the server for egress are gone. Take
 away any two and the third still isolates it, which is correct
 behaviour and a useful property of how the chart layers them.
 
-**Wedged pods: covered, and neither daemon is recovered in time.**
+**Wedged pods: the bridge is recovered, the server not yet in time.**
 The `proc_wedge_*` faults freeze a daemon and *leave* it frozen,
 waiting up to 180 s — the server's liveness budget plus grace — for
 the chart to replace it:
 
-|        | first `Ready=False` | replaced  |
-| ------ | ------------------: | --------: |
-| bridge | never               | **never** |
-| server | 226 s               | 324 s     |
+|        | first `Ready=False` | replaced |
+| ------ | ------------------: | -------: |
+| bridge | 52 s                | 88 s     |
+| server | 226 s               | 324 s    |
 
-The bridge is never caught because every one of its health checks —
-startup, readiness, liveness and the NLB's `/healthz` — tests a live
+The bridge used to be never caught: every one of its health checks —
+startup, readiness, liveness and the NLB's `/healthz` — tested a live
 process or a listening socket, both of which a frozen daemon keeps.
-The server is caught, eventually, only once the bridge gives up on
-its connections and liveness sees them go. Both fail the bound, and
-are recorded as expected failures against
+Patch 15 gives it a heartbeat that goes stale when its main loop stops
+making progress, and the chart's probes now read it, so its fault
+passes. The server is still caught only once the bridge gives up on
+its connections and liveness sees them go, which fails the bound; it
+remains an expected failure against
 [#33](https://github.com/lfreleng-actions/sigul-docker-k8s/issues/33),
-which will turn into XPASS — and fail the run until the markers are
-removed — once the probes test responsiveness rather than state.
+and will turn into XPASS — failing the run until the marker is removed
+— once its probes test progress too.
 
 When a wedge is not replaced, the fault resumes the daemon and deletes
 the pod: what production had to do by hand.

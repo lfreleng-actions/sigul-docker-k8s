@@ -991,35 +991,17 @@ jobs:
             exit 1
           fi
 
-          # Check for the actual patched code. Patch 01 completes the
-          # server handshake straight after accept(); patch 09 routes
-          # that call through _handshake_with_deadline(), so that is the
-          # literal to look for.
-          HANDSHAKE_CALL="_handshake_with_deadline(server_sock"
-          if ! docker exec sigul-bridge grep -q "${HANDSHAKE_CALL}" \
-               /usr/share/sigul/bridge.py; then
-            echo "❌ ERROR: ${HANDSHAKE_CALL} call not found!"
-            echo "The patch may not be fully applied"
-            exit 1
-          fi
-
-          # Check it's in the right location (after accept, before client conn)
-          if docker exec sigul-bridge grep -B10 -A10 "${HANDSHAKE_CALL}" \
-             /usr/share/sigul/bridge.py | grep -q "accept()"; then
-            echo "✅ Double-TLS handshake patch verified in bridge"
-            echo ""
-            echo "Patched code location confirmed:"
-            docker exec sigul-bridge grep -B5 -A10 "${HANDSHAKE_CALL}" \
-              /usr/share/sigul/bridge.py | sed 's/^/  /'
-          else
-            echo "❌ ERROR: ${HANDSHAKE_CALL} not in correct location!"
-            echo "Expected after accept() call but before client connection"
-            echo ""
-            echo "Showing context around the handshake call:"
-            docker exec sigul-bridge grep -B10 -A10 "${HANDSHAKE_CALL}" \
-              /usr/share/sigul/bridge.py | sed 's/^/  /'
-            exit 1
-          fi
+          # Check for the actual patched code, by structure rather than
+          # text. Patch 01 completes the server handshake straight after
+          # accept() and before any client is waited for; patch 09 routes
+          # that through _handshake_with_deadline(). The check parses
+          # bridge_one_request() and asserts that order. It used to grep
+          # for "accept()" within ten lines of the handshake, which broke
+          # with the order still correct once patch 15 bounded the accept
+          # inside a loop.
+          docker exec -i sigul-bridge python3 - \
+            < test/verify_bridge_handshake_order.py
+          echo "✅ Double-TLS handshake patch verified in bridge"
         # yamllint enable rule:line-length
 
       - name: 'Setup client for integration tests'
@@ -1184,6 +1166,30 @@ jobs:
             --entrypoint python3 \
             "${SIGUL_BRIDGE_IMAGE}" \
             /test/test_bridge_client_admission.py
+
+      - name: 'Test bridge liveness heartbeat'
+        shell: bash
+        env:
+          SIGUL_BRIDGE_IMAGE: >-
+            bridge-${{
+              steps.runner-arch.outputs.platform-id
+            }}-image:test
+        run: |
+          # Regression guard for patches/15. The chart's bridge liveness
+          # probe reads a heartbeat the daemon keeps fresh only while
+          # its main loop is making progress. Checks it stays fresh
+          # while the loop reports and throughout a long declared wait -
+          # so a healthy bridge waiting on a slow peer or a restarting
+          # server is not killed - and that it is withheld once the loop
+          # overruns its bound, which is the wedge it exists to catch.
+          # Also checks the double_tls hook is inert by default, since
+          # the server and client share that module.
+          docker run --rm \
+            --user 1000:1000 \
+            -v "${PWD}/test:/test:ro" \
+            --entrypoint python3 \
+            "${SIGUL_BRIDGE_IMAGE}" \
+            /test/test_bridge_heartbeat.py
 
       - name: 'Capture Sigul daemon logs and container diagnostics'
         if: always()

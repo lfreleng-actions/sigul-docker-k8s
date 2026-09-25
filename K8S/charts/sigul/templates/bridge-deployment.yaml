@@ -106,13 +106,21 @@ spec:
           # connects to 44334 pile up in the accept backlog (bridge
           # accepts clients only once a server is attached) until the
           # queue is full and real clients get SYN-dropped. Probe
-          # state via ss/pgrep instead - no connections made.
+          # state instead - no connections made.
+          #
+          # But state alone cannot tell a wedged bridge from a healthy
+          # one: a frozen daemon keeps its process and its listening
+          # sockets, so every probe here used to pass indefinitely
+          # while every request hung (#33). The daemon now keeps a
+          # heartbeat file fresh only while its main loop is making
+          # progress (patch 15). Liveness and readiness read its age,
+          # and fail closed: a missing heartbeat makes stat fail.
           startupProbe:
             exec:
               command:
                 - /bin/bash
                 - -c
-                - "ss -tln | grep -q ':{{ .Values.bridge.ports.server }} ' && ss -tln | grep -q ':{{ .Values.bridge.ports.client }} '"
+                - "ss -tln | grep -q ':{{ .Values.bridge.ports.server }} ' && ss -tln | grep -q ':{{ .Values.bridge.ports.client }} ' && test -e /run/sigul_bridge.heartbeat"
             periodSeconds: 5
             failureThreshold: 12
           readinessProbe:
@@ -120,15 +128,25 @@ spec:
               command:
                 - /bin/bash
                 - -c
-                - "ss -tln | grep -q ':{{ .Values.bridge.ports.client }} '"
+                - "ss -tln | grep -q ':{{ .Values.bridge.ports.client }} ' && a=$(( $(date +%s) - $(stat -c %Y /run/sigul_bridge.heartbeat) )) && test $a -ge -5 && test $a -le 30"
             periodSeconds: 10
           livenessProbe:
             exec:
-              # Anchored to the daemon script path; bracket defeats
-              # self-matching of the probe's own command line.
-              command: ["/bin/bash", "-c", "pgrep -f '/usr/share/sigul/[b]ridge\\.py' >/dev/null"]
+              # The heartbeat refreshes every five seconds while the
+              # daemon is healthy, so thirty is six missed beats. Three
+              # failures ten seconds apart then restart it: about a
+              # minute from a wedge to a replacement.
+              #
+              # Bounded below as well as above. After the clock steps
+              # backwards the heartbeat is dated in the future, its age
+              # is negative, and an upper bound alone would pass a
+              # wedged daemon until real time caught up with the step.
+              # Five seconds covers ordinary skew; beyond that the
+              # daemon is restarted and starts a correctly dated one -
+              # one restart, rather than a wedge nobody sees.
+              command: ["/bin/bash", "-c", "a=$(( $(date +%s) - $(stat -c %Y /run/sigul_bridge.heartbeat) )) && test $a -ge -5 && test $a -le 30"]
             periodSeconds: 10
-            failureThreshold: 5
+            failureThreshold: 3
           volumeMounts:
             - name: nss
               mountPath: /etc/pki/sigul/bridge
@@ -165,14 +183,19 @@ spec:
           ports:
             - name: health
               containerPort: {{ .Values.bridge.ports.health }}
+          # /alive, not /healthz: /healthz now reports the bridge's
+          # heartbeat, and probing the sidecar with it would restart
+          # this healthy container whenever its neighbour wedged. The
+          # NLB still checks /healthz, which is the point - a wedged
+          # bridge stops receiving traffic from outside.
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /alive
               port: health
             periodSeconds: 10
           livenessProbe:
             httpGet:
-              path: /healthz
+              path: /alive
               port: health
             periodSeconds: 10
             failureThreshold: 5
@@ -182,6 +205,10 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            # Where the bridge publishes its heartbeat.
+            - name: run
+              mountPath: /run
+              readOnly: true
           resources:
             requests:
               cpu: 10m

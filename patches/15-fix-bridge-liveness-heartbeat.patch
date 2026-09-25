@@ -1,0 +1,364 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Give the bridge a liveness heartbeat. Every health check it had
+# tested state a wedged daemon keeps - a live process, a listening
+# socket - so a frozen or stuck bridge stayed Ready indefinitely while
+# every request hung. The main loop now reports progress on every
+# wakeup of every wait, with the longest that wait may legitimately
+# block, and a publisher thread keeps a heartbeat file fresh only while
+# the loop is within that bound. The two waits that could block forever
+# are bounded so that an idle bridge still beats. See patches/README.md.
+#
+--- a/src/bridge.py
++++ b/src/bridge.py
+@@ -18,6 +18,7 @@
+
+ import base64
+ import binascii
++import contextlib
+ import errors
+ import logging
+ import io
+@@ -178,6 +179,7 @@
+             # only block on a write if the send buffer is full, which
+             # handshake-sized messages never manage; and if it ever did,
+             # this still ends at the deadline rather than spinning.
++            _progress(remaining)
+             nss.io.Socket.poll(
+                 [(sock, nss.io.PR_POLL_READ)],
+                 nss.io.milliseconds_to_interval(int(remaining * 1000) + 1))
+@@ -196,6 +198,150 @@
+ # beyond any silence a real request produces: even the server's largest
+ # signing operations stream data or finish in seconds.
+ _REQUEST_IDLE_SECONDS = 120
++
++# How often the bridge's liveness heartbeat is published, and the
++# longest any wait that would otherwise block indefinitely may last
++# before the main loop comes round again. The liveness probe reads the
++# heartbeat's age, so both must stay well inside its tolerance.
++_HEARTBEAT_INTERVAL_SECONDS = 5
++_IDLE_WAIT_SLICE_SECONDS = 10
++
++# The longest the request handlers' own phases - payload forwarding and
++# the post-request phase - may run without reporting. They are where
++# RPM signing talks to Koji and to the worker threads, and neither
++# reports progress, so they get a bound of their own: long enough for a
++# large RPM batch against a slow Koji, finite so that a Koji call that
++# never returns is still caught. Deployments that do not use Koji never
++# enter them for long.
++_HANDLER_PHASE_SECONDS = 30 * 60
++
++
++class Heartbeat(object):
++    '''Proof, for the liveness probe, that the bridge is making progress.
++
++    Every health check the bridge had tested state a wedged daemon
++    keeps: a live process and a listening socket. So a frozen or stuck
++    bridge stayed Ready indefinitely while every request hung.
++
++    The main loop reports progress on every wakeup of every wait,
++    naming the longest that wait may legitimately block. A publisher
++    thread rewrites the heartbeat file every few seconds, for as long
++    as the main loop is inside its own bound. It stops the moment the
++    main loop overruns - stuck in a syscall, deadlocked, looping
++    without waiting - and stops too when the whole process is frozen,
++    since the thread is part of it. Either way the file goes stale and
++    liveness restarts the daemon.
++
++    The file is rewritten in place rather than replaced, and the probe
++    reads its mtime, so it never has to parse anything a half-written
++    update could leave behind.
++
++    '''
++
++    def __init__(self, path):
++        self.__path = path
++        self.__lock = threading.Lock()
++        self.__overdue_at = time.monotonic() + _IDLE_WAIT_SLICE_SECONDS
++        # Deadlines of work in progress under lease(), keyed by lease.
++        self.__leases = {}
++
++    def progress(self, bound=None):
++        '''The main loop is alive, and may block for up to bound seconds.
++
++        None means the caller could not say; the idle slice applies.
++
++        '''
++        if bound is None:
++            bound = _IDLE_WAIT_SLICE_SECONDS
++        with self.__lock:
++            # Slack on top of the bound: a wait that ends exactly on time
++            # still has a little work to do before it reports again.
++            self.__overdue_at = time.monotonic() + bound + \
++                _HEARTBEAT_INTERVAL_SECONDS
++
++    @contextlib.contextmanager
++    def lease(self, bound):
++        '''Allow bound seconds for everything inside the block.
++
++        progress() alone is last-writer-wins, which is right for a single
++        wait but wrong for a phase containing several: a handler phase
++        that allows thirty minutes for Koji, then does a routine 120 s
++        read, would otherwise have its allowance cut to 120 s - and a
++        slow Koji call after the read would stop the heartbeat and
++        restart a healthy bridge. The RPM batch handler makes it worse,
++        with I/O and Koji running in worker threads at the same time,
++        where no single deadline could be right.
++
++        A lease holds its deadline for as long as the block runs, and
++        reports inside it may extend the effective deadline but never
++        shorten it. Released on exit however the block ends, so a
++        failed phase cannot leave a thirty-minute allowance behind.
++
++        '''
++        key = object()
++        with self.__lock:
++            self.__leases[key] = time.monotonic() + bound + \
++                _HEARTBEAT_INTERVAL_SECONDS
++        try:
++            yield
++        finally:
++            with self.__lock:
++                del self.__leases[key]
++                # Resume ordinary reporting from now, not from whenever
++                # the last report before the lease was made.
++                self.__overdue_at = max(self.__overdue_at, time.monotonic() +
++                                        _IDLE_WAIT_SLICE_SECONDS)
++
++    def start(self):
++        self.__publish()
++        thread = threading.Thread(target=self.__run, name='heartbeat')
++        thread.daemon = True
++        thread.start()
++
++    def __run(self):
++        warned = None
++        while True:
++            time.sleep(_HEARTBEAT_INTERVAL_SECONDS)
++            with self.__lock:
++                deadline = max([self.__overdue_at] +
++                               list(self.__leases.values()))
++                on_time = time.monotonic() < deadline
++            if on_time:
++                self.__publish()
++                warned = None
++            elif warned is None or time.monotonic() - warned >= 60:
++                # Said once, then once a minute: a line per missed beat
++                # would bury whatever led to it.
++                logging.warning('Main loop overdue; heartbeat withheld so '
++                                'that liveness restarts the bridge')
++                warned = time.monotonic()
++
++    def __publish(self):
++        try:
++            with open(self.__path, 'w') as f:
++                f.write('{0:.0f}\n'.format(time.time()))
++        except (IOError, OSError) as e:
++            # Better a stale heartbeat, and a restart, than a crashed
++            # publisher and an unexplained one.
++            logging.warning('Cannot write heartbeat %s: %s', self.__path, e)
++
++
++_heartbeat = None
++
++
++def _progress(bound=None):
++    if _heartbeat is not None:
++        _heartbeat.progress(bound)
++
++
++@contextlib.contextmanager
++def _lease(bound):
++    '''Heartbeat.lease(), or nothing if no heartbeat is running.'''
++    if _heartbeat is None:
++        yield
++    else:
++        with _heartbeat.lease(bound):
++            yield
+
+
+ def create_listen_sock(config, port):
+@@ -1350,9 +1496,12 @@
+             raise ForwardingError('No client certificate')
+         user_name = cert.subject_common_name
+         logging.info('Client with CN %s connected', repr(user_name))
+-        if (config.required_fas_group is not None
+-                and not fas_user_is_in_group(config, user_name,
+-                                             config.required_fas_group)):
++        # A FAS lookup is an external call that reports nothing.
++        with _lease(_HANDLER_PHASE_SECONDS):
++            allowed = (config.required_fas_group is None
++                       or fas_user_is_in_group(config, user_name,
++                                               config.required_fas_group))
++        if not allowed:
+             raise InvalidRequestError(
+                 'User {0!s} not allowed to connect'.format(
+                     repr(user_name)))
+@@ -1365,7 +1514,8 @@
+         conn = BridgeConnection(config, user_name, client_buf, server_buf)
+         try:
+             conn.__forward_request_headers()
+-            conn.__handler.forward_request_payload(conn)
++            with _lease(_HANDLER_PHASE_SECONDS):
++                conn.__handler.forward_request_payload(conn)
+
+             double_tls.bridge_inner_stream(conn.client_buf, conn.server_buf,
+                                            idle_timeout=_REQUEST_IDLE_SECONDS)
+@@ -1373,7 +1523,8 @@
+             conn.__forward_reply_headers()
+             conn.__forward_reply_payload()
+
+-            conn.__handler.post_request_phase(conn)
++            with _lease(_HANDLER_PHASE_SECONDS):
++                conn.__handler.post_request_phase(conn)
+
+             conn.__terminate_client_connection()
+         finally:
+@@ -1618,8 +1769,9 @@
+                 descs.append((self.__listen_sock, nss.io.PR_POLL_READ))
+             attended = list(self.__pending)
+             descs.extend((p.sock, nss.io.PR_POLL_READ) for p in attended)
+-            flags = double_tls.poll_sockets(descs,
+-                                            self.__poll_timeout(wait_began))
++            timeout = self.__poll_timeout(wait_began)
++            _progress(nss.io.interval_to_seconds(timeout) + 1)
++            flags = double_tls.poll_sockets(descs, timeout)
+             now = time.monotonic()
+             elapsed = now - wait_began
+             wait_began = now
+@@ -1658,8 +1810,11 @@
+         waits = [p.remaining for p in self.__pending]
+         if now < self.__accept_after:
+             waits.append(self.__accept_after - now)
+-        if not waits:
+-            return nss.io.PR_INTERVAL_NO_TIMEOUT
++        # Never indefinite: an idle bridge must still come round to
++        # beat its heartbeat. A wakeup with nothing to do is already
++        # handled - it is what a handshake deadline expiring looks
++        # like - so capping this changes nothing else.
++        waits.append(_IDLE_WAIT_SLICE_SECONDS)
+         return nss.io.milliseconds_to_interval(
+             int(max(0, min(waits)) * 1000) + 1)
+
+@@ -1721,7 +1876,19 @@
+     client_sock = None
+     try:
+         logging.debug('Waiting for the server to connect')
+-        (server_sock, server_addr) = server_listen_sock.accept()
++        # Accepted in slices rather than in one indefinite block, so the
++        # heartbeat keeps beating while no server is connected: a server
++        # that is restarting must not look like a wedged bridge, or a
++        # restart of one would cascade into a restart of the other.
++        while True:
++            _progress(_IDLE_WAIT_SLICE_SECONDS)
++            try:
++                (server_sock, server_addr) = server_listen_sock.accept(
++                    nss.io.seconds_to_interval(_IDLE_WAIT_SLICE_SECONDS))
++                break
++            except nss.error.NSPRError as e:
++                if e.errno != nss.error.PR_IO_TIMEOUT_ERROR:
++                    raise
+         _adbg('Server-side TCP accept from %r', server_addr)
+
+         # CRITICAL FIX: Complete server TLS handshake immediately after accept.
+@@ -1820,6 +1987,7 @@
+
+
+ def main():
++    global _heartbeat
+     # Any blocking socket operations time out after an hour
+     socket.setdefaulttimeout(60 * 60)
+     options = utils.get_daemon_options('A signing server bridge',
+@@ -1835,6 +2003,14 @@
+
+     signal.signal(signal.SIGTERM, utils.sigterm_handler)
+     utils.create_pid_file(options, 'sigul_bridge')
++    # /run survives a container restart, so a predecessor's heartbeat
++    # would otherwise be read as this daemon's. A missing file means
++    # "not started yet", which is true; a stale one would be a lie.
++    heartbeat_path = os.path.join(options.pid_dir, 'sigul_bridge.heartbeat')
++    try:
++        os.unlink(heartbeat_path)
++    except OSError:
++        pass
+
+     utils.set_regid(config)
+     if config.daemon_uid is not None:
+@@ -1879,6 +2055,12 @@
+                 logging.error(str(e))
+                 sys.exit(1)
+
++            # Started only once both ports are listening, so a heartbeat
++            # means the bridge is up and not merely that the process is.
++            _heartbeat = Heartbeat(heartbeat_path)
++            double_tls.progress_hook = _progress
++            _heartbeat.start()
++
+             admission = ClientAdmission(client_listen_sock)
+             while True:
+                 # This loop can unfortunately not be interrupted using SIGINT,
+--- a/src/double_tls.py
++++ b/src/double_tls.py
+@@ -113,6 +113,20 @@
+         _poll_sentinel = nss.io.Socket.new_tcp_pair()
+         _poll_sentinel_pid = pid
+     return _poll_sentinel[0]
++
++
++# Called on every wakeup of the relay's poll loop and before every
++# outer-stream receive or send: a sign of life from whichever loop is
++# doing the work. None - the default, and what the server and client
++# keep - makes it a no-op, so only a daemon that asks for it pays for
++# it. The bridge sets it to feed its liveness heartbeat, and passes a
++# bound with it: the longest this call may now legitimately block.
++progress_hook = None
++
++
++def _progress(bound):
++    if progress_hook is not None:
++        progress_hook(bound)
+
+
+ def poll_sockets(descs, timeout):
+@@ -301,6 +315,8 @@
+             _debug('Poll: %s',
+                    ', '.join(['{0!s}:{1!s}'.format(_id(o), v)
+                               for (o, v) in six.iteritems(poll_descs)]))
++            _progress(None if timeout == nss.io.PR_INTERVAL_NO_TIMEOUT
++                      else nss.io.interval_to_seconds(timeout))
+             _nspr_poll(poll_descs, timeout)
+             _debug('-> %s', ', '.join(['{0!s}:{1!s}'.format(_id(o), v)
+                                        for (o, v) in
+@@ -1039,6 +1055,7 @@
+             self.__interval = nss.io.PR_INTERVAL_NO_TIMEOUT
+         else:
+             self.__interval = nss.io.seconds_to_interval(idle_timeout)
++        self.__bound = idle_timeout
+
+     @property
+     def socket(self):
+@@ -1053,6 +1070,7 @@
+         '''
+         res = b''
+         while len(res) < buf_size:
++            _progress(self.__bound)
+             run = self.__socket.recv(buf_size - len(res), self.__interval)
+             if len(run) == 0:
+                 raise EOFError('Unexpected EOF on _DoubleTLS')
+@@ -1100,6 +1118,7 @@
+         if len(data) >= _chunk_inner_mask:
+             raise Exception('Data size larger than limit')
+         _debug('o%s: sending %d bytes', _id(self), len(data))
++        _progress(2 * self.__bound if self.__bound is not None else None)
+         self.__socket.send(utils.u32_pack(len(data)), self.__interval)
+         self.__socket.send(data, self.__interval)
+
+@@ -1110,6 +1129,7 @@
+     def send_outer_eof(self):
+         '''Send an EOF on the outer stream.'''
+         _debug('o%s: sending EOF', _id(self))
++        _progress(self.__bound)
+         self.__socket.send(utils.u32_pack(0), self.__interval)
+
+     def pending_inner_packets(self):

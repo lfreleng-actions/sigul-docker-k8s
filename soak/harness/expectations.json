@@ -58,10 +58,6 @@
   },
   "k8s": {
     "faults": {
-      "proc_wedge_bridge": {
-        "expect": "fail",
-        "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/33 - every bridge health check tests a live process or a listening socket, both of which a wedged daemon keeps, so it is never replaced"
-      },
       "proc_wedge_server": {
         "expect": "fail",
         "issue": "https://github.com/lfreleng-actions/sigul-docker-k8s/issues/33 - liveness only fails once the bridge sheds the wedged server's connections, measured at about 324 s against a 180 s bound"

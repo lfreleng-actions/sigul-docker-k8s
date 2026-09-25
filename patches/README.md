@@ -668,6 +668,87 @@ server port produces one `INFO` line and no traceback, and the bridge
 pairs normally when the server returns. The full signing suite passes
 unchanged (41/41).
 
+### 15-fix-bridge-liveness-heartbeat.patch
+
+**Status:** CRITICAL - without it a wedged bridge is never detected
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** Bridge; the chart's bridge probes depend on it
+
+**Problem:**
+Nothing could tell a wedged bridge from a healthy one. Every health
+check the chart ran - startup, readiness, liveness, and the sidecar's
+`/healthz` behind the NLB - tested a live process or a listening
+socket, and a frozen or stuck daemon keeps both. Frozen on a kind
+cluster, the bridge stayed `Ready` with no restarts for as long as it
+stayed frozen, the NLB kept routing to it, and every request hung: a
+total signing outage reported as healthy, with nothing that would ever
+recover it (#33).
+
+State cannot answer the question; only progress can. But the obvious
+heartbeat - touch a file from the main loop - would have been worse
+than none. The main loop blocks legitimately, for long periods: it
+waited for the server with no timeout at all, waited for a client with
+none when nothing was pending, and patch 11 lets a single receive or
+send run for 120 s. A heartbeat beaten only between those would have
+let liveness kill a healthy bridge whenever its server restarted - so
+that a restart of one daemon cascaded into a restart of the other - or
+whenever a client paused mid-request.
+
+**Fix:**
+The main loop reports progress on every wakeup of every wait, naming
+the longest that wait may now legitimately block. A publisher thread
+rewrites `/run/sigul_bridge.heartbeat` every five seconds, but only
+while the main loop is inside its own declared bound plus five seconds'
+slack. The heartbeat therefore goes stale when:
+
+- the whole process is frozen, since the thread is part of it; or
+- the main loop overruns its bound - stuck in a syscall, deadlocked,
+  or looping without waiting - with the thread still running, which a
+  heartbeat beaten unconditionally from a thread would never notice.
+
+The publisher logs `Main loop overdue; heartbeat withheld` once, then
+once a minute, rather than on every missed beat.
+
+The two waits that could block forever are bounded: the server accept
+and the idle client wait now come round every ten seconds, so an idle
+bridge with no server still beats. The request relay (`double_tls`)
+reports through a `progress_hook` that is `None` by default, so the
+server and client, which share that module, are unaffected. The
+request handlers' own phases - where RPM signing talks to Koji - hold
+a thirty-minute *lease*, since those calls report nothing; generous
+for a large batch, finite so that a call that never returns is
+caught. A lease exists because reporting alone is last-writer-wins: a
+phase that allowed thirty minutes and then did a routine 120 s read
+would otherwise have its allowance cut to 120 s, and a slow Koji call
+after the read would restart a healthy bridge. The batch handler runs
+I/O and Koji in worker threads at the same time, where no single
+deadline could be right. Reports inside a lease may extend the
+deadline but never shorten it, and the lease ends with its block
+however the block ends.
+
+The heartbeat is removed at startup: `/run` is an `emptyDir` that
+outlives a container restart, and a predecessor's heartbeat would
+otherwise be read as the new daemon's.
+
+The chart change that uses it is outside the patch series: liveness
+fails once the heartbeat is more than 30 s old (six missed beats) on
+three checks ten seconds apart; readiness requires it fresh as well as
+the port listening; and `/healthz`, which the NLB checks, reports it
+too, so a wedged bridge stops receiving outside traffic. The sidecar's
+own probes move to a new `/alive`, because probing it with `/healthz`
+would restart the healthy sidecar whenever the bridge wedged.
+
+**Test:** on kind, with the bridge frozen from its node: readiness
+fails at 52 s and liveness replaces it at 88 s, where before it was
+never replaced; the sidecar is not restarted, and the next request
+succeeds in 1 s. The soak's `proc_wedge_bridge` fault moves from XFAIL
+to XPASS. With no server connected for 90 s, and with a real client
+frozen mid-upload for 150 s - past the 120 s idle deadline, which the
+bridge then enforces itself - the heartbeat stays under 5 s old and
+the bridge is not restarted. A main loop that declares a 10 s wait and
+hangs is withheld 15 s later. The Compose `pr` soak passes: 11/11
+faults, 430/430 cooldown requests, 11/11 regression checks.
+
 ## Applying Patches
 
 The Docker build process automatically applies these patches:

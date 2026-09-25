@@ -43,7 +43,17 @@ templates as comments):
 
 - **Never point tcpSocket/nc probes at the bridge** - accepted bare
   connections break its serial accept loop (44333 handshake errors,
-  44334 backlog exhaustion). All probes are exec-based (`ss`/`pgrep`).
+  44334 backlog exhaustion). All probes are exec-based, and make no
+  connections.
+- **The bridge's liveness is its heartbeat**, not its process. A
+  frozen or wedged bridge keeps both its process and its listening
+  sockets, so checks on those passed indefinitely while signing was
+  down (#33). Patch 15 makes the daemon keep
+  `/run/sigul_bridge.heartbeat` fresh only while its main loop is
+  making progress; liveness restarts it once that is over 30 s old, and
+  readiness and the NLB's `/healthz` require it too. The health
+  sidecar's own probes use `/alive` so that a wedged bridge does not
+  also restart the healthy sidecar.
 - The server needs a generous `startupProbe` - first boot includes
   bridge-wait + DB schema + admin creation before `sigul_server`
   exists for liveness to find.
