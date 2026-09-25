@@ -1191,6 +1191,26 @@ jobs:
             "${SIGUL_BRIDGE_IMAGE}" \
             /test/test_bridge_heartbeat.py
 
+      - name: 'Test bridge per-request memory'
+        shell: bash
+        env:
+          SIGUL_BRIDGE_IMAGE: >-
+            bridge-${{
+              steps.runner-arch.outputs.platform-id
+            }}-image:test
+        run: |
+          # Regression guard for patches/16. double_tls's debug helper
+          # kept every object it labelled in a module-level table, and
+          # the bridge labels its buffers and sockets on every request,
+          # so the daemon grew ~5 kB per request for as long as it ran.
+          # Checks that labelled objects are released.
+          docker run --rm \
+            --user 1000:1000 \
+            -v "${PWD}/test:/test:ro" \
+            --entrypoint python3 \
+            "${SIGUL_BRIDGE_IMAGE}" \
+            /test/test_bridge_memory.py
+
       - name: 'Capture Sigul daemon logs and container diagnostics'
         if: always()
         shell: bash
