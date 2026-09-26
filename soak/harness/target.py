@@ -66,6 +66,28 @@ def _dig(mapping: dict, *keys: str) -> int:
     return int(node) if isinstance(node, (int, float)) else 0
 
 
+def _anon_bytes(raw: dict) -> int:
+    """Anonymous memory from a Docker stats document.
+
+    The same figure the Kubernetes backend reads from memory.stat, so
+    the two report one thing. Usage minus page cache is not it: usage
+    also counts kernel memory charged to the cgroup, and the dentries
+    left by the server's per-request temporary files alone added about
+    9 kB per request - reclaimable, released under memory pressure, and
+    read as a leak of 7-13 MB an hour (#32). The subtraction remains
+    only for cgroup v1, whose stats carry no anon figure.
+    """
+    stats = raw.get("memory_stats")
+    stats = stats.get("stats") if isinstance(stats, dict) else None
+    if isinstance(stats, dict):
+        for key in ("anon", "total_rss", "rss"):
+            if key in stats:
+                return _dig(stats, key)
+    usage = _dig(raw, "memory_stats", "usage")
+    cache = _dig(raw, "memory_stats", "stats", "file")
+    return max(usage - cache, 0)
+
+
 class Target(ABC):
     """A running Sigul stack that the harness can measure and disturb."""
 
@@ -303,11 +325,7 @@ class DockerTarget(Target):
 
     def stats(self, unit: str) -> ProcessStats:
         raw = self._container(unit).stats(stream=False)  # type: ignore[attr-defined]
-        # Docker's usage figure includes page cache, which drifts with
-        # file I/O and would masquerade as a leak. Subtract it.
-        usage = _dig(raw, "memory_stats", "usage")
-        cache = _dig(raw, "memory_stats", "stats", "file")
-        rss = max(usage - cache, 0)
+        rss = _anon_bytes(raw)
 
         cpu_delta = _dig(raw, "cpu_stats", "cpu_usage", "total_usage") - _dig(
             raw, "precpu_stats", "cpu_usage", "total_usage"

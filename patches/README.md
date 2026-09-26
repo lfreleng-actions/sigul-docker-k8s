@@ -749,6 +749,52 @@ the bridge is not restarted. A main loop that declares a 10 s wait and
 hangs is withheld 15 s later. The Compose `pr` soak passes: 11/11
 faults, 430/430 cooldown requests, 11/11 regression checks.
 
+### 16-fix-double-tls-id-leak.patch
+
+**Status:** HIGH - the bridge's memory grows for as long as it runs
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** Bridge chiefly; the server and client share the module
+
+**Problem:**
+The soak harness found the bridge's memory growing steadily with
+use (#32). Measured one request type at a time, it grew by the same
+~5.2 kB per request for `list-users`, a 1 MB signature and a 64 MB
+one alike, so the cost was per connection rather than per byte. A
+`tracemalloc` diff across 300 requests put all of it in per-request
+code, and a referrer walk of the live daemon found that request's
+objects - both outer buffers, both inner bridging buffers, the
+sockets - still reachable from one module-level dict.
+
+That dict is `double_tls.__ids`. The module's debug helper `_id()`
+gives each object a short label for debug output, and remembers the
+label by keeping the object as a key, forever. Its only callers are
+arguments to `_debug()`, which is a no-op, but Python evaluates
+arguments whether or not the call does anything, so every request
+labelled its buffers and sockets and the table pinned them, and with
+them everything they refer to. The descriptors themselves were closed,
+so nothing but memory showed it.
+
+**Fix:**
+`_id()` derives the label from `id()` and stores nothing. A label
+stays stable for as long as its object lives, which is all debug
+output needs.
+
+This is the first of two leaks behind the growth. The second is in
+`python-nss-ng`, not in Sigul: every `NSPRError` raised from C was
+kept alive by a missing reference release, together with its
+traceback, every frame on it and their locals. The non-blocking
+handshakes raise `PR_WOULD_BLOCK_ERROR` as ordinary control flow,
+several times per request. Fixing this patch alone left ~1 kB per
+request, and fixing both leaves the bridge flat. The binding is fixed
+at source, not patched here.
+
+**Test:** `test/test_bridge_memory.py` labels 1000 objects the way the
+bridge labels its buffers: without the patch all 1000 stay alive, with
+it none do. Against the Compose stack, bridge memory over 300 requests
+went from +5.2 kB per request to +0.3 kB with this patch, and to +0.0
+with both fixes. The `tracemalloc` delta over 300 signing requests
+fell from 1.46 MB to 2.4 kB.
+
 ## Applying Patches
 
 The Docker build process automatically applies these patches:

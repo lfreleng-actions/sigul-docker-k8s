@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Stop double_tls pinning every object it labels. Its debug helper
+# _id() recorded each object in a module-level dict that was never
+# pruned, and the bridge labels its buffers and sockets on every
+# request - even though _debug() is a no-op, its arguments are still
+# evaluated. Every request's buffers, sockets, pending-client records
+# and exception tracebacks therefore lived for the life of the
+# process: about 5 kB per request, regardless of payload. The label
+# is now derived from id(). See patches/README.md.
+#
+--- a/src/double_tls.py
++++ b/src/double_tls.py
+@@ -30,26 +30,22 @@
+ import utils
+
+ # A helper for debug prints
+-__next_id = 0
+-__ids = {}
+
+
+ def _id(obj):
+-    global __next_id, __ids
+-    try:
+-        return __ids[obj]
+-    except KeyError:
+-        counter = __next_id
+-        __next_id += 1
+-        new_id = ''
+-        while True:
+-            new_id = chr(ord('A') + counter % 26) + new_id
+-            counter //= 26
+-            if counter == 0:
+-                break
+-        __ids[obj] = new_id
+-        return new_id
++    '''Return a short label for obj in debug output.
+
++    Derived from id() rather than looked up in a table of the objects
++    labelled so far: such a table holds a reference to every object it
++    has ever labelled, and the bridge labels its buffers and sockets on
++    every request, so the table - and everything those objects refer to
++    - grew for the life of the process. The arguments to _debug() are
++    evaluated even while it is a no-op, so this runs on every request
++    whether or not anyone is debugging.
++
++    '''
++    return format(id(obj), 'x')
++
+ # _debug_file = None
+ # _debug_pid = None
