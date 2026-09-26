@@ -22,6 +22,13 @@
 
 # yamllint disable rule:line-length
 
+# Pinned rather than left to default to the checkout directory's name,
+# which varies with how the repository was cloned. The scripts, docs and
+# workflows address this stack's volumes and network by name
+# (sigul-docker_sigul_client_nss, sigul-docker_sigul-network, ...), and
+# a deploy script that cleans or reuses state by name must find it.
+name: sigul-docker
+
 services:
   # Certificate Initialization Container (Init Container Pattern)
   # Runs before services start to ensure certificates exist

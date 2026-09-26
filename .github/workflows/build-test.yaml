@@ -1191,6 +1191,35 @@ jobs:
             "${SIGUL_BRIDGE_IMAGE}" \
             /test/test_bridge_heartbeat.py
 
+      - name: 'Test a clean redeploy over the running stack'
+        shell: bash
+        env:
+          SIGUL_RUNNER_PLATFORM: ${{ steps.runner-arch.outputs.platform-id }}
+          SIGUL_DOCKER_PLATFORM: >-
+            ${{ steps.runner-arch.outputs.docker-platform }}
+          SIGUL_CLIENT_IMAGE: >-
+            client-${{
+              steps.runner-arch.outputs.platform-id
+            }}-image:test
+          SIGUL_SERVER_IMAGE: >-
+            server-${{
+              steps.runner-arch.outputs.platform-id
+            }}-image:test
+          SIGUL_BRIDGE_IMAGE: >-
+            bridge-${{
+              steps.runner-arch.outputs.platform-id
+            }}-image:test
+        run: |
+          # Every other step deploys onto a fresh runner, where
+          # --force-clean-volumes has nothing to clean, so a clean that
+          # removed nothing passed unnoticed: the server kept its NSS
+          # database while cert-init issued a new CA, and exited 255.
+          # Deploys, signs, redeploys with --force-clean-volumes while
+          # the stack is running, and checks a new CA was issued and a
+          # freshly provisioned client signs. Runs last so an earlier
+          # failure's diagnostics describe the stack that failed.
+          ./scripts/run-redeploy-tests.sh
+
       - name: 'Capture Sigul daemon logs and container diagnostics'
         if: always()
         shell: bash
