@@ -52,7 +52,7 @@ def _lease_url(base: str, namespace: str, name: str) -> str:
 
 
 def _now() -> datetime.datetime:
-    return datetime.datetime.now(datetime.timezone.utc)
+    return datetime.datetime.now(datetime.UTC)
 
 
 def _parse_ts(value: str) -> datetime.datetime | None:

@@ -161,7 +161,7 @@ def restart_workload(kind: str, name: str) -> None:
     plurals = {"deployment": "deployments", "statefulset": "statefulsets"}
     plural = plurals[kind]
     base, headers, namespace = api_base()
-    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     patch = {
         "spec": {
             "template": {
