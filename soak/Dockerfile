@@ -13,18 +13,16 @@ FROM ${SIGUL_CLIENT_IMAGE}
 
 USER root
 
-# locust       - load generation, percentile stats, CSV history
-# gevent       - cooperative concurrency; gevent.subprocess lets many
-#                real `sigul` invocations run in one process
-# docker       - Docker SDK, used for container stats and process-level
-#                faults (pause/restart). Avoids needing a docker CLI.
-# matplotlib   - report charts
+# The tooling the runner adds is pinned and hash-locked in
+# requirements.txt, compiled by uv from requirements.in, which also
+# explains each package; Dependabot bumps the lock.
 #
 # The client image ships no pip (build-scripts/remove-pip.sh), so the
 # runner bootstraps its own from the wheel python3-libs bundles for
-# ensurepip, then upgrades it past the advisories Dockerfile.client
-# documents before installing anything. It stays in this test-only
-# image, which is never published.
+# ensurepip. The lock includes pip itself, so the one hash-checked
+# transaction below upgrades it past the advisories
+# build-scripts/requirements/advisories.in lists and installs the
+# tooling. It stays in this test-only image, which is never published.
 #
 # --break-system-packages matches Dockerfile.client: the base is
 # Fedora, whose Python may carry a PEP 668 EXTERNALLY-MANAGED marker.
@@ -32,10 +30,9 @@ USER root
 # safeguard against the base changing.
 COPY requirements.txt /opt/soak/requirements.txt
 RUN python3 -m ensurepip \
-    && python3 -m pip install --no-cache-dir --break-system-packages \
-        --upgrade 'pip>=26.1.2' \
-    && python3 -m pip install --no-cache-dir --only-binary=:all: \
-        --break-system-packages -r /opt/soak/requirements.txt \
+    && python3 -m pip install --no-cache-dir --require-hashes \
+        --only-binary=:all: --break-system-packages \
+        -r /opt/soak/requirements.txt \
     && rm -rf /root/.cache
 
 ENV PATH="/usr/local/bin:${PATH}" \

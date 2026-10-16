@@ -27,3 +27,42 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 15
+
+  # Hash locks for the Python packages the images install with
+  # --require-hashes. Each .in records the intent and the .txt beside
+  # it is the lock uv compiled from it; the uv ecosystem recompiles a
+  # lock when it bumps a pin, so the hashes follow the bump, and the
+  # flags it reads back out of the lock's header match the ones
+  # documented in each .in.
+  - package-ecosystem: "uv"
+    directory: "/build-scripts/requirements"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "Build(python)"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 15
+    ignore:
+      # Sigul maps its tables with the classical mapper() and relation()
+      # API, which SQLAlchemy 2.0 removed; stay on the 1.3 series.
+      - dependency-name: "sqlalchemy"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+
+  # The soak runner's tooling, locked the same way. It is test-only and
+  # never published, so its bumps arrive as one grouped PR.
+  - package-ecosystem: "uv"
+    directory: "/soak"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "Build(soak)"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      soak-tooling:
+        patterns:
+          - "*"

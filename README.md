@@ -174,6 +174,16 @@ architecture-specific install logic. Pinned local fixes live in
 distro packages. SQLite is the only database used by the server; there is no
 PostgreSQL dependency.
 
+Every Python package the images take from PyPI is installed with
+`pip --require-hashes` from a lock under
+[`build-scripts/requirements/`](./build-scripts/requirements/) (the soak
+runner's lives in [`soak/`](./soak/)). Each `.in` states the intent and
+explains its pins; the `.txt` beside it is compiled by
+`uv pip compile --generate-hashes` with the command recorded in both, and
+carries the digest of every artefact of each release, so one lock serves
+both architectures. Dependabot recompiles a lock when it bumps a pin, so
+version bumps arrive as pull requests rather than hand edits.
+
 ### Network topology
 
 ```text
