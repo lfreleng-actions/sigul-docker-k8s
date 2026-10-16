@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# The NSS bindings every image installs from PyPI through
+# build-scripts/install-python-nss.sh, which reads the lock compiled
+# from this file (python-nss-ng.txt). The lock carries the digest of
+# every artefact of the release, so pip can take the wheel built for
+# the image's Python and architecture; the script refuses the sdist,
+# whose build tooling --require-hashes would not reach.
+#
+# Compile the lock with:
+#   uv pip compile --generate-hashes --universal --python-version 3.14 \
+#     --output-file python-nss-ng.txt python-nss-ng.in
+
+python-nss-ng==1.3.2

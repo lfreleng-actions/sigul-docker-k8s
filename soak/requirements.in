@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Tooling added on top of the Sigul client image for the soak runner.
+# soak/Dockerfile installs the lock compiled from this file
+# (requirements.txt) with --require-hashes.
+#
+# Compile the lock with:
+#   uv pip compile --generate-hashes --universal --python-version 3.14 \
+#     --output-file requirements.txt requirements.in
+
+# The client image ships no pip, so the runner bootstraps one with
+# ensurepip from Fedora's python-pip-wheel and this entry upgrades it
+# past the advisories build-scripts/requirements/advisories.in lists,
+# in the same hash-checked transaction as the tooling below.
+pip>=26.1.2
+# Docker SDK, used for container stats and process-level faults
+# (pause/restart). Avoids needing a docker CLI.
+docker==7.2.0
+# Load generation, percentile stats, CSV history. Pulls in gevent,
+# whose gevent.subprocess lets many real `sigul` invocations run in
+# one process.
+locust==2.46.5
+# Report charts.
+matplotlib==3.11.2

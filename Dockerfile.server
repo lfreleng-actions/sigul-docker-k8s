@@ -34,64 +34,73 @@ RUN dnf update -y && \
         wget rsync && \
     dnf clean all
 
+# Every pip install below reads a hash lock from
+# build-scripts/requirements. uv compiles each lock from the .in
+# beside it, Dependabot bumps the locks, and pip runs with
+# --require-hashes, so a build proceeds only with artefacts whose
+# sha256 matches the lock. The copy goes once the last install has run.
+#
+# --require-hashes stops at the packages it installs: a source build
+# would pull its build backend into an isolated environment that the
+# lock does not reach. Each install therefore either takes wheels only
+# (--only-binary) or, where a package has no wheel for this Python,
+# builds with --no-build-isolation against the locked setuptools.
+COPY build-scripts/requirements/ /tmp/requirements/
+
 # Patch CVEs that fedora:44 ships unpatched in its Python packages.
-# pip 26.0.1 is affected by GHSA-58qw-9mgm-455v and GHSA-jp4c-xjxw-mgf9
-# (fixed in 26.1) plus CVE-2026-8643, an entry-point path traversal
-# fixed in 26.1.2. Upgrading it protects the installs below; pip itself
-# is removed once they finish (build-scripts/remove-pip.sh), because
-# no pip release fixes the urllib3 it vendors. setuptools 80.10.2 is
-# affected by CVE-2026-59890 /
-# GHSA-h35f-9h28-mq5c, a MANIFEST.in exclusion bypass fixed in 83.0.0.
+# advisories.in lists each advisory and its first fixed release; the
+# lock resolves those floors to the newest release at compile time.
 # Upgrading via pip is required because Fedora 44 has not (yet) pushed
-# updated python3-pip / python3-setuptools packages, so 'dnf upgrade'
-# alone leaves the flagged versions in place. --break-system-packages
-# overrides Fedora's EXTERNALLY-MANAGED marker (PEP 668) so the
-# upgraded versions land under /usr/local, ahead of the dnf tree.
+# fixed builds of every package listed, so 'dnf upgrade' alone leaves
+# the flagged versions in place. --break-system-packages overrides
+# Fedora's EXTERNALLY-MANAGED marker (PEP 668) so the upgraded versions
+# land under /usr/local, ahead of the dnf tree. The upgraded pip
+# protects the installs below; pip itself is removed once they finish
+# (build-scripts/remove-pip.sh), because no pip release fixes the
+# urllib3 it vendors.
 #
 # setuptools >= 82 no longer bundles pkg_resources. The dnf-managed
 # copy under /usr/lib stays on sys.path and still satisfies
 # 'import pkg_resources' for any consumer that needs it.
 #
-# The loop then drops the superseded dist-info from the dnf tree so the
-# Grype SBOM scan reports only the upgraded version; leaving both would
-# make Grype flag the old metadata as a second, vulnerable install.
-# pip is not in the loop: remove-pip.sh deletes the dnf package
-# outright, and dnf needs that metadata intact to remove it cleanly. It
-# is deliberately guarded on a /usr/local dist-info existing, because
-# --upgrade installs nothing whenever the dnf-provided version is
-# already the newest on PyPI. In that case there is no replacement to
-# point at, so the dnf metadata must be retained, or the package would
-# disappear from the SBOM altogether.
+# The loop then drops the superseded dist-info from the dnf tree for
+# every package pip placed under /usr/local, the lock's transitive
+# dependencies included, so the Grype SBOM scan reports only the
+# version that is imported; leaving both would make Grype flag the old
+# metadata as a second, vulnerable install. Iterating over what pip
+# installed also covers a dnf-provided version that already matches
+# the lock: pip then installs nothing, there is no replacement to
+# point at, and the dnf metadata stays, or the package would disappear
+# from the SBOM altogether. pip is skipped: remove-pip.sh deletes the
+# dnf package outright, and dnf needs that metadata intact to remove
+# it cleanly.
 #
-# idna and cryptography previously needed the same treatment for
-# GHSA-65pc-fj4g-8rjx and GHSA-537c-gmf6-5ccf. Fedora 44 ships idna
-# 3.18, already fixed, so that pin stays removed. cryptography needs
-# the treatment again: 49.0.0 is affected by CVE-2026-69247 /
-# GHSA-g6cj-pr64-35w5 (PKCS#7 EnvelopedData decryption exposes a
-# Bleichenbacher oracle; affects >=44.0.0 <50.0.0), and Fedora 44 has
-# not (yet) shipped an updated python3-cryptography. The pin is a
-# floor with no upper cap: a '<' cap previously caused an older
-# /usr/local install to shadow a newer, fixed dnf-provided version.
+# The lock pins exact versions, so a dnf update that overtook the lock
+# would be shadowed by the older locked release until Dependabot's
+# next bump; the Grype gate catches that where it carries an advisory.
 #
 # The lib* globs matter: pure-Python packages (setuptools) live
 # under lib/, but packages with compiled extensions (cryptography)
 # land in Fedora's platform-specific lib64/ tree - in both the dnf
 # and /usr/local install roots. Checking only lib/ leaves the stale
 # dnf dist-info behind and Grype keeps flagging the old version.
-RUN python3 -m pip install --upgrade --break-system-packages \
-        'pip>=26.1.2' 'setuptools>=83.0.0' 'cryptography>=50.0.0' && \
-    for pkg in setuptools cryptography; do \
-        if ls -d /usr/local/lib*/python3*/site-packages/"${pkg}"-*.dist-info \
-            >/dev/null 2>&1; then \
-            rm -rf /usr/lib*/python3*/site-packages/"${pkg}"-*.dist-info; \
-        fi; \
+RUN python3 -m pip install --require-hashes --only-binary=:all: \
+        --break-system-packages -r /tmp/requirements/advisories.txt && \
+    for info in /usr/local/lib*/python3*/site-packages/*.dist-info; do \
+        [ -d "$info" ] || continue; \
+        name="${info##*/}"; name="${name%%-*}"; \
+        case "$name" in pip) continue ;; esac; \
+        rm -rf /usr/lib*/python3*/site-packages/"${name}"-*.dist-info; \
     done
 
 # Install EPEL-dependent packages and Python packages via pip
 # Note: nss-devel and nspr-devel removed - python-nss-ng installed from PyPI (pre-built)
-# Note: Python 3.13/3.14 removed the crypt module - install passlib for compatibility
-#       passlib is pinned: upstream has been dormant since 1.7.4 (2020), so an
-#       exact pin keeps builds reproducible rather than tracking a moving target.
+# Note: Python 3.13/3.14 removed the crypt module - install passlib for compatibility;
+#       build-scripts/requirements/sigul.in explains the SQLAlchemy and passlib pins.
+# Note: SQLAlchemy 1.3.24 predates Python 3.14 wheels and builds from its
+#       sdist; --no-build-isolation makes that build use the hash-locked
+#       setuptools installed above rather than one pip would fetch,
+#       unverified, into an isolated environment.
 # Note: python3-gpg required for GPG operations
 # Note: python3-fedora was dropped between Fedora 41 and 44; sigul's bridge
 #       imports it conditionally (try/except ImportError) only when FAS
@@ -99,7 +108,8 @@ RUN python3 -m pip install --upgrade --break-system-packages \
 # Note: gnupg2 is preinstalled in fedora:44, so it's not in the install list.
 RUN dnf install -y --setopt=install_weak_deps=False \
         rpm-head-signing rpm-sign jq python3-gpg && \
-    pip3 install SQLAlchemy==1.3.24 passlib==1.7.4 && \
+    pip3 install --require-hashes --no-build-isolation \
+        -r /tmp/requirements/sigul.txt && \
     dnf clean all
 
 # Install crypt module compatibility shim for Python 3.14
@@ -111,13 +121,12 @@ COPY patches/ /tmp/patches/
 # Copy local sigul source for debugging builds
 COPY .build-context/sigul /build-context/sigul/
 
-# Install python-nss-ng v1.3.2 from PyPI (Fedora 44 has Python 3.14 which is compatible)
-ENV INSTALL_SOURCE=pypi
-ENV PYTHON_NSS_NG_VERSION=1.3.2
+# Install python-nss-ng from its hash lock; this is the last install
+# that reads /tmp/requirements, so the copy goes with the script.
 COPY build-scripts/install-python-nss.sh /tmp/install-python-nss.sh
 RUN chmod +x /tmp/install-python-nss.sh && \
     /tmp/install-python-nss.sh --verify && \
-    rm /tmp/install-python-nss.sh
+    rm -r /tmp/install-python-nss.sh /tmp/requirements
 
 # Copy and run sigul installation script
 COPY build-scripts/install-sigul.sh /tmp/install-sigul.sh

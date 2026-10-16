@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Python packages Sigul's bridge and server import that the images
+# take from PyPI rather than dnf. Dockerfile.{bridge,server} install
+# the lock compiled from this file (sigul.txt).
+#
+# Compile the lock with:
+#   uv pip compile --generate-hashes --universal --python-version 3.14 \
+#     --output-file sigul.txt sigul.in
+
+# Sigul maps its tables with the classical mapper() and relation()
+# API, which SQLAlchemy 2.0 removed; 1.3.24 is the final 1.3 release,
+# and .github/dependabot.yml holds Dependabot to that series.
+SQLAlchemy==1.3.24
+# Python 3.13 removed the crypt module; passlib backs the shim in
+# build-scripts/crypt_compat.py. Upstream has been dormant since 1.7.4
+# (2020), so an exact pin keeps builds reproducible rather than
+# tracking a moving target.
+passlib==1.7.4

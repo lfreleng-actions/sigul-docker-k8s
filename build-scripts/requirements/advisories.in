@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Python packages that fedora:44 ships with unpatched advisories.
+# Dockerfile.{bridge,client,server} install the lock compiled from
+# this file (advisories.txt) ahead of the dnf tree; the comment there
+# covers the mechanism. Each entry is a floor at the first fixed
+# release, and uv resolves it to the newest release when the lock is
+# compiled, so a Dependabot bump of the lock carries any later fix.
+#
+# Drop an entry once a build shows the dnf package has caught up with
+# its floor; idna went that way after Fedora 44 shipped 3.18 with the
+# fix for GHSA-65pc-fj4g-8rjx.
+#
+# Compile the lock with:
+#   uv pip compile --generate-hashes --universal --python-version 3.14 \
+#     --output-file advisories.txt advisories.in
+
+# 26.0.1: GHSA-58qw-9mgm-455v and GHSA-jp4c-xjxw-mgf9 (fixed in 26.1),
+# then CVE-2026-8643, an entry-point path traversal (fixed in 26.1.2).
+pip>=26.1.2
+# 80.10.2: CVE-2026-59890 / GHSA-h35f-9h28-mq5c, a MANIFEST.in
+# exclusion bypass.
+setuptools>=83.0.0
+# 49.0.0: CVE-2026-69247 / GHSA-g6cj-pr64-35w5, PKCS#7 EnvelopedData
+# decryption exposes a Bleichenbacher oracle (affects >=44.0.0 <50.0.0).
+cryptography>=50.0.0

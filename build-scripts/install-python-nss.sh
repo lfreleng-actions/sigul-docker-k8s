@@ -2,22 +2,23 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
-# Python-NSS-NG installation script
-# This script installs python-nss-ng from PyPI or GitHub
+# Install python-nss-ng from its hash lock.
+#
+# The lock, build-scripts/requirements/python-nss-ng.txt, pins the
+# version and carries the sha256 of every artefact PyPI publishes for
+# it; Dependabot bumps it. pip installs with --require-hashes, so the
+# build proceeds only with a wheel whose digest matches.
+#
+# Wheels only: --only-binary refuses the sdist, whose build would pull
+# meson-python and its dependencies into an isolated environment that
+# --require-hashes does not reach. python-nss-ng publishes manylinux
+# wheels for both image architectures and every CPython the base can
+# ship, so a base whose Python has no wheel fails here, visibly,
+# rather than building with unverified tooling.
 
 set -euo pipefail
 
-ARCH=$(uname -m)
-# Normalize architecture names
-case "$ARCH" in
-    arm64) ARCH="aarch64" ;;
-    amd64) ARCH="x86_64" ;;
-esac
-
-# Installation source: pypi or github
-INSTALL_SOURCE="${INSTALL_SOURCE:-pypi}"
-PYTHON_NSS_NG_VERSION="${PYTHON_NSS_NG_VERSION:-}"
-PYTHON_NSS_NG_REPO="${PYTHON_NSS_NG_REPO:-https://github.com/ModeSevenIndustrialSolutions/python-nss-ng.git}"
+REQUIREMENTS="${PYTHON_NSS_NG_REQUIREMENTS:-/tmp/requirements/python-nss-ng.txt}"
 
 # Logging functions
 log_info() {
@@ -26,10 +27,6 @@ log_info() {
 
 log_error() {
     echo "[ERROR] $*" >&2
-}
-
-log_warning() {
-    echo "[WARNING] $*" >&2
 }
 
 log_debug() {
@@ -49,127 +46,18 @@ check_existing_installation() {
     return 1
 }
 
-# Install required build dependencies (only needed for GitHub source builds)
-install_build_dependencies() {
-    log_info "Installing python-nss-ng build dependencies"
-
-    # First ensure runtime libraries are installed (required for pkgconfig detection)
-    local runtime_deps=()
-    for pkg in nss nspr nss-tools; do
-        if ! rpm -q "$pkg" >/dev/null 2>&1; then
-            runtime_deps+=("$pkg")
-        fi
-    done
-
-    if [[ ${#runtime_deps[@]} -gt 0 ]]; then
-        log_info "Installing NSS/NSPR runtime libraries: ${runtime_deps[*]}"
-        dnf install -y --setopt=install_weak_deps=False "${runtime_deps[@]}" || {
-            log_error "Failed to install NSS/NSPR runtime libraries"
-            return 1
-        }
-    fi
-
-    # Check if build dependencies are already installed
-    local missing_deps=()
-
-    for pkg in nss-devel nspr-devel python3-devel gcc; do
-        if ! rpm -q "$pkg" >/dev/null 2>&1; then
-            missing_deps+=("$pkg")
-        fi
-    done
-
-    if [[ ${#missing_deps[@]} -gt 0 ]]; then
-        log_info "Installing build dependencies: ${missing_deps[*]}"
-        # Try to install, but don't fail if nss-devel/nspr-devel unavailable
-        if ! dnf install -y --setopt=install_weak_deps=False "${missing_deps[@]}" 2>&1; then
-            log_warning "Some build dependencies failed to install, trying without nss-devel/nspr-devel"
-            # Install at least the basic packages
-            local fallback_deps=()
-            for pkg in python3-devel gcc; do
-                if ! rpm -q "$pkg" >/dev/null 2>&1; then
-                    fallback_deps+=("$pkg")
-                fi
-            done
-            if [[ ${#fallback_deps[@]} -gt 0 ]]; then
-                dnf install -y --setopt=install_weak_deps=False "${fallback_deps[@]}" || {
-                    log_error "Failed to install basic build dependencies"
-                    return 1
-                }
-            fi
-        fi
-    else
-        log_info "All required build dependencies are already installed"
-    fi
-}
-
-# Install from PyPI (recommended)
-install_from_pypi() {
-    log_info "Installing python-nss-ng from PyPI for $ARCH"
-
-    # Ensure pip is available
+# Ensure pip is available
+ensure_pip() {
     if ! command -v pip3 >/dev/null 2>&1; then
         log_error "pip3 not found, installing python3-pip"
         dnf install -y --setopt=install_weak_deps=False python3-pip
     fi
-
-    # Install python-nss-ng
-    # Note: Strip 'v' prefix if present for PyPI version
-    local pypi_version="${PYTHON_NSS_NG_VERSION#v}"
-    local pip_success=false
-    if [[ -z "$pypi_version" ]]; then
-        log_info "Installing latest version of python-nss-ng"
-        if pip3 install python-nss-ng 2>&1; then
-            pip_success=true
-        fi
-    else
-        log_info "Installing python-nss-ng version $pypi_version"
-        if pip3 install "python-nss-ng==${pypi_version}" 2>&1; then
-            pip_success=true
-        fi
-    fi
-
-    # Check if installation succeeded
-    if [[ "$pip_success" == "false" ]] || ! python3 -c "import nss" >/dev/null 2>&1; then
-        log_warning "PyPI installation failed or no wheel available for $ARCH"
-        log_info "Falling back to GitHub source installation"
-        return 1
-    fi
-
-    local installed_version
-    installed_version=$(python3 -c "import nss; print(nss.__version__)" 2>/dev/null || echo "unknown")
-    log_info "Python-NSS-NG installed successfully from PyPI: version $installed_version"
-}
-
-# Install from GitHub source (for development/testing)
-install_from_github() {
-    log_info "Installing python-nss-ng from GitHub source for $ARCH"
-
-    # Install build dependencies
-    install_build_dependencies
-
-    # Ensure pip is available
-    if ! command -v pip3 >/dev/null 2>&1; then
-        log_error "pip3 not found, installing python3-pip"
-        dnf install -y --setopt=install_weak_deps=False python3-pip
-    fi
-
-    # Install from git repository
-    local git_ref="${PYTHON_NSS_NG_VERSION:-main}"
-    log_info "Installing from ${PYTHON_NSS_NG_REPO}@${git_ref}"
-
-    pip3 install "git+${PYTHON_NSS_NG_REPO}@${git_ref}"
-
-    local installed_version
-    installed_version=$(python3 -c "import nss; print(nss.__version__)" 2>/dev/null || echo "unknown")
-    log_info "Python-NSS-NG installed successfully from GitHub: version $installed_version"
 }
 
 # Main installation function
 install_python_nss_ng() {
-    log_info "Installing python-nss-ng for architecture: $ARCH"
-    log_info "Installation source: $INSTALL_SOURCE"
-    log_debug "Repository: $PYTHON_NSS_NG_REPO"
-    log_debug "Version: ${PYTHON_NSS_NG_VERSION:-latest}"
+    log_info "Installing python-nss-ng for architecture: $(uname -m)"
+    log_info "Requirements lock: $REQUIREMENTS"
 
     # Check if already installed
     if check_existing_installation; then
@@ -177,23 +65,15 @@ install_python_nss_ng() {
         return 0
     fi
 
-    # Install based on source with fallback
-    case "$INSTALL_SOURCE" in
-        pypi)
-            if ! install_from_pypi; then
-                log_warning "PyPI installation failed, falling back to GitHub"
-                install_from_github
-            fi
-            ;;
-        github)
-            install_from_github
-            ;;
-        *)
-            log_error "Unknown installation source: $INSTALL_SOURCE"
-            log_error "Valid sources: pypi, github"
-            return 1
-            ;;
-    esac
+    if [[ ! -r "$REQUIREMENTS" ]]; then
+        log_error "Requirements lock not found: $REQUIREMENTS"
+        return 1
+    fi
+
+    ensure_pip
+
+    # Exactly what the lock names, every digest verified, wheels only
+    pip3 install --require-hashes --only-binary=:all: -r "$REQUIREMENTS"
 }
 
 # Verify installation
@@ -237,33 +117,24 @@ usage() {
     cat << EOF
 Usage: $0 [OPTIONS]
 
-Install python-nss-ng from PyPI or GitHub.
+Install python-nss-ng from its hash-locked requirements file.
 
 OPTIONS:
-    -h, --help              Show this help message
-    -d, --debug             Enable debug logging
-    -v, --verify            Verify installation after install
-    -s, --source SOURCE     Installation source (pypi|github) [default: pypi]
-    -V, --version VERSION   Specific version to install [default: latest]
-    -r, --repo URL          Git repository URL (for github source)
+    -h, --help               Show this help message
+    -d, --debug              Enable debug logging
+    -v, --verify             Verify installation after install
+    -r, --requirements FILE  Requirements lock to install from
+                             [default: $REQUIREMENTS]
 
 EXAMPLES:
-    # Install latest from PyPI (recommended)
+    # Install from the lock copied into the image and verify
     $0 --verify
 
-    # Install specific version from PyPI
-    $0 --source pypi --version 0.1.0 --verify
-
-    # Install from GitHub main branch
-    $0 --source github --verify
-
-    # Install specific GitHub tag/branch
-    $0 --source github --version v0.1.0 --verify
+    # Install from a lock elsewhere
+    $0 --requirements build-scripts/requirements/python-nss-ng.txt
 
 ENVIRONMENT VARIABLES:
-    INSTALL_SOURCE              Installation source (pypi|github)
-    PYTHON_NSS_NG_VERSION       Version to install
-    PYTHON_NSS_NG_REPO          GitHub repository URL
+    PYTHON_NSS_NG_REQUIREMENTS  Requirements lock to install from
     DEBUG                       Enable debug output (0|1)
 EOF
 }
@@ -286,16 +157,8 @@ main() {
                 verify=true
                 shift
                 ;;
-            -s|--source)
-                INSTALL_SOURCE="$2"
-                shift 2
-                ;;
-            -V|--version)
-                PYTHON_NSS_NG_VERSION="$2"
-                shift 2
-                ;;
-            -r|--repo)
-                PYTHON_NSS_NG_REPO="$2"
+            -r|--requirements)
+                REQUIREMENTS="$2"
                 shift 2
                 ;;
             *)
@@ -307,9 +170,7 @@ main() {
     done
 
     log_info "Starting python-nss-ng installation"
-    log_debug "INSTALL_SOURCE=$INSTALL_SOURCE"
-    log_debug "PYTHON_NSS_NG_VERSION=${PYTHON_NSS_NG_VERSION:-latest}"
-    log_debug "PYTHON_NSS_NG_REPO=$PYTHON_NSS_NG_REPO"
+    log_debug "REQUIREMENTS=$REQUIREMENTS"
 
     # Install python-nss-ng
     if ! install_python_nss_ng; then
