@@ -915,9 +915,9 @@ kiwisolver==1.5.1 \
     --hash=sha256:fc271a6f0a2126958f4090e5507b9da5848927dae331f8f763bd4aa642b3d2cd \
     --hash=sha256:febcce10f2bcdbb80b4ea919238a6a4ac13dbc4c7cadbe8d5d75c3682f8b5404
     # via matplotlib
-locust==2.46.5 \
-    --hash=sha256:5abc3c6a0bb4164bc161937a3badf5cddf24483a1bc57f609293023ec2310d04 \
-    --hash=sha256:f47cbde638f4a1d8c2d2693867fbc1bd8331dfebfca8c31e042e61199ab59ffa
+locust==2.46.7 \
+    --hash=sha256:a737bcf8d6728d4f0efe9e460ef9c69d0084e1dd085734db6e4775ece453b7fe \
+    --hash=sha256:cf112214068abe59615d36769db31ffd1430b67c6e5f693b9a23b8510224442b
     # via -r requirements.in
 markupsafe==3.0.4 \
     --hash=sha256:007e1ffd9bf65bb6ee96df7b258fc632a4868dd5566037986c64781f35a36e98 \
