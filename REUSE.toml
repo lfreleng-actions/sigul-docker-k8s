@@ -46,3 +46,14 @@ path = [
 ]
 SPDX-License-Identifier = "Apache-2.0"
 SPDX-FileCopyrightText = "2026 The Linux Foundation"
+
+# Hash locks: uv pip compile rewrites each whole, header included, and
+# Dependabot regenerates them the same way, so a header would not
+# survive a bump. The .in beside each carries the header.
+[[annotations]]
+path = [
+    "build-scripts/requirements/*.txt",
+    "soak/requirements.txt"
+]
+SPDX-License-Identifier = "Apache-2.0"
+SPDX-FileCopyrightText = "2026 The Linux Foundation"
