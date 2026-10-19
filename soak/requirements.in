@@ -20,6 +20,6 @@ docker==7.2.0
 # Load generation, percentile stats, CSV history. Pulls in gevent,
 # whose gevent.subprocess lets many real `sigul` invocations run in
 # one process.
-locust==2.46.5
+locust==2.46.7
 # Report charts.
 matplotlib==3.11.2
