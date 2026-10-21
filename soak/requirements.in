@@ -12,8 +12,9 @@
 # The client image ships no pip, so the runner bootstraps one with
 # ensurepip from Fedora's python-pip-wheel and this entry upgrades it
 # past the advisories build-scripts/requirements/advisories.in lists,
-# in the same hash-checked transaction as the tooling below.
-pip>=26.1.2
+# in the same hash-checked transaction as the tooling below. The floor
+# matches advisories.in, including 26.2.2's vendored certifi update.
+pip>=26.2.2
 # Docker SDK, used for container stats and process-level faults
 # (pause/restart). Avoids needing a docker CLI.
 docker==7.2.0
