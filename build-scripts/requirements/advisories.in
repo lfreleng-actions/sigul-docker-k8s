@@ -24,7 +24,7 @@
 pip>=26.2.2
 # 80.10.2: CVE-2026-59890 / GHSA-h35f-9h28-mq5c, a MANIFEST.in
 # exclusion bypass.
-setuptools>=83.0.0
+setuptools>=84.1.0
 # 49.0.0: CVE-2026-69247 / GHSA-g6cj-pr64-35w5, PKCS#7 EnvelopedData
 # decryption exposes a Bleichenbacher oracle (affects >=44.0.0 <50.0.0).
 cryptography>=50.0.0
