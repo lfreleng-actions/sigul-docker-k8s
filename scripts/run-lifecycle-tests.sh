@@ -325,6 +325,46 @@ else
 fi
 
 # ----------------------------------------------------------------------
+phase "6: a request child that dies fails only its own request"
+# ----------------------------------------------------------------------
+# Any request child that died abnormally - an unhandled exception, an
+# unknown exit status, a signal - used to end the server's main loop, so
+# one bad request stopped signing for every client until a restart
+# (#97). Kill the idle request child outright, as the kernel's OOM killer
+# would: the same server process must fork a replacement and go on
+# serving.
+if ! wait_for_server_steady 30; then
+    fail "server not in steady state before the crash scenario (procs=${procs}, established=${est})"
+fi
+parent="$(docker exec "$SERVER_CONTAINER" pgrep -o -f 'serve[r]\.py' | tr -d '[:space:]')"
+child="$(docker exec "$SERVER_CONTAINER" pgrep -P "$parent" | head -1 | tr -d '[:space:]')"
+note "server parent=${parent} idle child=${child}"
+if [[ -z "$child" ]] || ! docker exec "$SERVER_CONTAINER" kill -KILL "$child" 2>/dev/null; then
+    fail "could not kill the idle server child (pid '${child}')"
+else
+    sleep 2
+    if [[ "$(docker inspect -f '{{.State.Running}}' "$SERVER_CONTAINER" 2>/dev/null)" != "true" ]]; then
+        fail "the server exited when its request child died (container stopped)"
+    elif wait_for_server_steady 30 2>/dev/null; then
+        pass "server replaced the killed child and returned to steady state"
+    else
+        fail "server did not recover from a killed child (procs=${procs}, established=${est})"
+    fi
+    survivor="$(docker exec "$SERVER_CONTAINER" pgrep -o -f 'serve[r]\.py' 2>/dev/null | tr -d '[:space:]' || true)"
+    if [[ "$survivor" == "$parent" ]]; then
+        pass "the same server process is still serving (pid ${parent})"
+    else
+        fail "server process ${parent} exited after its child died (now '${survivor}')"
+    fi
+    out="$(list_users)" || true
+    if [[ "$out" == *admin* ]]; then
+        pass "the next request succeeded after the child was killed"
+    else
+        fail "the next request failed after the child was killed: $out"
+    fi
+fi
+
+# ----------------------------------------------------------------------
 echo
 echo "Lifecycle tests: ${PASSED} passed, ${FAILED} failed"
 (( FAILED == 0 ))

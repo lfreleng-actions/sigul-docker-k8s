@@ -1031,6 +1031,40 @@ kinds of key. Without the patch, the failing paths raise
 same through client, bridge and server, and checks the server is still
 running afterwards.
 
+### 22-fix-server-child-crash.patch
+
+**Status:** CRITICAL - one failing request stops signing for every client
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** Server
+
+**Problem:**
+The server forks one child per request. When a child died abnormally (an
+unhandled exception, an unknown exit status, or a signal such as an OOM
+kill), the parent logged `Child died with status N` and left its main
+loop, so `sigul_server` exited. Any defect in any request handler, reached
+by any authenticated client, became an outage for every project on the
+server, until something restarted it. In the compose stack nothing did
+(`restart: "no"`). On Kubernetes the liveness probe restarted the pod only
+once the heartbeat had gone stale (patch 19). An import that hit #96 took
+the server down this way (#97).
+
+**Fix:**
+A child that dies abnormally now fails only its own request: the parent
+logs it as before, then forks the next child. If `MAX_CHILD_DEATHS` (5)
+children die within `CHILD_DEATH_WINDOW_SECONDS` (60), the request path
+itself is broken. The server then exits as it used to, so its supervisor
+restarts it rather than having it fork failing children forever. Five
+deaths a minute is far beyond what one bad request or an occasional OOM
+kill produces, and soon enough to restart a pod that cannot serve.
+
+**Test:** `test/test_server_child_crash.py` drives the rule the main loop
+applies: one death keeps serving, five within the window exit, older deaths
+expire, and a steady trickle never exits. Phase 6 of
+`scripts/run-lifecycle-tests.sh` kills the idle request child on the
+running stack with `SIGKILL`. The same server process must fork a
+replacement and serve the next request. Without the patch the container
+exits and every later request fails.
+
 ## Applying Patches
 
 The Docker build process automatically applies these patches:
