@@ -648,4 +648,5 @@ This evaluation is based on analysis of:
   `docs/TLS_DEBUGGING_GUIDE.md`, `pki/*`
 - `configs/{server,bridge}.conf.template`, `patches/README.md`
 - `python-nss-ng`: `README.md`, `pyproject.toml`, `meson.build`,
-  release workflows; `build-scripts/install-python-nss*.sh`
+  release workflows; the python-nss-ng install in
+  `Dockerfile.{server,bridge,client}`

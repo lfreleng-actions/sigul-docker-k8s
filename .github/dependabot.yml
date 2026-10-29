@@ -17,9 +17,13 @@ updates:
       default-days: 7
     open-pull-requests-limit: 15
 
-  # Keep the pinned Fedora base-image digest in the Dockerfiles current.
+  # Keep the pinned Fedora and uv image digests in the Dockerfiles
+  # current. The soak runner's base is the client image under test, so
+  # only its uv stage is pinned there.
   - package-ecosystem: "docker"
-    directory: "/"
+    directories:
+      - "/"
+      - "/soak"
     schedule:
       interval: "weekly"
     commit-message:
