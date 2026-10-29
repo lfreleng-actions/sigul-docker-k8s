@@ -1300,6 +1300,26 @@ jobs:
             "${SIGUL_SERVER_IMAGE}" \
             /test/test_server_subkey_import.py
 
+      - name: 'Test a request child crash'
+        shell: bash
+        env:
+          SIGUL_SERVER_IMAGE: >-
+            server-${{
+              steps.runner-arch.outputs.platform-id
+            }}-image:test
+        run: |
+          # Regression guard for patches/22. A request child that died
+          # abnormally ended the server's main loop, so one failing
+          # request stopped signing for every client. Checks that a
+          # death fails only its request while a crash loop still exits;
+          # scripts/run-lifecycle-tests.sh kills a real child.
+          docker run --rm \
+            --user 1000:1000 \
+            -v "${PWD}/test:/test:ro" \
+            --entrypoint python3 \
+            "${SIGUL_SERVER_IMAGE}" \
+            /test/test_server_child_crash.py
+
       - name: 'Test a clean redeploy over the running stack'
         shell: bash
         env:
