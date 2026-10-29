@@ -2,6 +2,13 @@
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
 # Simplified Dockerfile for sigul server using dedicated build scripts
+
+# uv installs every Python package below. Each install mounts its
+# binary from this stage for the one RUN that needs it, so uv never
+# lands in an image layer or the SBOM. Pinned by digest; Dependabot's
+# docker ecosystem keeps it current alongside the Fedora base.
+FROM ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0 AS uv
+
 # Base image pinned by digest for supply-chain integrity (Scorecard
 # Pinned-Dependencies). Dependabot maintains the digest via the docker
 # ecosystem entry in .github/dependabot.yml.
@@ -22,7 +29,7 @@ RUN dnf update -y && \
 RUN dnf update -y && \
     dnf install -y --setopt=install_weak_deps=False \
         git which tar xz patch \
-        python3-devel python3-pip python3-setuptools python3-cryptography \
+        python3-devel python3-setuptools python3-cryptography \
         python3-requests python3-six python3-pexpect \
         sqlite \
         nss-tools nmap-ncat \
@@ -34,11 +41,20 @@ RUN dnf update -y && \
         wget rsync && \
     dnf clean all
 
-# Every pip install below reads a hash lock from
-# build-scripts/requirements. uv compiles each lock from the .in
-# beside it, Dependabot bumps the locks, and pip runs with
-# --require-hashes, so a build proceeds only with artefacts whose
-# sha256 matches the lock. The copy goes once the last install has run.
+# Every install below reads a hash lock from build-scripts/requirements.
+# uv compiles each lock from the .in beside it, Dependabot bumps the
+# locks, and uv installs with --require-hashes, so a build proceeds only
+# with artefacts whose sha256 matches the lock. The copy goes once the
+# last install has run.
+#
+# No image installs pip: it vendors certifi, urllib3 and setuptools
+# under pip/_vendor/ without dist-info, out of the SBOM's sight. uv
+# installs with --system into the interpreter dnf provides, writing to
+# /usr/local, where Fedora's sysconfig sends installs made outside an
+# RPM build, exactly as pip did. --system-certs trusts Fedora's
+# ca-certificates store, which dnf updates and the SBOM covers, rather
+# than the root store bundled in the uv binary. --no-cache keeps
+# downloads out of the image.
 #
 # --require-hashes stops at the packages it installs: a source build
 # would pull its build backend into an isolated environment that the
@@ -50,30 +66,25 @@ COPY build-scripts/requirements/ /tmp/requirements/
 # Patch CVEs that fedora:44 ships unpatched in its Python packages.
 # advisories.in lists each advisory and its first fixed release; the
 # lock resolves those floors to the newest release at compile time.
-# Upgrading via pip is required because Fedora 44 has not (yet) pushed
-# fixed builds of every package listed, so 'dnf upgrade' alone leaves
-# the flagged versions in place. --break-system-packages overrides
-# Fedora's EXTERNALLY-MANAGED marker (PEP 668) so the upgraded versions
-# land under /usr/local, ahead of the dnf tree. The upgraded pip
-# protects the installs below; pip itself is removed once they finish
-# (build-scripts/remove-pip.sh), because no pip release fixes the
-# urllib3 it vendors.
+# Installing from PyPI is required because Fedora 44 has not (yet)
+# pushed fixed builds of every package listed, so 'dnf upgrade' alone
+# leaves the flagged versions in place. --break-system-packages
+# overrides any EXTERNALLY-MANAGED marker (PEP 668) so the upgraded
+# versions land under /usr/local, ahead of the dnf tree.
 #
 # setuptools >= 82 no longer bundles pkg_resources. The dnf-managed
 # copy under /usr/lib stays on sys.path and still satisfies
 # 'import pkg_resources' for any consumer that needs it.
 #
 # The loop then drops the superseded dist-info from the dnf tree for
-# every package pip placed under /usr/local, the lock's transitive
+# every package uv placed under /usr/local, the lock's transitive
 # dependencies included, so the Grype SBOM scan reports only the
 # version that is imported; leaving both would make Grype flag the old
-# metadata as a second, vulnerable install. Iterating over what pip
+# metadata as a second, vulnerable install. Iterating over what uv
 # installed also covers a dnf-provided version that already matches
-# the lock: pip then installs nothing, there is no replacement to
+# the lock: uv then installs nothing, there is no replacement to
 # point at, and the dnf metadata stays, or the package would disappear
-# from the SBOM altogether. pip is skipped: remove-pip.sh deletes the
-# dnf package outright, and dnf needs that metadata intact to remove
-# it cleanly.
+# from the SBOM altogether.
 #
 # The lock pins exact versions, so a dnf update that overtook the lock
 # would be shadowed by the older locked release until Dependabot's
@@ -84,31 +95,34 @@ COPY build-scripts/requirements/ /tmp/requirements/
 # land in Fedora's platform-specific lib64/ tree - in both the dnf
 # and /usr/local install roots. Checking only lib/ leaves the stale
 # dnf dist-info behind and Grype keeps flagging the old version.
-RUN python3 -m pip install --require-hashes --only-binary=:all: \
-        --break-system-packages -r /tmp/requirements/advisories.txt && \
+RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
+    uv pip install --system --break-system-packages --no-cache \
+        --system-certs --require-hashes --only-binary :all: \
+        -r /tmp/requirements/advisories.txt && \
     for info in /usr/local/lib*/python3*/site-packages/*.dist-info; do \
         [ -d "$info" ] || continue; \
         name="${info##*/}"; name="${name%%-*}"; \
-        case "$name" in pip) continue ;; esac; \
         rm -rf /usr/lib*/python3*/site-packages/"${name}"-*.dist-info; \
     done
 
-# Install EPEL-dependent packages and Python packages via pip
+# Install EPEL-dependent packages and Python packages via uv
 # Note: nss-devel and nspr-devel removed - python-nss-ng installed from PyPI (pre-built)
 # Note: Python 3.13/3.14 removed the crypt module - install passlib for compatibility;
 #       build-scripts/requirements/sigul.in explains the SQLAlchemy and passlib pins.
 # Note: SQLAlchemy 1.3.24 predates Python 3.14 wheels and builds from its
 #       sdist; --no-build-isolation makes that build use the hash-locked
-#       setuptools installed above rather than one pip would fetch,
+#       setuptools installed above rather than one uv would fetch,
 #       unverified, into an isolated environment.
 # Note: python3-gpg required for GPG operations
 # Note: python3-fedora was dropped between Fedora 41 and 44; sigul's bridge
 #       imports it conditionally (try/except ImportError) only when FAS
 #       authentication is enabled, which we do not use, so we don't need it.
 # Note: gnupg2 is preinstalled in fedora:44, so it's not in the install list.
-RUN dnf install -y --setopt=install_weak_deps=False \
+RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
+    dnf install -y --setopt=install_weak_deps=False \
         rpm-head-signing rpm-sign jq python3-gpg && \
-    pip3 install --require-hashes --no-build-isolation \
+    uv pip install --system --break-system-packages --no-cache \
+        --system-certs --require-hashes --no-build-isolation \
         -r /tmp/requirements/sigul.txt && \
     dnf clean all
 
@@ -121,12 +135,19 @@ COPY patches/ /tmp/patches/
 # Copy local sigul source for debugging builds
 COPY .build-context/sigul /build-context/sigul/
 
-# Install python-nss-ng from its hash lock; this is the last install
-# that reads /tmp/requirements, so the copy goes with the script.
-COPY build-scripts/install-python-nss.sh /tmp/install-python-nss.sh
-RUN chmod +x /tmp/install-python-nss.sh && \
-    /tmp/install-python-nss.sh --verify && \
-    rm -r /tmp/install-python-nss.sh /tmp/requirements
+# Install python-nss-ng from its hash lock, then prove the bindings
+# import and NSS initialises. Wheels only: the sdist's build would pull
+# meson-python into an isolated environment that --require-hashes does
+# not reach, so a Python with no wheel fails here, visibly. This is the
+# last install that reads /tmp/requirements, so the copy goes with it.
+RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
+    uv pip install --system --break-system-packages --no-cache \
+        --system-certs --require-hashes --only-binary :all: \
+        -r /tmp/requirements/python-nss-ng.txt && \
+    python3 -c "import nss" && \
+    python3 -c "import nss.nss, nss.error, nss.io, nss.ssl" && \
+    python3 -c "import nss.nss; nss.nss.nss_init_nodb()" && \
+    rm -r /tmp/requirements
 
 # Copy and run sigul installation script
 COPY build-scripts/install-sigul.sh /tmp/install-sigul.sh
@@ -135,7 +156,10 @@ RUN chmod +x /tmp/install-sigul.sh && \
     rm /tmp/install-sigul.sh && \
     rm -rf /tmp/patches
 
-# pip has finished its work; remove it and its vendored urllib3 copies
+# No install above used pip. remove-pip.sh guards against a dnf
+# dependency pulling python3-pip back in: it removes any copy it finds,
+# then fails the build if pip is importable, on PATH, or has left a
+# pip/_vendor tree behind.
 COPY build-scripts/remove-pip.sh /tmp/remove-pip.sh
 RUN /tmp/remove-pip.sh && \
     rm /tmp/remove-pip.sh

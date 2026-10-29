@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 #
-# The NSS bindings every image installs from PyPI through
-# build-scripts/install-python-nss.sh, which reads the lock compiled
-# from this file (python-nss-ng.txt). The lock carries the digest of
-# every artefact of the release, so pip can take the wheel built for
-# the image's Python and architecture; the script refuses the sdist,
+# The NSS bindings every image installs from PyPI. Each of
+# Dockerfile.{bridge,client,server} installs the lock compiled from
+# this file (python-nss-ng.txt) with uv. The lock carries the digest of
+# every artefact of the release, so uv can take the wheel built for
+# the image's Python and architecture; the install refuses the sdist,
 # whose build tooling --require-hashes would not reach.
 #
 # Compile the lock with:
