@@ -159,7 +159,7 @@ certifi==2026.10.19 \
     # via
     #   geventhttpclient
     #   requests
-cffi==2.1.1 ; (implementation_name == 'pypy' and platform_python_implementation != 'CPython') or (implementation_name == 'pypy' and sys_platform != 'win32') or (platform_python_implementation == 'CPython' and sys_platform == 'win32') \
+cffi==2.1.1 ; implementation_name == 'pypy' or (platform_python_implementation == 'CPython' and sys_platform == 'win32') \
     --hash=sha256:046bfc24911b37851ee1b51aab8bffe713d89c68c6a057b09484ce9fd5f69b4e \
     --hash=sha256:06c72bb76605a4b0cd0aad6930b69d4baf7dd5d806cfc409b824191099700e66 \
     --hash=sha256:0beceaabe56af686895136a2de78db54ecd8e4046b236b8fd6d6cb61389e9bf2 \
@@ -958,9 +958,9 @@ kiwisolver==1.5.1 \
     --hash=sha256:fc271a6f0a2126958f4090e5507b9da5848927dae331f8f763bd4aa642b3d2cd \
     --hash=sha256:febcce10f2bcdbb80b4ea919238a6a4ac13dbc4c7cadbe8d5d75c3682f8b5404
     # via matplotlib
-locust==2.46.7 \
-    --hash=sha256:a737bcf8d6728d4f0efe9e460ef9c69d0084e1dd085734db6e4775ece453b7fe \
-    --hash=sha256:cf112214068abe59615d36769db31ffd1430b67c6e5f693b9a23b8510224442b
+locust==2.47.0 \
+    --hash=sha256:70ffe28cdb7a3224a4efb60b31d585c26343d5679fec8d5b18017ffb6893b423 \
+    --hash=sha256:a773af200bb93b1bed0b99c48c18f11343ed159803a8af3ee3ad0696b05b7d09
     # via -r requirements.in
 markupsafe==3.0.4 \
     --hash=sha256:007e1ffd9bf65bb6ee96df7b258fc632a4868dd5566037986c64781f35a36e98 \
@@ -1454,7 +1454,7 @@ psutil==7.2.2 \
     --hash=sha256:eed63d3b4d62449571547b60578c5b2c4bcccc5387148db46e0c2313dad0ee00 \
     --hash=sha256:fd04ef36b4a6d599bbdb225dd1d3f51e00105f6d48a28f006da7f9822f2606d8
     # via locust
-pycparser==3.12 ; (implementation_name == 'pypy' and platform_python_implementation != 'CPython') or (implementation_name != 'PyPy' and platform_python_implementation == 'CPython' and sys_platform == 'win32') or (implementation_name == 'pypy' and sys_platform != 'win32') \
+pycparser==3.12 ; implementation_name == 'pypy' or (implementation_name != 'PyPy' and implementation_name != 'pypy' and platform_python_implementation == 'CPython' and sys_platform == 'win32') \
     --hash=sha256:a076f3f489b39b43ed13563a1dafe42447445bec2e294154ec5c57fcdda4c85e \
     --hash=sha256:f03387877eab82ce01bbdfd0ba7252ee55a90b1c708d5129e2ce915475cf1db6
     # via cffi
