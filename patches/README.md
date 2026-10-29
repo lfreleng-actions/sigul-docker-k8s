@@ -1065,6 +1065,42 @@ running stack with `SIGKILL`. The same server process must fork a
 replacement and serve the next request. Without the patch the container
 exits and every later request fails.
 
+### 23-fix-client-connect-once.patch
+
+**Status:** CRITICAL - a load-balanced bridge fails most connections
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** Client (and the server's connection to the bridge)
+
+**Problem:**
+`DoubleTLSClient` resolves the bridge name, then calls `connect()` on
+one socket for every address returned, without stopping at the first
+success. On a connected socket the next call fails with
+`PR_IS_CONNECTED_ERROR`, and a socket that failed to connect is not
+reusable. Only the first error is reported, so the order of the DNS answer
+decided the outcome. A bridge name with a single address worked. A
+load-balanced one did not: `sigul-bridge.opensearch.org` resolves to
+three NLB addresses, which NSPR returns as nine entries, and the released
+client failed against it with `PR_IS_CONNECTED_ERROR` ... `NSPR
+connection reset`. The same loop is in upstream 1.4 and in the legacy
+0.207 client. That is why Jenkins pins every bridge to one address with a
+hosts entry, which goes stale when a load balancer's addresses change.
+
+**Fix:**
+Each distinct address gets a fresh socket, configured as before
+(certificate options, client authentication and the expected host name),
+and the first that connects is kept. If none does, the first error is
+reported, as before, so a bridge that refuses everything still fails
+with `Connection refused`. The server dials the bridge through the same
+code, but by one in-cluster address, so nothing changes for it.
+
+**Test:** Phase 7 of `scripts/run-lifecycle-tests.sh` gives the bridge's
+name a second, refusing address: a decoy container sharing the bridge's
+network alias, which Docker's DNS returns alongside the bridge in
+rotating order. Eight requests must all succeed. Without the patch about
+half fail; with it all do. Against the production OpenSearch bridge,
+unpinned, the released client fails and the patched one fetches the
+key.
+
 ## Applying Patches
 
 The Docker build process automatically applies these patches:

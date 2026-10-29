@@ -123,7 +123,10 @@ wait_for_server_steady() {
 }
 
 # Phase 4 freezes the bridge; never leave it that way, whatever happens.
-trap 'docker unpause "$BRIDGE_CONTAINER" >/dev/null 2>&1 || true' EXIT
+# Phase 4 freezes the bridge and phase 7 adds a decoy bridge address;
+# never leave either behind, whatever happens.
+DECOY_CONTAINER="sigul-bridge-decoy"
+trap 'docker unpause "$BRIDGE_CONTAINER" >/dev/null 2>&1 || true; docker rm -f "$DECOY_CONTAINER" >/dev/null 2>&1 || true' EXIT
 
 # ----------------------------------------------------------------------
 phase "0: baseline - one request must work before we break anything"
@@ -362,6 +365,51 @@ else
     else
         fail "the next request failed after the child was killed: $out"
     fi
+fi
+
+# ----------------------------------------------------------------------
+phase "7: a bridge name with several addresses"
+# ----------------------------------------------------------------------
+# A load-balanced bridge's name resolves to several addresses. The client
+# called connect() on one socket for each, without stopping at the first
+# success, so it failed whenever an address did not answer (and with
+# PR_IS_CONNECTED_ERROR once one had). Give the bridge's name a second
+# address that refuses: a decoy container sharing the bridge's network
+# alias, which Docker's DNS returns alongside the bridge in rotating
+# order. Every request must still succeed (patches/23).
+bridge_name="$(docker run --rm -v "${CLIENT_CONFIG_VOLUME}:/etc/sigul:ro" --entrypoint sh \
+    "$CLIENT_IMAGE" -c "sed -n 's/^bridge-hostname:[[:space:]]*//p' /etc/sigul/client.conf" \
+    | tr -d '[:space:]')"
+network="$NETWORK"
+if [[ -z "$bridge_name" ]]; then
+    fail "could not read bridge-hostname from the client configuration"
+elif ! docker run -d --rm --name "$DECOY_CONTAINER" --network "$network" \
+        --network-alias "$bridge_name" --entrypoint sleep "$CLIENT_IMAGE" 600 \
+        >/dev/null 2>&1; then
+    fail "could not start the decoy bridge address"
+else
+    addresses="$(docker run --rm --network "$network" --entrypoint getent \
+        "$CLIENT_IMAGE" ahostsv4 "$bridge_name" | awk '{print $1}' | sort -u | wc -l | tr -d '[:space:]')"
+    note "${bridge_name} now resolves to ${addresses} addresses"
+    if [[ "$addresses" -lt 2 ]]; then
+        fail "the decoy did not give ${bridge_name} a second address"
+    else
+        ok=0
+        for n in 1 2 3 4 5 6 7 8; do
+            out="$(list_users)" || true
+            if [[ "$out" == *admin* ]]; then
+                ok=$((ok + 1))
+            else
+                note "request $n failed: $(tail -1 <<< "$out")"
+            fi
+        done
+        if (( ok == 8 )); then
+            pass "8 requests through a two-address bridge name all succeeded"
+        else
+            fail "only ${ok}/8 requests through a two-address bridge name succeeded"
+        fi
+    fi
+    docker rm -f "$DECOY_CONTAINER" >/dev/null 2>&1 || true
 fi
 
 # ----------------------------------------------------------------------
