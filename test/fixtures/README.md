@@ -87,3 +87,34 @@ The script:
 
 After running, commit all four files in a single PR with a clear
 message explaining the rotation reason.
+
+## The subkey fixture
+
+A second key covers importing a key whose primary secret is a stub (#96).
+That is the shape a project's `gpg --export-secret-subkeys` produces when it
+hands over a signing key and keeps its primary key offline.
+
+- `regenerate-subkey-import-test-key.sh`: developer-time helper that
+  regenerates the four files below. Not run in CI.
+- `sigul-import-subkey-test-key.b64`: the subkey export, encoded as
+  above, under the same public outer passphrase
+  (`sigul-import-test.passphrase`).
+- `sigul-import-subkey-test-key.passphrase`: the passphrase that
+  protects the signing subkey. Public.
+- `sigul-import-subkey-test-key.primary.fingerprint` and
+  `sigul-import-subkey-test-key.subkey.fingerprint`: the primary key's and
+  the signing subkey's fingerprints. A signature made after import must come
+  from the subkey and verify against the primary key. Public.
+
+The key is a v4 RSA 4096 primary key (sign and certify, no expiry) with an
+RSA 4096 signing subkey that expires after 10 years. The UID carries the
+same `PUBLICLY-KNOWN-THROWAWAY-DO-NOT-USE-IN-PRODUCTION` marker. The script
+refuses to write an export that lacks the `gnu-dummy` primary stub, holds
+other than one secret subkey, or contains non-v4 key packets. To regenerate:
+
+```sh
+test/fixtures/regenerate-subkey-import-test-key.sh
+```
+
+`test/test_server_subkey_import.py` and case 1.10 of
+`scripts/run-signing-tests.sh` use it.

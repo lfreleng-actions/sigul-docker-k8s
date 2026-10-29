@@ -1278,6 +1278,28 @@ jobs:
             "${SIGUL_SERVER_IMAGE}" \
             /test/test_server_request_alarm.py
 
+      - name: 'Test importing a subkey-only key'
+        shell: bash
+        env:
+          SIGUL_SERVER_IMAGE: >-
+            server-${{
+              steps.runner-arch.outputs.platform-id
+            }}-image:test
+        run: |
+          # Regression guard for patches/21. A key exported with
+          # 'gpg --export-secret-subkeys' has a stub for its primary
+          # secret; re-protecting it on import ended in a GnuPG FAILURE
+          # status that crashed the server, as a wrong import passphrase
+          # did for any key, and a failed import left the subkey's
+          # secret behind. Runs the server's own import, re-protection
+          # and deletion code against the fixtures in test/fixtures.
+          docker run --rm \
+            --user 1000:1000 \
+            -v "${PWD}/test:/test:ro" \
+            --entrypoint python3 \
+            "${SIGUL_SERVER_IMAGE}" \
+            /test/test_server_subkey_import.py
+
       - name: 'Test a clean redeploy over the running stack'
         shell: bash
         env:

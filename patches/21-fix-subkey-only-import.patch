@@ -1,0 +1,166 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Import keys whose primary secret is a stub. An import re-protects the
+# key's secrets under the server's passphrase through 'gpg --edit-key'
+# 'passwd'; GnuPG cannot re-protect a primary secret it does not have, so
+# for a 'gpg --export-secret-subkeys' export the session ends in FAILURE
+# although the subkey was re-protected. That status reached a callback
+# with no case for it, which raised NotImplementedError and took the
+# server down; a wrong import passphrase ends the same way, for any key.
+# FAILURE is now recorded, and accepted only for a key whose primary
+# secret is absent once every secret present accepts the new passphrase
+# and refuses the old one. Deleting a key also removes the subkey secrets
+# gpgme leaves behind, so a failed import can be retried (#96). See
+# patches/README.md.
+#
+--- a/src/server_common.py
++++ b/src/server_common.py
+@@ -435,10 +435,36 @@ def gpg_public_key(config, fingerprint):
+
+
+ def gpg_delete_key(config, fingerprint):
+-    '''Delete the specified key.'''
++    '''Delete the specified key, including every secret it had.'''
+     ctx = _gpg_open(config)
+     key = ctx.get_key(fingerprint, True)
++    keygrips = [subkey.keygrip for subkey in key.subkeys
++                if subkey.secret and getattr(subkey, 'keygrip', None)]
+     ctx.delete(key, True)
++    _gpg_delete_secrets(config, keygrips)
++
++
++def _gpg_delete_secrets(config, keygrips):
++    '''Remove secret keys that deleting their key left behind.
++
++    For a key whose primary secret is a stub (gpg --export-secret-subkeys),
++    gpgme deletes the public key but leaves the subkey secrets, and a later
++    import of the same key is then refused. Remove each through the agent,
++    as gpg --delete-secret-keys would.
++
++    '''
++    agent = os.path.join(os.path.dirname(settings.gnupg_bin),
++                         'gpg-connect-agent')
++    for keygrip in keygrips:
++        path = os.path.join(config.gnupg_home, 'private-keys-v1.d',
++                            keygrip + '.key')
++        if not os.path.exists(path):
++            continue
++        subprocess.call([agent, '--homedir', config.gnupg_home,
++                         'DELETE_KEY --force ' + keygrip, '/bye'],
++                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++        if os.path.exists(path):
++            raise GPGError('Could not delete secret key %s' % keygrip)
+
+
+ def gpg_edit_key(config, fingerprint, input_states, ignored_states):
+@@ -569,6 +595,8 @@ class _ChangePasswordResponder(object):
+         self.quit_cmd_sent = False
+         self.want_new_passphrase = None
+         self.sent_old_pw = False
++        # The edit session's FAILURE status, if GnuPG reported one
++        self.failure = None
+         # pygpgme overrides any exceptions in the callback, store them here
+         self.exception = None
+
+@@ -608,6 +636,11 @@ class _ChangePasswordResponder(object):
+                 self.want_new_passphrase = True
+             elif status == ourgpg.constants.STATUS_BAD_PASSPHRASE:
+                 raise GPGError("Invalid passphrase")
++            elif status == ourgpg.constants.STATUS_FAILURE:
++                # The session's overall result. A key whose primary secret
++                # is a stub ends with one even when every secret present
++                # was re-protected; gpg_change_password decides.
++                self.failure = args
+             else:
+                 logging.error('Unexpected GPG edit callback: (%s, %s)',
+                               repr(status), repr(args))
+@@ -633,11 +666,87 @@ def gpg_change_password(config, fingerprint, old_passphrase, new_passphrase):
+     except ourgpg.GPGMEError:
+         if responder.exception is not None:
+             raise responder.exception
+-        raise
++        if responder.failure is None:
++            raise
+     if (not responder.passwd_cmd_sent or not responder.want_new_passphrase
+             or not responder.quit_cmd_sent):
+         logging.error('Unexpected state when changing GPG key password')
+         raise NotImplementedError()
++    if responder.failure is not None:
++        _check_subkey_only_rewrap(config, key, old_passphrase,
++                                  new_passphrase, responder.failure)
++
++
++def _check_subkey_only_rewrap(config, key, old_passphrase, new_passphrase,
++                              failure):
++    '''Accept a failed passphrase change only for a subkey-only key.
++
++    GnuPG cannot re-protect a primary key whose secret is a stub, so the
++    session ends in FAILURE although every secret present was
++    re-protected. Accept it only when the primary secret is absent and a
++    signing subkey's secret is present, and only once every secret present
++    accepts the new passphrase and refuses the old one.
++
++    '''
++    secrets = [subkey for subkey in key.subkeys[1:] if subkey.secret]
++    if key.subkeys[0].secret or not any(subkey.can_sign for subkey in secrets):
++        logging.error('GPG passphrase change failed: %s', failure)
++        raise GPGError('Changing the key passphrase failed')
++    new_passphrase = _passphrase_bytes(new_passphrase)
++    old_passphrase = _passphrase_bytes(old_passphrase)
++    for subkey in secrets:
++        if not _gpg_passphrase_unlocks(config, subkey.keygrip,
++                                       new_passphrase):
++            raise GPGError('The new passphrase does not unlock the key')
++        if (old_passphrase != new_passphrase
++                and _gpg_passphrase_unlocks(config, subkey.keygrip,
++                                            old_passphrase)):
++            raise GPGError('The key is still protected by its old passphrase')
++    logging.info('Re-protected a key whose primary secret is not present')
++
++
++def _passphrase_bytes(passphrase):
++    if isinstance(passphrase, str):
++        return passphrase.encode('utf-8')
++    return passphrase
++
++
++def _gpg_passphrase_unlocks(config, keygrip, passphrase):
++    '''Return True if passphrase unlocks the secret key with keygrip.
++
++    The server's own agent may still hold the key unlocked from the edit
++    session, and would accept whatever passphrase is offered. Test the
++    secret as stored instead: copy it into a throwaway home and ask a fresh
++    agent there to verify the passphrase, which changes nothing.
++
++    '''
++    home = tempfile.mkdtemp(prefix='sigul-check-')
++    bindir = os.path.dirname(settings.gnupg_bin)
++    try:
++        os.mkdir(os.path.join(home, 'private-keys-v1.d'), 0o700)
++        shutil.copy(os.path.join(config.gnupg_home, 'private-keys-v1.d',
++                                 keygrip + '.key'),
++                    os.path.join(home, 'private-keys-v1.d'))
++        generate_gpg_config(home)
++        passphrase_file = os.path.join(home, 'passphrase')
++        fd = os.open(passphrase_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
++                     0o600)
++        with os.fdopen(fd, 'wb') as f:
++            f.write(passphrase)
++        reply = subprocess.run(
++            [os.path.join(bindir, 'gpg-connect-agent'), '--homedir', home,
++             '/definqfile PASSPHRASE ' + passphrase_file,
++             'OPTION pinentry-mode=loopback',
++             'PASSWD --verify ' + keygrip, '/bye'],
++            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
++        lines = reply.decode('utf-8', 'replace').splitlines()
++        return (len(lines) >= 2 and lines[-1] == 'OK'
++                and not any(line.startswith('ERR') for line in lines))
++    finally:
++        subprocess.call([os.path.join(bindir, 'gpgconf'), '--homedir', home,
++                         '--kill', 'all'],
++                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++        shutil.rmtree(home, ignore_errors=True)
+
+
+ def gpg_encrypt_symmetric(config, cleartext, passphrase):

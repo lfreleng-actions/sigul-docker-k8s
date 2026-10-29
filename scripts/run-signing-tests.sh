@@ -407,7 +407,7 @@ unset _REPRO_NETWORK _REPRO_NSS _REPRO_CFG _REPRO_WORK _REPRO_FIX _REPRO_IMG
 
 phase "0: STATE RESET (clean slate for idempotent reruns)"
 
-for _key in ci-test-new-key ci-test-imported-key; do
+for _key in ci-test-new-key ci-test-imported-key ci-test-subkey-only-key; do
     note "Best-effort delete of $_key from server DB (ignoring errors)"
     printf '%s\0' "$ADMIN_PASSWORD" \
         | docker run --rm -i \
@@ -626,6 +626,106 @@ if grep -q "^${IMPORT_KEY_NAME} " <<< "$OUT"; then
 else
     pass "list-keys no longer reports ${IMPORT_KEY_NAME}"
 fi
+
+# ----------------------------------------------------------------------
+testcase "1.10 import-key: a subkey-only key (primary secret is a stub)"
+
+note "A key exported with 'gpg --export-secret-subkeys' carries only its"
+note "signing subkey's secret: how a project hands over a signing key"
+note "while keeping its primary key offline.  Importing one used to"
+note "crash the server and leave the subkey secret behind (#96)."
+
+SUBKEY_KEY_NAME="ci-test-subkey-only-key"
+SUBKEY_PRIMARY_FP="$(cat "${FIXTURES_DIR}/sigul-import-subkey-test-key.primary.fingerprint")"
+SUBKEY_SIGNING_FP="$(cat "${FIXTURES_DIR}/sigul-import-subkey-test-key.subkey.fingerprint")"
+SIGUL_TEST_PW_SUBKEY="$(cat "${FIXTURES_DIR}/sigul-import-subkey-test-key.passphrase")"
+export SIGUL_TEST_PW_SUBKEY
+export SIGUL_TEST_PW_SUBKEY_NEW="ci-subkey-only-passphrase-after-rewrap"
+note "Expected primary ${SUBKEY_PRIMARY_FP}, signing subkey ${SUBKEY_SIGNING_FP}"
+
+showrun "docker run --rm \\
+    -v '${FIXTURES_DIR}:/fixtures:ro' \\
+    -v '${HOST_WORKDIR}:/work:rw' \\
+    --user 1000:1000 \\
+    --entrypoint bash \\
+    '${CLIENT_IMAGE}' -c \\
+    'base64 -d /fixtures/sigul-import-subkey-test-key.b64 \\
+        | gpg --batch --pinentry-mode loopback \\
+            --passphrase-file /fixtures/sigul-import-test.passphrase \\
+            --decrypt > /work/import-subkey-test-key.asc 2>/dev/null'"
+
+if [[ ! -s "$(hostpath /work/import-subkey-test-key.asc)" ]]; then
+    fail "Failed to decode the subkey-only fixture"
+elif sigul_run "ADMIN,SUBKEY,SUBKEY_NEW" \
+    "sigul --batch -c /etc/sigul/client.conf \\
+        import-key --key-admin admin \\
+        ${SUBKEY_KEY_NAME} /work/import-subkey-test-key.asc"; then
+    pass "import-key accepted the subkey-only key"
+else
+    fail "import-key exited non-zero for the subkey-only key"
+fi
+
+if docker exec sigul-server pgrep -f 'serve[r]\.py' >/dev/null 2>&1; then
+    pass "sigul-server is still running after the import"
+else
+    fail "sigul-server is no longer running after the import"
+fi
+
+# get-public-key, then sign-data, verified against that public key
+# alone: the signature must come from the subkey and be accepted as the
+# primary key's.
+SUBKEY_GPGHOME="$(mktemp -d /tmp/sigul-test-subkey.XXXXXX)"
+chmod 700 "$SUBKEY_GPGHOME"
+if sigul_run_into "$(hostpath /work/${SUBKEY_KEY_NAME}.pub.asc)" \
+    "ADMIN" "sigul --batch -c /etc/sigul/client.conf \\
+    get-public-key --password ${SUBKEY_KEY_NAME}" >/dev/null \
+    && GNUPGHOME="$SUBKEY_GPGHOME" gpg --batch --import \
+        "$(hostpath /work/${SUBKEY_KEY_NAME}.pub.asc)" 2>/dev/null; then
+    SUBKEY_FPRS="$(GNUPGHOME="$SUBKEY_GPGHOME" gpg --list-keys --with-colons \
+        2>/dev/null | awk -F: '/^fpr:/{printf "%s ", $10}')"
+    note "Sigul-stored fingerprints: ${SUBKEY_FPRS}"
+    if [[ "$SUBKEY_FPRS" == "${SUBKEY_PRIMARY_FP} ${SUBKEY_SIGNING_FP} " ]]; then
+        pass "get-public-key returns the fixture's primary key and subkey"
+    else
+        fail "get-public-key fingerprints differ from the fixture"
+    fi
+else
+    fail "get-public-key failed for the subkey-only key"
+fi
+
+showrun "echo 'subkey-only signing test payload' > '$(hostpath /work/subkey-payload.txt)'"
+if sigul_run "SUBKEY_NEW" "sigul --batch -c /etc/sigul/client.conf \\
+        sign-data -o /work/subkey-payload.txt.sig \\
+        ${SUBKEY_KEY_NAME} /work/subkey-payload.txt"; then
+    VALIDSIG="$(GNUPGHOME="$SUBKEY_GPGHOME" gpg --batch --status-fd 1 \
+        --verify "$(hostpath /work/subkey-payload.txt.sig)" \
+        "$(hostpath /work/subkey-payload.txt)" 2>/dev/null \
+        | grep ' VALIDSIG ' || true)"
+    note "${VALIDSIG:-no VALIDSIG}"
+    if [[ "$VALIDSIG" == *" VALIDSIG ${SUBKEY_SIGNING_FP} "*" ${SUBKEY_PRIMARY_FP}" ]]; then
+        pass "sign-data signature is the subkey's, valid for the primary key"
+    else
+        fail "sign-data signature did not verify as the subkey's"
+    fi
+else
+    fail "sign-data with the subkey-only key exited non-zero"
+fi
+rm -rf "$SUBKEY_GPGHOME"
+
+note "Delete it, then import it again: a failed or deleted import must"
+note "not leave the subkey's secret behind to block the next one."
+if sigul_run "ADMIN" "sigul --batch -c /etc/sigul/client.conf \\
+        delete-key ${SUBKEY_KEY_NAME}" \
+    && sigul_run "ADMIN,SUBKEY,SUBKEY_NEW" \
+        "sigul --batch -c /etc/sigul/client.conf \\
+            import-key --key-admin admin \\
+            ${SUBKEY_KEY_NAME} /work/import-subkey-test-key.asc"; then
+    pass "the subkey-only key can be deleted and imported again"
+else
+    fail "re-importing the subkey-only key after delete-key failed"
+fi
+sigul_run "ADMIN" "sigul --batch -c /etc/sigul/client.conf \\
+    delete-key ${SUBKEY_KEY_NAME}" >/dev/null 2>&1 || true
 
 # ----------------------------------------------------------------------
 # PHASE 2: Text and binary signing
