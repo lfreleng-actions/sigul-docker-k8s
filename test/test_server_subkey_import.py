@@ -112,7 +112,8 @@ def server_home() -> Config:
     return config
 
 
-def secrets_left(config: Config) -> list[str]:
+def key_files_left(config: Config) -> list[str]:
+    """Names of the key files in the home: keygrips, not key material."""
     directory = os.path.join(config.gnupg_home, "private-keys-v1.d")
     if not os.path.isdir(directory):
         return []
@@ -237,11 +238,11 @@ def test_subkey_only_import(subkey_key: str) -> None:
             validsig or "no VALIDSIG",
         )
         server_common.gpg_delete_key(config, fingerprint)
-        left = secrets_left(config)
+        left = key_files_left(config)
         check(
             "deleting it leaves no secret behind",
             not left,
-            f"secret files left: {left or 'none'}",
+            f"key files left: {left or 'none'}",
         )
         again, error = import_key(config, subkey_key, old)
         check(
@@ -321,30 +322,27 @@ def secret_subkeys(config: Config, fingerprint: str) -> list[tuple[str, bool]]:
 
 
 def reprotect(config: Config, keygrip: str, old: str, new: str) -> None:
-    """Re-protect one secret through the agent, as a partial edit would."""
-    old_file = os.path.join(config.gnupg_home, "old-passphrase")
-    new_file = os.path.join(config.gnupg_home, "new-passphrase")
-    for path, value in ((old_file, old), (new_file, new)):
-        with open(path, "w", encoding="utf-8") as handle:
-            _ = handle.write(value)
-    try:
-        _ = subprocess.run(
-            [
-                "gpg-connect-agent",
-                "--homedir",
-                config.gnupg_home,
-                "/definqfile PASSPHRASE " + old_file,
-                "/definqfile NEW_PASSPHRASE " + new_file,
-                "OPTION pinentry-mode=loopback",
-                "PASSWD --preset " + keygrip,
-                "/bye",
-            ],
-            capture_output=True,
-            check=True,
-        )
-    finally:
-        os.remove(old_file)
-        os.remove(new_file)
+    """Re-protect one secret through the agent, as a partial edit would.
+
+    The passphrases reach the agent on standard input, so none is written
+    to disk.
+    """
+    assert "\n" not in old + new, "a passphrase line cannot hold a newline"
+    script = (
+        f"/let old {old}\n"
+        f"/let new {new}\n"
+        "/definq PASSPHRASE old\n"
+        "/definq NEW_PASSPHRASE new\n"
+        "OPTION pinentry-mode=loopback\n"
+        f"PASSWD --preset {keygrip}\n"
+        "/bye\n"
+    )
+    _ = subprocess.run(
+        ["gpg-connect-agent", "--homedir", config.gnupg_home],
+        input=script.encode(),
+        capture_output=True,
+        check=True,
+    )
 
 
 def test_every_secret_is_reprotected(work: str) -> None:
@@ -423,11 +421,11 @@ def test_wrong_passphrase(label: str, key: str) -> None:
     config = server_home()
     try:
         _, error = import_key(config, key, "not-the-import-passphrase")
-        left = secrets_left(config)
+        left = key_files_left(config)
         check(
             f"a wrong passphrase on {label} is refused, and cleaned up",
             error == "GPGError" and not left,
-            f"raised {error or 'nothing'}, secret files left: {left or 'none'}",
+            f"raised {error or 'nothing'}, key files left: {left or 'none'}",
         )
     finally:
         stop(config)
