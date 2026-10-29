@@ -977,6 +977,60 @@ the exit status and the log; an idle child is replaced on its bound
 without a report. Without the patch the first is cut off and the second
 exits 0 with nothing logged.
 
+### 21-fix-subkey-only-import.patch
+
+**Status:** CRITICAL - a subkey-only key cannot be imported, and the
+attempt stops the server
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** Server
+
+**Problem:**
+A key exported with `gpg --export-secret-subkeys` carries its primary
+secret as a `gnu-dummy` stub: the shape in which a project hands over a
+signing key while keeping its primary key offline (#96). After the GnuPG
+import, `import_gnupg_key` re-protects the key under the server's own
+passphrase through `gpg --edit-key` `passwd`. GnuPG cannot re-protect a
+primary secret it does not have, so the session ends in
+`FAILURE gpg-exit 33554433` even though it re-protected the subkey. That
+status reached `_ChangePasswordResponder.callback`, which has no case for
+it, raised `NotImplementedError`, and the server exited. A wrong import
+passphrase ends the same way, for a complete key too: GnuPG 2.4 reports it
+with that `FAILURE`, not `BAD_PASSPHRASE`, so one mistyped passphrase
+stopped the server. Deleting the half-imported key then left the
+subkey's secret behind, because gpgme does not remove the secrets of a
+key whose primary secret is a stub. Every retry was refused with
+`Unexpected import file contents` until someone removed the file by hand.
+
+**Fix:**
+The responder records `FAILURE` instead of raising. `gpg_change_password`
+accepts it only when the key's primary secret is absent and a signing
+subkey's secret is present. Even then it proves the result for every secret
+the key holds, signing or not: each must accept the new passphrase and
+refuse the old one. A key left partly on its old passphrase is therefore
+refused. Each proof copies that one secret into a throwaway home and asks a
+fresh agent `PASSWD --verify`, which changes nothing. The server's own agent
+can keep the key unlocked after the edit session and accept whatever
+passphrase is offered, so it cannot do this check. Anything else,
+including a wrong import passphrase on any key, is a `GPGError`, which
+`import_gnupg_key` already reports to the client as
+`IMPORT_PASSPHRASE_ERROR`. `gpg_delete_key` also
+removes, through the agent's `DELETE_KEY`, any secret the key had that
+gpgme left behind. Complete-key imports with the right passphrase are
+unchanged.
+
+**Test:** `test/test_server_subkey_import.py` runs the server's own
+import, re-protection and deletion code against the fixtures in
+`test/fixtures` (see its README). A subkey-only key imports; afterwards
+only the server-side passphrase unlocks it; its signatures come from the
+subkey and verify against the key; deleting it leaves no secret; and it
+imports again. A generated key with signing and encryption secrets has
+both re-protected, and the same key with only its signing secret
+re-protected is refused. A wrong passphrase is a clean `GPGError` for both
+kinds of key. Without the patch, the failing paths raise
+`NotImplementedError`. `scripts/run-signing-tests.sh` case 1.10 does the
+same through client, bridge and server, and checks the server is still
+running afterwards.
+
 ## Applying Patches
 
 The Docker build process automatically applies these patches:

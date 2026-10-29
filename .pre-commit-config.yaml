@@ -134,6 +134,7 @@ repos:
           (?x)^(
             pki/.*\.asc
           | test/fixtures/regenerate-import-test-key\.sh
+          | test/fixtures/regenerate-subkey-import-test-key\.sh
           | scripts/run-signing-tests\.sh
           )$
 
