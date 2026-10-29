@@ -1,0 +1,77 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Connect once, to the first bridge address that answers. The client
+# called connect() on one socket for every address the bridge name
+# resolves to, without stopping at the first success: on a connected
+# socket the next call fails with PR_IS_CONNECTED_ERROR, and a socket
+# that failed to connect is not reusable. A bridge name with several
+# addresses - every load-balanced bridge - failed whenever an address
+# did not answer, and the first error wins, so the order of the DNS
+# answer decided the outcome. Each distinct address now gets a fresh,
+# fully configured socket, and the first that connects is kept. See
+# patches/README.md.
+#
+--- a/src/double_tls.py
++++ b/src/double_tls.py
+@@ -976,9 +976,6 @@ class DoubleTLSClient(object):
+             outer_pipe_fd = nss.io.Socket.import_tcp_socket(child_outer_pipe.
+                                                             fileno())
+             utils.nss_init(self.__config)  # May raise utils.NSSInitError
+-            socket_fd = nss.ssl.SSLSocket(nss.io.PR_AF_INET)
+-            socket_fd.set_ssl_option(nss.ssl.SSL_REQUEST_CERTIFICATE, True)
+-            socket_fd.set_ssl_option(nss.ssl.SSL_REQUIRE_CERTIFICATE, True)
+             try:
+                 cert = nss.nss.find_cert_from_nickname(self.__cert_nickname)
+             except nss.error.NSPRError as e:
+@@ -988,20 +985,45 @@ class DoubleTLSClient(object):
+                         'available' %
+                         self.__cert_nickname)
+                 raise
+-            socket_fd.set_client_auth_data_callback(
+-                utils.nss_client_auth_callback_single, cert)
+-            socket_fd.set_hostname(self.__hostname)
++
++            def new_socket():
++                sock = nss.ssl.SSLSocket(nss.io.PR_AF_INET)
++                sock.set_ssl_option(nss.ssl.SSL_REQUEST_CERTIFICATE, True)
++                sock.set_ssl_option(nss.ssl.SSL_REQUIRE_CERTIFICATE, True)
++                sock.set_client_auth_data_callback(
++                    utils.nss_client_auth_callback_single, cert)
++                sock.set_hostname(self.__hostname)
++                return sock
++
+             addr_info = nss.io.AddrInfo(self.__hostname, nss.io.PR_AF_INET,
+                                         nss.io.PR_AI_ADDRCONFIG)
++            # Try each distinct address on a socket of its own and keep the
++            # first that connects. Calling connect() again on a connected
++            # socket fails with PR_IS_CONNECTED_ERROR, and NSPR does not
++            # promise a socket is reusable after a failed connect, so a
++            # bridge name with several addresses (a load balancer's, say)
++            # used to fail although its first address answered.
++            socket_fd = None
+             first_error = None
++            tried = set()
+             for net_addr in addr_info:
+                 net_addr.port = self.__port
++                if str(net_addr) in tried:
++                    continue
++                tried.add(str(net_addr))
++                candidate = new_socket()
+                 try:
+-                    socket_fd.connect(net_addr)
++                    candidate.connect(net_addr)
+                 except Exception as e:
++                    candidate.close()
+                     if first_error is None:
+                         first_error = e
+-            if first_error is not None:
++                    continue
++                socket_fd = candidate
++                break
++            if socket_fd is None:
++                if first_error is None:
++                    raise ChildConnectionRefusedError()
+                 if (isinstance(first_error, nss.error.NSPRError)
+                         and (first_error.errno
+                              == nss.error.PR_CONNECT_RESET_ERROR)):
