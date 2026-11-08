@@ -290,6 +290,16 @@ the bridge pod and makes leaf re-issuance a Job re-run.
 > Adopting Option B later would restore leaf re-issue, at the price of
 > a persisted CA key. That is a deliberate trade, not an oversight, and
 > §8 Q4 below has been corrected to match what ships today.
+>
+> **Client certificates.** By default the Job issues one shared client
+> certificate, as the table above describes, and the server's lenient
+> username check lets it claim any user. Setting `pki.clients` instead
+> issues one `clientAuth` certificate per Sigul user (`CN=<name>`),
+> each in its own pre-created `<release>-client-<name>-p12` Secret, and
+> requires `server.lenientUsernameCheck: "no"`, so a bundle can act
+> only as its own user. Because the CA key is discarded, the list is
+> fixed at bootstrap like every other certificate: changing it is a
+> `pki.mode=force` rotation (chart README, "Per-client certificates").
 
 ### 4.3 Server pod design
 
@@ -484,6 +494,13 @@ artifact from platform team to CI consumers. Because this is a clean
 deployment, client identities/keys are provisioned fresh via
 `new-user` / `new-key` / `grant-key-access` key ceremonies (runbook
 required).
+
+> **As implemented:** with `pki.clients` set, each CI consumer's bundle
+> is built from its own `<release>-client-<name>-p12` Secret instead,
+> and its `client.conf` `user-name` must equal that name, since the
+> server then runs with strict username checking. The bundle format is
+> unchanged. The build steps are in the chart README, "Producing the
+> CI client bundle".
 
 ---
 

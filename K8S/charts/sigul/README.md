@@ -57,9 +57,13 @@ templates as comments):
 - The server needs a generous `startupProbe` - first boot includes
   bridge-wait + DB schema + admin creation before `sigul_server`
   exists for liveness to find.
-- `lenient-username-check: yes` matches the CI stack (cert + password
-  auth). Strict CN==username needs per-user client certs - candidate
-  hardening once per-user issuance exists.
+- `lenient-username-check: yes` (the default) matches the CI stack:
+  cert + password auth, with one shared client certificate that may
+  claim any user. Setting `pki.clients` issues one certificate per
+  Sigul user and requires `server.lenientUsernameCheck: "no"`, so the
+  server rejects any request whose user differs from its
+  certificate's CN - see [Per-client
+  certificates](#per-client-certificates).
 - `server.persistence.volumePermissions.enabled` exists for storage
   that does not establish ownership itself: local-path/hostpath
   provisioners, and EFS on a direct mount **with root access
@@ -151,7 +155,9 @@ templates as comments):
   certs with `certutil` (Sigul's native mechanics, unchanged) in a
   memory-backed scratch dir, publishes Secrets via the API, then
   discards the CA private key with the pod. Idempotent via a marker
-  Secret (`pki.mode: auto|force|skip`).
+  Secret (`pki.mode: auto|force|skip`). Issues either one shared
+  client certificate or, with `pki.clients`, one `clientAuth`
+  certificate per Sigul user (`CN=<name>`), each in its own Secret.
 - **Bridge** (wave 1): Deployment, stateless — NSS DB rebuilt from
   Secrets each start. ClusterIP Service (44333 + 44334) plus an
   internet-facing NLB (44334 only, L4 passthrough; double-TLS forbids
@@ -173,10 +179,28 @@ Produced by the bootstrap Job, consumed by workloads:
 | `<release>-ca-public` | `ca.crt`, `bridge.crt` | all initContainers |
 | `<release>-bridge-p12` | `bridge.p12` | bridge |
 | `<release>-server-p12` | `server.p12` | server |
-| `<release>-client-p12` | `client.p12` | toolbox; CI bundles |
+| `<release>-client-p12` | `client.p12` | toolbox; CI bundles (1) |
+| `<release>-client-<name>-p12` | `client.p12` | toolbox; bundles (2) |
 | `<release>-passwords` | NSS + P12 passwords (PKI-coupled) | all |
 | `<release>-admin` | `admin-password` (created once) | server, toolbox |
 | `<release>-pki-complete` | `state` + metadata | Job idempotency marker |
+
+(1) Only when `pki.clients` is empty. (2) One Secret per `pki.clients`
+entry; the toolbox mounts the `server.adminUser` entry's Secret, and
+each other entry's Secret backs that client's bundle.
+
+The chart pre-creates every Secret in this table that the values
+select, empty and with the same protections (`helm.sh/resource-policy:
+keep`, Argo CD `Prune=false,Delete=false`), and the bootstrap Role's
+`resourceNames` list exactly those - it holds no `create` on Secrets.
+
+**Argo CD:** the Job writes `/data` of these Secrets after the chart
+created them empty, so the Application must ignore that field or a
+sync blanks them. The example in `K8S/argocd/` ignores `/data` on
+every Secret, which covers the per-client Secrets too. An Application
+that lists the PKI Secrets by name must add each
+`<release>-client-<name>-p12` to its `ignoreDifferences` before
+setting `pki.clients`.
 
 ## Volume permissions and Pod Security Standards
 
@@ -404,13 +428,153 @@ printf '%s\0' "$KEY_PASSPHRASE" \
       -o <output> <key-name> <file>
 ```
 
+With `pki.clients` set, the toolbox authenticates with
+`server.adminUser`'s own certificate
+(`<release>-client-<adminUser>-p12`).
+
+## Per-client certificates
+
+By default every client - the toolbox and each CI bundle - shares one
+certificate, `CN=sigul-client.<externalFQDN>`, and the server's
+lenient check lets it claim any user. Anyone holding a bundle can then
+act as any user whose password they learn, and one leaked bundle
+means reissuing every client's.
+
+`pki.clients` names the Sigul users that get a certificate of their
+own:
+
+```yaml
+server:
+  lenientUsernameCheck: "no"
+pki:
+  clients:
+    - name: admin              # must include server.adminUser
+    - name: opensearch-canary
+    - name: opensearch-jenkins
+```
+
+Each name gets a `clientAuth`-only certificate with `CN=<name>`, in
+`<release>-client-<name>-p12` (key `client.p12`, friendly name
+`sigul-client-cert`, the same bundle format as before). No shared
+client certificate is issued. Under strict checking the server rejects
+any request whose user differs from its certificate's CN (`Cert CN and
+user differ`), so a bundle only ever acts as its own user, and the
+user's password or key passphrase is still required on top.
+
+Rendering fails for a name that is not a lower-case Sigul user name
+(letters, digits, `.` and `-`, each `.`-separated part starting and
+ending alphanumeric, at most 63 characters), a duplicate, a list
+without `server.adminUser`, or `server.lenientUsernameCheck` other
+than `"no"`. The part rule keeps every derived Secret name a valid
+Kubernetes name: `ci..bot`, `ci.-bot` and `ci-.bot` are refused.
+
+A certificate does not create the user. Create each one, and grant its
+key access, from the toolbox as usual:
+
+```sh
+printf '%s\0%s\0' "$SIGUL_ADMIN_PASSWORD" "$USER_PASSWORD" \
+  | sigul --batch -c /etc/sigul/client.conf new-user --with-password <name>
+printf '%s\0%s\0' "$KEY_PASSPHRASE" "$USER_KEY_PASSPHRASE" \
+  | sigul --batch -c /etc/sigul/client.conf grant-key-access <key> <name>
+```
+
+**Admin checks with `-u` stop working.** Under strict checking the
+toolbox's certificate is the admin's, so `sigul -u <user> ...` from
+the toolbox is rejected like any other impersonation. Verify a user's
+access with that user's own bundle instead.
+
+### Adopting `pki.clients` on an existing installation
+
+The CA private key does not survive a bootstrap, so the list is fixed
+at bootstrap: adopting it, like any change to it, regenerates the
+whole trust domain and invalidates every client bundle issued so far.
+Keys, users and grants live on the server's volume and are untouched.
+
+1. Under Argo CD, add each `<release>-client-<name>-p12` to the
+   Application's `ignoreDifferences` if it lists Secrets by name (see
+   [Secret contract](#secret-contract)).
+2. Set `pki.clients`, `server.lenientUsernameCheck: "no"` and
+   `pki.mode: force`, and sync. Either set
+   `pki.forceRestartWorkloads: true` or perform the coordinated
+   restart the Job logs - every component must restart onto the new
+   trust domain.
+3. Set `pki.mode` back to `auto` once the Job has completed, so a
+   later sync does not rotate again.
+4. Create the Sigul user for any name that does not have one yet, from
+   the toolbox, and grant its key access.
+5. Build each client's new bundle from its Secret (below) and replace
+   the old ones.
+6. Delete the old shared `<release>-client-p12`. Nothing mounts it any
+   more, but its deletion protection keeps it in the cluster, still
+   holding a certificate the new CA did not sign.
+
+`test/k8s_pki_clients.sh` runs this sequence on a kind cluster.
+
+### Adding or removing a client
+
+Add or remove the entry and rotate as above (`pki.mode: force`, the
+coordinated restart, back to `auto`), then hand every client its new
+bundle. The bootstrap marker records the set of clients it issued
+(`client-identities`), and under `auto` the Job refuses any other
+set, naming the one requested, rather than reuse a Secret left from an earlier
+trust domain. The same applies to returning to the shared
+certificate by emptying `pki.clients`.
+
+A removed client's Secret stays in the cluster, protected like the
+others; delete it by hand.
+
+**To cut off one client at once**, without waiting for a rotation,
+remove its server-side identity from the toolbox - revoke its key
+access first, as the server refuses to delete a user that still holds
+any:
+
+```sh
+printf '%s\0' "$SIGUL_ADMIN_PASSWORD" \
+  | sigul --batch -c /etc/sigul/client.conf \
+      revoke-key-access --password <key> <name>
+printf '%s\0' "$SIGUL_ADMIN_PASSWORD" \
+  | sigul --batch -c /etc/sigul/client.conf delete-user <name>
+```
+
+Its certificate still validates, but under strict checking it can
+only claim its own user, which no longer exists, so the bundle can do
+nothing. Remove the entry at the next planned rotation.
+
 ## Producing the CI client bundle
 
 The GitHub Action consumes a GPG-encrypted tar.xz of the client
-`.sigul/` directory. Until automated, build it from the
-`<release>-client-p12` + `<release>-ca-public` + `<release>-passwords`
-Secrets following the same import steps as `files/scripts/nss-init.sh`
-(runbook to be written — EVALUATION.md §9 Phase 4).
+`.sigul/` directory. Until automated, build it from the client's
+Secret - `<release>-client-<name>-p12` with `pki.clients`, otherwise
+`<release>-client-p12` - plus `<release>-ca-public` and
+`<release>-passwords` (`p12-password`), following the same import
+steps as `files/scripts/nss-init.sh`. The files hold the client's
+private key and its passwords, so `umask 077` keeps the directory and
+everything written into it readable by you alone, including after a
+failed import:
+
+```sh
+umask 077
+mkdir -p .sigul/nss && cd .sigul
+kubectl get secret <release>-client-<name>-p12 \
+  -o jsonpath='{.data.client\.p12}' | base64 -d > client.p12
+kubectl get secret <release>-ca-public \
+  -o jsonpath='{.data.ca\.crt}' | base64 -d > ca.crt
+kubectl get secret <release>-ca-public \
+  -o jsonpath='{.data.bridge\.crt}' | base64 -d > bridge.crt
+kubectl get secret <release>-passwords \
+  -o jsonpath='{.data.p12-password}' | base64 -d > p12.pw
+printf '%s' "$NSS_PASSWORD" > nss.pw
+certutil -N -d sql:nss -f nss.pw
+certutil -A -d sql:nss -f nss.pw -n sigul-ca -t CT,C,C -a -i ca.crt
+certutil -A -d sql:nss -f nss.pw -n sigul-bridge-cert -t P,P,P -a -i bridge.crt
+pk12util -i client.p12 -d sql:nss -k nss.pw -w p12.pw
+rm client.p12 p12.pw
+```
+
+Then write a `client.conf` like `files/conf/client.conf.template`,
+with `user-name: <name>` - under strict checking it must equal the
+certificate's CN - and package the directory (EVALUATION.md §9
+Phase 4).
 
 ## Uninstall and reinstall
 
@@ -797,4 +961,12 @@ their storage on delete.
 ```sh
 helm lint .
 helm template sigul . --namespace opensearch-sigul
+```
+
+The per-client certificate tests, from the repository root:
+
+```sh
+python3 test/test_chart_pki_clients.py      # helm + PyYAML
+python3 test/test_pki_bootstrap_clients.py  # certutil + pk12util
+bash test/k8s_pki_clients.sh                # kind, images built locally
 ```
