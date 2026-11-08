@@ -19,6 +19,11 @@ Usage:
            bookkeeping keys in PRINTABLE_KEYS are accepted, and only
            literals from their vetted value sets are ever written to
            stdout - decoded Secret bytes never leave this process
+    publish-secrets.py matches NAME KEY VALUE
+        -> exit 0 if Secret NAME's KEY holds exactly VALUE, 1 if it
+           differs or is absent; prints nothing, so a bookkeeping
+           value outside any vetted set can be compared without
+           reaching stdout
     publish-secrets.py apply NAME [--if-absent]
         [--file key=path]... [--literal k=v]...
         -> create or replace Secret NAME (replace carries the
@@ -93,6 +98,11 @@ def cmd_get(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_matches(args: argparse.Namespace) -> int:
+    value = get_secret_key(str(args.name), str(args.key))  # pyright: ignore[reportAny]
+    return 0 if value is not None and value == str(args.value) else 1  # pyright: ignore[reportAny]
+
+
 def cmd_apply(args: argparse.Namespace) -> int:
     files: list[str] = list(args.file)  # pyright: ignore[reportAny]
     literals: list[str] = list(args.literal)  # pyright: ignore[reportAny]
@@ -129,6 +139,11 @@ def main() -> int:
     _ = p_get.add_argument("name")
     _ = p_get.add_argument("key", choices=sorted(PRINTABLE_KEYS))
     p_get.set_defaults(handler=cmd_get)
+    p_matches = sub.add_parser("matches")
+    _ = p_matches.add_argument("name")
+    _ = p_matches.add_argument("key")
+    _ = p_matches.add_argument("value")
+    p_matches.set_defaults(handler=cmd_matches)
     p_apply = sub.add_parser("apply")
     _ = p_apply.add_argument("name")
     _ = p_apply.add_argument("--file", action="append", default=[])

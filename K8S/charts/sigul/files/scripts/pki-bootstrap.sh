@@ -30,6 +30,12 @@
 #   SECRET_CLIENT_P12, SECRET_PASSWORDS, SECRET_ADMIN, SECRET_MARKER,
 #   LOCK_LEASE, LOCK_DURATION_SECONDS, POD_NAME,
 #   BRIDGE_DEPLOYMENT, SERVER_STATEFULSET
+#
+# Per-client certificates (pki.clients) replace SECRET_CLIENT_P12 with:
+#   PKI_CLIENTS               space-separated Sigul user names, one
+#                             certificate (CN=<name>) each
+#   SECRET_CLIENT_P12_PREFIX  each published to <prefix><name>-p12
+#   ADMIN_USER, LENIENT_USERNAME_CHECK  checked against the list
 
 set -euo pipefail
 
@@ -125,6 +131,63 @@ case "${PKI_MODE}" in
 esac
 
 # ---------------------------------------------------------------------------
+# Client identities. Empty PKI_CLIENTS keeps the single shared client
+# certificate; otherwise each name gets its own certificate, whose CN
+# the server compares with the request's user name under strict
+# checking. The chart validates the same rules at render time; they
+# are repeated here so a hand-edited Job fails before taking the lock
+# or publishing anything.
+# ---------------------------------------------------------------------------
+read -r -a CLIENTS <<< "${PKI_CLIENTS:-}"
+CLIENT_SECRETS=()
+if [ "${#CLIENTS[@]}" -eq 0 ]; then
+    [ -n "${SECRET_CLIENT_P12:-}" ] || die "SECRET_CLIENT_P12 not set"
+    CLIENT_SECRETS=("${SECRET_CLIENT_P12}")
+else
+    [ -n "${SECRET_CLIENT_P12_PREFIX:-}" ] || die "SECRET_CLIENT_P12_PREFIX not set"
+    case "${LENIENT_USERNAME_CHECK:-}" in
+        no|false) ;;
+        *) die "PKI_CLIENTS is set but LENIENT_USERNAME_CHECK is
+'${LENIENT_USERNAME_CHECK:-}': per-client certificates bind a bundle to its
+user only under strict checking (server.lenientUsernameCheck: \"no\")" ;;
+    esac
+    # A DNS-1123 subdomain: the client name and every Secret name
+    # derived from it must match it, or publication would fail after a
+    # force run had already replaced the other PKI Secrets.
+    DNS_SUBDOMAIN='^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$'
+    declare -A SEEN_CLIENTS=()
+    for client in "${CLIENTS[@]}"; do
+        [ "${#client}" -le 63 ] && [[ "${client}" =~ ${DNS_SUBDOMAIN} ]] \
+            || die "Client name '${client}' is not a valid Sigul user name:
+use lower-case letters, digits, '.' and '-', with each '.'-separated
+part starting and ending with a letter or digit (max 63 characters)"
+        [ -z "${SEEN_CLIENTS[${client}]:-}" ] \
+            || die "Client name '${client}' is listed more than once"
+        SEEN_CLIENTS[${client}]=1
+        secret="${SECRET_CLIENT_P12_PREFIX}${client}-p12"
+        [ "${#secret}" -le 253 ] && [[ "${secret}" =~ ${DNS_SUBDOMAIN} ]] \
+            || die "Client '${client}' gives the Secret name '${secret}',
+which is not a valid Kubernetes DNS-1123 subdomain"
+        CLIENT_SECRETS+=("${secret}")
+    done
+    [ -n "${ADMIN_USER:-}" ] && [ -n "${SEEN_CLIENTS[${ADMIN_USER}]:-}" ] \
+        || die "PKI_CLIENTS must include the admin user '${ADMIN_USER:-}':
+the admin toolbox authenticates with that client's certificate"
+fi
+
+# The client identities this run issues, recorded in the marker so a
+# later auto run can tell when pki.clients changed: a Secret retained
+# from an earlier trust domain (a removed client added back, or the
+# shared one after leaving per-client mode) would otherwise pass the
+# completeness check while holding a certificate the current CA never
+# signed. Sorted, so reordering the list changes nothing.
+if [ "${#CLIENTS[@]}" -eq 0 ]; then
+    CLIENT_IDENTITIES=shared
+else
+    CLIENT_IDENTITIES="per-client:$(printf '%s\n' "${CLIENTS[@]}" | LC_ALL=C sort | paste -sd ' ' -)"
+fi
+
+# ---------------------------------------------------------------------------
 # Mutual exclusion.
 #
 # The Job name is revisioned, so plain Helm can leave two bootstrap
@@ -174,9 +237,17 @@ PKI_SECRETS=(
     "${SECRET_CA_PUBLIC}"
     "${SECRET_BRIDGE_P12}"
     "${SECRET_SERVER_P12}"
-    "${SECRET_CLIENT_P12}"
+    "${CLIENT_SECRETS[@]}"
     "${SECRET_PASSWORDS}"
 )
+
+is_client_secret() {
+    local s
+    for s in "${CLIENT_SECRETS[@]}"; do
+        [ "${s}" != "$1" ] || return 0
+    done
+    return 1
+}
 
 # The key contract each Secret owes its consumers. Checking only for
 # a non-empty Secret is not enough: a partial restore can leave the
@@ -185,6 +256,10 @@ PKI_SECRETS=(
 # success. Keys mirror the secretKeyRef/volume items in the workload
 # templates and the publish calls at the end of this script.
 secret_key_args() {
+    if is_client_secret "$1"; then
+        printf '%s\n' --key client.p12
+        return 0
+    fi
     case "$1" in
         "${SECRET_CA_PUBLIC}")
             printf '%s\n' --key ca.crt --key bridge.crt ;;
@@ -192,8 +267,6 @@ secret_key_args() {
             printf '%s\n' --key bridge.p12 ;;
         "${SECRET_SERVER_P12}")
             printf '%s\n' --key server.p12 ;;
-        "${SECRET_CLIENT_P12}")
-            printf '%s\n' --key client.p12 ;;
         "${SECRET_PASSWORDS}")
             printf '%s\n' --key bridge-nss-password \
                 --key server-nss-password \
@@ -325,6 +398,23 @@ against the existing database), then re-run."
 fi
 
 if [ "${PKI_MODE}" = "auto" ] && [ "${MARKER_STATE}" = "complete" ]; then
+    # A marker without client-identities predates pki.clients, so its
+    # bootstrap issued the shared certificate.
+    if "${PUBLISH[@]}" exists "${SECRET_MARKER}" --key client-identities; then
+        "${PUBLISH[@]}" matches "${SECRET_MARKER}" client-identities "${CLIENT_IDENTITIES}" \
+            && IDENTITIES_MATCH=true || IDENTITIES_MATCH=false
+    else
+        [ "${CLIENT_IDENTITIES}" = shared ] \
+            && IDENTITIES_MATCH=true || IDENTITIES_MATCH=false
+    fi
+    [ "${IDENTITIES_MATCH}" = true ] || die "The client certificates
+requested (${CLIENT_IDENTITIES}) differ from those the completed
+bootstrap issued: pki.clients, or the switch between the shared
+certificate and per-client ones, changed. Any Secret retained from an
+earlier trust domain holds a certificate the current CA did not sign,
+so it cannot be reused. Issuing a different set needs a new trust
+domain: re-run with PKI_MODE=force (pki.mode=force; breaks existing
+client bundles), or restore the previous pki.clients."
     # The marker alone is not proof the material survived: verify
     # every PKI Secret is still populated (an accidentally deleted
     # Secret recreated empty by a sync would otherwise strand newly
@@ -334,7 +424,7 @@ completed bootstrap but these Secrets are empty or missing required
 keys: ${PKI_INCOMPLETE[*]} - the PKI material was lost or partially
 restored after bootstrap. Restore the Secrets from backup, or
 regenerate the entire trust domain with PKI_MODE=force (breaks
-existing client bundles)."
+existing client bundles; the only way to add or remove a client)."
     log "Marker Secret '${SECRET_MARKER}' complete and all PKI Secrets verified - already bootstrapped (mode=auto)"
     # An obligation left over from an earlier run (a failed automated
     # rollout, or a manual one the operator has not confirmed) is
@@ -498,8 +588,39 @@ issue_leaf sigul-bridge-cert "${EXTERNAL_FQDN}" \
     "${EXTERNAL_FQDN},${INTERNAL_FQDN},${BRIDGE_SERVICE_NAME}" "$((SERIAL_BASE + 1))"
 issue_leaf sigul-server-cert "sigul-server.${INTERNAL_FQDN}" \
     "sigul-server.${INTERNAL_FQDN}" "$((SERIAL_BASE + 2))"
-issue_leaf sigul-client-cert "sigul-client.${EXTERNAL_FQDN}" \
-    "sigul-client.${EXTERNAL_FQDN}" "$((SERIAL_BASE + 3))"
+
+# Client certificates go straight to PKCS#12 under the nickname every
+# client configuration expects (sigul-client-cert). NSS ties a
+# nickname to one subject, so each per-client certificate and its key
+# leave the scratch database once exported, before the next is issued.
+export_client_p12() {
+    # $1 output file
+    pk12util -o "${1}" -n sigul-client-cert \
+        -d "sql:${NSSDIR}" -k "${PWFILE}" -w "${P12PWFILE}"
+    chmod 600 "${1}"
+}
+
+if [ "${#CLIENTS[@]}" -eq 0 ]; then
+    issue_leaf sigul-client-cert "sigul-client.${EXTERNAL_FQDN}" \
+        "sigul-client.${EXTERNAL_FQDN}" "$((SERIAL_BASE + 3))"
+    export_client_p12 "${OUT}/client.p12"
+else
+    # clientAuth only: a client certificate never needs to act as a
+    # TLS server, and the CN is the Sigul user it authenticates as.
+    serial=$((SERIAL_BASE + 3))
+    for client in "${CLIENTS[@]}"; do
+        log "Issuing client certificate (CN=${client}; serial=${serial})"
+        certutil -S -d "sql:${NSSDIR}" -f "${PWFILE}" -z "${NOISE}" \
+            -n sigul-client-cert -s "CN=${client}" -c sigul-ca \
+            -t "u,u,u" -g 2048 -Z SHA256 -v "${CERT_VALIDITY_MONTHS}" \
+            -m "${serial}" \
+            --keyUsage digitalSignature,keyEncipherment \
+            --extKeyUsage clientAuth
+        export_client_p12 "${OUT}/client-${client}.p12"
+        certutil -F -d "sql:${NSSDIR}" -f "${PWFILE}" -n sigul-client-cert
+        serial=$((serial + 1))
+    done
+fi
 
 # ---------------------------------------------------------------------------
 # Exports: public certs as PEM, leaf keypairs as PKCS#12.
@@ -513,7 +634,7 @@ certutil -L -d "sql:${NSSDIR}" -n sigul-ca -a > "${OUT}/ca.crt"
 certutil -L -d "sql:${NSSDIR}" -n sigul-bridge-cert -a > "${OUT}/bridge.crt"
 
 log "Exporting PKCS#12 bundles"
-for role in bridge server client; do
+for role in bridge server; do
     pk12util -o "${OUT}/${role}.p12" -n "sigul-${role}-cert" \
         -d "sql:${NSSDIR}" -k "${PWFILE}" -w "${P12PWFILE}"
     chmod 600 "${OUT}/${role}.p12"
@@ -538,7 +659,14 @@ log "Publishing Secrets"
 
 "${PUBLISH[@]}" apply "${SECRET_BRIDGE_P12}" --file "bridge.p12=${OUT}/bridge.p12"
 "${PUBLISH[@]}" apply "${SECRET_SERVER_P12}" --file "server.p12=${OUT}/server.p12"
-"${PUBLISH[@]}" apply "${SECRET_CLIENT_P12}" --file "client.p12=${OUT}/client.p12"
+if [ "${#CLIENTS[@]}" -eq 0 ]; then
+    "${PUBLISH[@]}" apply "${SECRET_CLIENT_P12}" --file "client.p12=${OUT}/client.p12"
+else
+    for client in "${CLIENTS[@]}"; do
+        "${PUBLISH[@]}" apply "${SECRET_CLIENT_P12_PREFIX}${client}-p12" \
+            --file "client.p12=${OUT}/client-${client}.p12"
+    done
+fi
 
 "${PUBLISH[@]}" apply "${SECRET_PASSWORDS}" \
     --literal "bridge-nss-password=${BRIDGE_NSS_PASSWORD}" \
@@ -557,6 +685,7 @@ log "Publishing Secrets"
     --literal "rotation-required=${RESTART_AFTER_RUN}" \
     --literal "bootstrapped-at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --literal "mode=${PKI_MODE}" \
+    --literal "client-identities=${CLIENT_IDENTITIES}" \
     --literal "external-fqdn=${EXTERNAL_FQDN}" \
     --literal "ca-validity-months=${CA_VALIDITY_MONTHS}" \
     --literal "cert-validity-months=${CERT_VALIDITY_MONTHS}"

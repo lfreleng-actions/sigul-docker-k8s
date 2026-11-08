@@ -86,7 +86,9 @@ rules:
       - {{ include "sigul.secret.caPublic" . }}
       - {{ include "sigul.secret.bridgeP12" . }}
       - {{ include "sigul.secret.serverP12" . }}
-      - {{ include "sigul.secret.clientP12" . }}
+      {{- range (include "sigul.secret.clientP12List" . | fromJsonArray) }}
+      - {{ . }}
+      {{- end }}
       - {{ include "sigul.secret.passwords" . }}
       - {{ include "sigul.secret.admin" . }}
       - {{ include "sigul.secret.marker" . }}
@@ -285,8 +287,22 @@ spec:
               value: {{ include "sigul.secret.bridgeP12" . | quote }}
             - name: SECRET_SERVER_P12
               value: {{ include "sigul.secret.serverP12" . | quote }}
+            {{- with (include "sigul.pki.clientNames" . | fromJsonArray) }}
+            # One certificate per Sigul user, each in
+            # SECRET_CLIENT_P12_PREFIX<name>-p12. The script repeats
+            # the render-time validation before publishing anything.
+            - name: PKI_CLIENTS
+              value: {{ join " " . | quote }}
+            - name: SECRET_CLIENT_P12_PREFIX
+              value: {{ include "sigul.secret.clientP12Prefix" $ | quote }}
+            - name: ADMIN_USER
+              value: {{ include "sigul.server.adminUser" $ | quote }}
+            - name: LENIENT_USERNAME_CHECK
+              value: {{ $.Values.server.lenientUsernameCheck | toString | quote }}
+            {{- else }}
             - name: SECRET_CLIENT_P12
               value: {{ include "sigul.secret.clientP12" . | quote }}
+            {{- end }}
             - name: SECRET_PASSWORDS
               value: {{ include "sigul.secret.passwords" . | quote }}
             - name: SECRET_ADMIN
