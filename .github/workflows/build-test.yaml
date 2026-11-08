@@ -1548,6 +1548,103 @@ jobs:
           docker compose -f docker-compose.sigul.yml -f soak/compose.soak.yml \
             down -v --remove-orphans >/dev/null 2>&1 || true
 
+  ### Per-client certificates on Kubernetes ###
+  chart-pki-clients:
+    name: 'Chart: per-client certificates'
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: read
+    # The chart's pki.clients path (#104): its render, the bootstrap
+    # script issuing one certificate per Sigul user, and - on a kind
+    # cluster, with this run's images - that under strict username
+    # checking a client bundle can act only as its own user. The
+    # Compose stack the functional tests use has no bootstrap Job, so
+    # this is the only job that runs the chart's own PKI.
+    timeout-minutes: 30
+    needs: build-containers
+    steps:
+      # Audit (not block): kind pulls its node image at runtime.
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 'Test the chart render'
+        shell: bash
+        run: |
+          # helm ships with the runner image; PyYAML normally does too.
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --user --quiet pyyaml
+          helm lint K8S/charts/sigul
+          python3 test/test_chart_pki_clients.py
+
+      - name: 'Download Sigul Client image artifact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: 'client-linux-amd64-image'
+          path: /tmp
+
+      - name: 'Download Sigul Server image artifact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: 'server-linux-amd64-image'
+          path: /tmp
+
+      - name: 'Download Sigul Bridge image artifact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: 'bridge-linux-amd64-image'
+          path: /tmp
+
+      - name: 'Load and tag container images'
+        shell: bash
+        run: |
+          for component in client server bridge; do
+            docker load --input "/tmp/${component}-linux-amd64.tar"
+            docker tag "${component}:linux-amd64" \
+              "${component}-linux-amd64-image:test"
+          done
+          rm -f /tmp/*-linux-amd64.tar
+
+      - name: 'Test the PKI bootstrap issuing per-client certificates'
+        shell: bash
+        run: |
+          # The bootstrap Job runs in the bridge image, so the script
+          # is tested with that image's certutil and pk12util.
+          docker run --rm \
+            --user 1000:1000 \
+            -v "${PWD}/test:/test:ro" \
+            -v "${PWD}/K8S/charts/sigul/files/scripts:/chart-scripts:ro" \
+            --entrypoint python3 \
+            bridge-linux-amd64-image:test \
+            /test/test_pki_bootstrap_clients.py
+
+      - name: 'Test strict checking with per-client certificates (kind)'
+        shell: bash
+        run: |
+          # kind ships with the runner image. Installs with the shared
+          # certificate, adopts pki.clients as the chart README's
+          # runbook does, then signs and impersonates through it.
+          bash test/k8s_pki_clients.sh
+
+      - name: 'Upload diagnostics'
+        if: failure()
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: 'chart-pki-clients-logs'
+          path: test-artifacts/k8s-pki-clients/
+          retention-days: 14
+
   ### Cleanup Sigul Infrastructure ###
   cleanup-infrastructure:
     name: 'Cleanup Infrastructure'
@@ -1612,7 +1709,8 @@ jobs:
       pr-sbom,
       pr-grype,
       functional-tests,
-      soak-test
+      soak-test,
+      chart-pki-clients
     ]
     if: always()
     timeout-minutes: 1
@@ -1626,6 +1724,7 @@ jobs:
           GRYPE_RESULT: ${{ needs.pr-grype.result }}
           TESTS_RESULT: ${{ needs.functional-tests.result }}
           SOAK_RESULT: ${{ needs.soak-test.result }}
+          CHART_PKI_RESULT: ${{ needs.chart-pki-clients.result }}
           PUBLISH_RESULT: ${{ needs.publish-ghcr.result }}
           REGISTRY_NAME: ${{ env.REGISTRY }}
           IMAGE: ${{ env.IMAGE_NAME }}
@@ -1647,6 +1746,8 @@ jobs:
               " ${TESTS_RESULT} |"
             echo "| Soak / chaos (amd64, ~30 min) |" \
               " ${SOAK_RESULT} |"
+            echo "| Chart per-client certificates (amd64, kind) |" \
+              " ${CHART_PKI_RESULT} |"
             echo ""
 
             # Note: needs.<job>.result is the *overall* matrix outcome
