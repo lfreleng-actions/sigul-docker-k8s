@@ -147,7 +147,7 @@ spec:
               - secret:
                   name: {{ include "sigul.secret.caPublic" . }}
               - secret:
-                  name: {{ include "sigul.secret.clientP12" . }}
+                  name: {{ include "sigul.secret.toolboxClientP12" . }}
                   items:
                     - key: client.p12
                       path: client.p12

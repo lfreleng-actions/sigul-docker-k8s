@@ -77,6 +77,9 @@ spec:
   # The chart pre-creates its Secrets empty; the bootstrap Job
   # populates /data out-of-band. Without this, Argo would report the
   # populated Secrets as drifted (and a hard sync could wipe them).
+  # Matching every Secret by kind also covers the per-client
+  # <release>-client-<name>-p12 Secrets that pki.clients adds; an
+  # Application that lists Secrets by name must add each of those.
   ignoreDifferences:
     - kind: Secret
       jsonPointers:

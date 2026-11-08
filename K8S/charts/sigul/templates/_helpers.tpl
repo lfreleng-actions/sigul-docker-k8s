@@ -154,6 +154,88 @@ sigul-server.{{ include "sigul.bridge.internalFQDN" . }}
 {{- define "sigul.secret.marker" -}}{{ include "sigul.fullname" . }}-pki-complete{{- end -}}
 {{- define "sigul.lease.bootstrapLock" -}}{{ include "sigul.fullname" . }}-pki-lock{{- end -}}
 
+{{/* Per-client PKCS#12 Secret name prefix; the full name is
+     <prefix><client name>-p12. Kept in one place because the
+     bootstrap script derives the same names from it. */}}
+{{- define "sigul.secret.clientP12Prefix" -}}{{ include "sigul.fullname" . }}-client-{{- end -}}
+
+{{/* Per-client certificate names from pki.clients, validated at
+     render time and returned as a JSON list (use fromJsonArray).
+     An empty list means the shared client certificate.
+
+     Each name becomes a certificate CN that the server compares with
+     the request's user name under strict checking, so it must be a
+     Sigul user name. The grammar is narrower than server.adminUser's
+     because each name is also part of a Secret name, which must be
+     a DNS-1123 subdomain: lower-case letters, digits, "." and "-",
+     with every "."-separated part starting and ending alphanumeric
+     (so no "..", ".-" or "-."), at most 63 characters. The derived
+     Secret name is checked too, so a name can never reach the
+     bootstrap Job unless every Secret it publishes is valid.
+
+     Per-client certificates only bind a bundle to a user when the
+     server enforces it, so a non-empty list requires
+     server.lenientUsernameCheck "no". An unquoted `no` reaches the
+     template as the boolean false, which means the same thing to
+     the server, so it is accepted too. */}}
+{{- define "sigul.pki.clientNames" -}}
+{{- $names := list -}}
+{{- range $i, $entry := (.Values.pki.clients | default list) -}}
+{{- if not (kindIs "map" $entry) -}}
+{{- fail (printf "pki.clients[%d] must be a map with a name key (e.g. \"- name: admin\"), got %v" $i $entry) -}}
+{{- end -}}
+{{- $name := toString (required (printf "pki.clients[%d].name is required" $i) $entry.name) -}}
+{{- if or (gt (len $name) 63) (not (regexMatch "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$" $name)) -}}
+{{- fail (printf "pki.clients[%d].name %q is not a valid Sigul user name: use lower-case letters, digits, \".\" and \"-\", with each \".\"-separated part starting and ending with a letter or digit (max 63 characters)" $i $name) -}}
+{{- end -}}
+{{- $secret := printf "%s%s-p12" (include "sigul.secret.clientP12Prefix" $) $name -}}
+{{- if or (gt (len $secret) 253) (not (regexMatch "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$" $secret)) -}}
+{{- fail (printf "pki.clients[%d].name %q gives the Secret name %q, which is not a valid Kubernetes DNS-1123 subdomain" $i $name $secret) -}}
+{{- end -}}
+{{- if has $name $names -}}
+{{- fail (printf "pki.clients lists %q more than once: each client gets exactly one certificate" $name) -}}
+{{- end -}}
+{{- $names = append $names $name -}}
+{{- end -}}
+{{- if $names -}}
+{{- $admin := include "sigul.server.adminUser" . -}}
+{{- if not (has $admin $names) -}}
+{{- fail (printf "pki.clients must include server.adminUser %q: the admin toolbox authenticates with that client's certificate" $admin) -}}
+{{- end -}}
+{{- $lenient := toString .Values.server.lenientUsernameCheck -}}
+{{- if not (has $lenient (list "no" "false")) -}}
+{{- fail (printf "pki.clients is set but server.lenientUsernameCheck is %q: per-client certificates bind a bundle to its user only under strict checking, so set it to \"no\"" $lenient) -}}
+{{- end -}}
+{{- end -}}
+{{- toJson $names -}}
+{{- end -}}
+
+{{/* Names of the Secrets holding client PKCS#12 bundles: the shared
+     one by default, one per pki.clients entry otherwise. JSON list. */}}
+{{- define "sigul.secret.clientP12List" -}}
+{{- $names := include "sigul.pki.clientNames" . | fromJsonArray -}}
+{{- if $names -}}
+{{- $prefix := include "sigul.secret.clientP12Prefix" . -}}
+{{- $out := list -}}
+{{- range $names -}}
+{{- $out = append $out (printf "%s%s-p12" $prefix .) -}}
+{{- end -}}
+{{- toJson $out -}}
+{{- else -}}
+{{- toJson (list (include "sigul.secret.clientP12" .)) -}}
+{{- end -}}
+{{- end -}}
+
+{{/* The client Secret the admin toolbox mounts: server.adminUser's
+     own certificate when pki.clients is set, the shared one otherwise. */}}
+{{- define "sigul.secret.toolboxClientP12" -}}
+{{- if include "sigul.pki.clientNames" . | fromJsonArray -}}
+{{ include "sigul.secret.clientP12Prefix" . }}{{ include "sigul.server.adminUser" . }}-p12
+{{- else -}}
+{{ include "sigul.secret.clientP12" . }}
+{{- end -}}
+{{- end -}}
+
 {{/* Workload names (referenced by the bootstrap Job for force-mode
      coordinated restarts). */}}
 {{- define "sigul.bridge.deploymentName" -}}{{ include "sigul.fullname" . }}-bridge{{- end -}}

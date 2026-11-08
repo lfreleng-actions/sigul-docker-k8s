@@ -125,6 +125,30 @@ pki:
   # distributed. Deploying with the placeholder below commits to it.
   # See EVALUATION.md section 8, question 4.
   externalFQDN: sigul-bridge.opensearch.org
+  # Client identities, one certificate each. Empty (the default)
+  # issues the single shared sigul-client.<externalFQDN> certificate
+  # into <release>-client-p12, which the admin toolbox and every
+  # external client bundle then share.
+  #
+  # Set, each entry gets its own certificate with CN=<name> and
+  # clientAuth-only usage, published to <release>-client-<name>-p12
+  # (key client.p12), and no shared certificate is issued. The name
+  # is the Sigul user the certificate authenticates as, so it must
+  # match a user created through the admin toolbox. Rendering fails
+  # unless the names are lower-case Sigul user names (letters,
+  # digits, "." and "-", each "."-separated part starting and ending
+  # alphanumeric, at most 63 characters), the list has no
+  # duplicates, it includes
+  # server.adminUser (the toolbox mounts that one), and
+  # server.lenientUsernameCheck is "no".
+  #
+  # Like externalFQDN, the list is fixed at bootstrap: the CA key is
+  # discarded, so adding or removing a client later means
+  # pki.mode=force and new bundles for every client. See the chart
+  # README, "Per-client certificates".
+  clients: []
+  #  - name: admin
+  #  - name: opensearch-canary
   # Placement of the bootstrap Job, which generates the CA private
   # key and every leaf key in a memory-backed scratch NSS DB. It
   # follows the server by default because a taint only repels: a Job
@@ -169,8 +193,11 @@ bridge:
 
 server:
   adminUser: admin
-  # yes = CI-stack parity: auth requires CA-signed client cert +
-  # password. no = strict cert-CN==username (needs per-user certs).
+  # yes = CI-stack parity: auth requires a CA-signed client cert and
+  # a password, and any certificate may claim any user name.
+  # no = strict: the server rejects a request whose user differs from
+  # its certificate's CN. Required by pki.clients, which issues the
+  # per-user certificates that make it usable.
   lenientUsernameCheck: "yes"
   persistence:
     # Explicit StorageClass for the key-material volume, and the
@@ -277,7 +304,8 @@ networkPolicy:
 # (kubectl exec into it; see chart README). Disabled by default.
 adminToolbox:
   enabled: false
-  # Mounts the client P12 and the NSS/admin passwords, and is the pod
+  # Mounts the client P12 - server.adminUser's own when pki.clients
+  # is set - and the NSS/admin passwords, and is the pod
   # operators exec into to run key ceremonies, so it follows the
   # server's placement on the same reasoning as pki.scheduling above.
   scheduling:
