@@ -448,6 +448,7 @@ K8S/
       conf/                     # bridge/server config templates
       scripts/                  # pki-bootstrap.sh, nss-init.sh,
                                 # publish-secrets.py, k8s_api.py
+      toolbox/                  # make-bundle.sh (CI client bundles)
     templates/
       pki-bootstrap-job.yaml    # + SA/Role/RoleBinding, sync-wave -1
       bridge-deployment.yaml    # wave 1
@@ -499,8 +500,9 @@ required).
 > is built from its own `<release>-client-<name>-p12` Secret instead,
 > and its `client.conf` `user-name` must equal that name, since the
 > server then runs with strict username checking. The bundle format is
-> unchanged. The build steps are in the chart README, "Producing the
-> CI client bundle".
+> unchanged. `K8S/charts/sigul/files/toolbox/make-bundle.sh` builds
+> it from the Secrets in one command; the chart README, "Producing the
+> CI client bundle", documents it.
 
 ---
 
@@ -646,7 +648,7 @@ party for all of these:
 | **1. Charts on a dev cluster** | Umbrella chart + bridge/server subcharts; PKI bootstrap Job (certutil flow → Secrets); probes, NetworkPolicies, PodSecurity restricted; kind/k3s CI job running the *existing* integration + signing test suites against the charts |
 | **2. Production storage & secrets** | Encrypted StorageClass (KMS-backed); ESO/Vault integration; backup/restore with rehearsed recovery; etcd encryption for Secrets |
 | **3. Argo CD rollout** | App-of-apps, sync waves, prune/self-heal guardrails; environment overlays (dev/staging/prod values) |
-| **4. Operations** | Key ceremony + user provisioning runbooks (admin toolbox); leaf-cert re-issue runbook; monitoring/alerting (connection-established metric, cert expiry, probe failures); audit logging |
+| **4. Operations** | Key ceremony + user provisioning runbooks (admin toolbox); CI client bundles from `files/toolbox/make-bundle.sh` (chart README, "Producing the CI client bundle"); leaf-cert re-issue runbook; monitoring/alerting (connection-established metric, cert expiry, probe failures); audit logging |
 | **5. Future** | Leaf-rotation automation; HSM/PKCS#11 evaluation; upstream patch submission |
 
 ---

@@ -123,6 +123,13 @@ spec:
             - name: config
               mountPath: /etc/sigul
               readOnly: true
+            # make-bundle.sh and the client.conf.template it renders.
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: conf-templates
+              mountPath: /conf-templates
+              readOnly: true
             - name: workspace
               mountPath: /workspace
             - name: tmp

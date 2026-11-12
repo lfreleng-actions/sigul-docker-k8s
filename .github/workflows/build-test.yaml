@@ -1628,12 +1628,32 @@ jobs:
             bridge-linux-amd64-image:test \
             /test/test_pki_bootstrap_clients.py
 
+      - name: 'Test the client bundle builder'
+        shell: bash
+        run: |
+          # make-bundle.sh runs from the toolbox too, so it is tested
+          # with the client image's certutil, gpg and jq.
+          docker run --rm \
+            --user 1000:1000 \
+            -v "${PWD}/test:/test:ro" \
+            -v "${PWD}/K8S/charts/sigul/files:/chart-files:ro" \
+            -e PKI_SCRIPTS_DIR=/chart-files/scripts \
+            -e MAKE_BUNDLE=/chart-files/toolbox/make-bundle.sh \
+            --entrypoint python3 \
+            client-linux-amd64-image:test \
+            /test/test_make_bundle.py
+
       - name: 'Test strict checking with per-client certificates (kind)'
         shell: bash
         run: |
           # kind ships with the runner image. Installs with the shared
           # certificate, adopts pki.clients as the chart README's
           # runbook does, then signs and impersonates through it.
+          # make-bundle.sh runs on the host and needs NSS's tools.
+          if ! command -v certutil >/dev/null; then
+            sudo apt-get update -q
+            sudo apt-get install -y -q --no-install-recommends libnss3-tools
+          fi
           bash test/k8s_pki_clients.sh
 
       - name: 'Upload diagnostics'
