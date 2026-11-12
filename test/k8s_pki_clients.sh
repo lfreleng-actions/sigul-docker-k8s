@@ -14,12 +14,15 @@
 #   - the same bundle claiming another user (-u admin, or another
 #     client's name) is rejected with "Cert CN and user differ", even
 #     with that user's correct password
+#   - a bundle make-bundle.sh builds from the cluster, in either
+#     format, unpacks in the client image and signs through the bridge
 #   - once a client's user is deleted its bundle can do nothing
 #
 # The Compose stack the other integration tests use has no PKI
 # bootstrap Job, so this runs the chart's own.
 #
-# Usage (images already built and tagged locally):
+# Usage (images already built and tagged locally; make-bundle.sh also
+# needs certutil, pk12util, gpg, xz and jq on this host):
 #   bash test/k8s_pki_clients.sh [--keep]
 #
 # Environment:
@@ -351,6 +354,70 @@ if sign_as "${OTHER_CONF}" "${OTHER_KEY_PASSPHRASE}" /workspace/other.asc >/dev/
     pass "${OTHER} still signs as itself"
 else
     fail "${OTHER} still signs as itself"
+fi
+
+### Bundles from make-bundle.sh (#116) ###############################
+
+# Builds ${CANARY}'s bundle from the cluster in each format, installs
+# it in the toolbox (the client image) as its consumer would, and
+# signs with it through the bridge. Needs certutil, pk12util, gpg, xz
+# and jq on this host.
+MAKE_BUNDLE="${CHART}/files/toolbox/make-bundle.sh"
+BUNDLE_TMP="$(mktemp -d)"
+printf '%s\n' "${CANARY_KEY_PASSPHRASE}" > "${BUNDLE_TMP}/passphrase"
+
+bundle_signs() {
+    # bundle_signs FORMAT
+    local format="$1" dir="/workspace/bundle-$1" out="${BUNDLE_TMP}/$1" result
+    if ! bash "${MAKE_BUNDLE}" --context "${CONTEXT}" --namespace "${NAMESPACE}" \
+            --release "${FULLNAME}" --client "${CANARY}" \
+            --bridge "${FULLNAME}-bridge.${NAMESPACE}.svc.cluster.local" \
+            --nss-dir "${dir}/sigul" --format "${format}" \
+            --key-passphrase-file "${BUNDLE_TMP}/passphrase" \
+            --out "${out}" >/dev/null; then
+        fail "make-bundle.sh --format ${format} builds ${CANARY}'s bundle"
+        return
+    fi
+    pass "make-bundle.sh --format ${format} builds ${CANARY}'s bundle"
+    if [ "${format}" = action ]; then
+        # Unpack SIGUL_CREDENTIALS as sigul-sign-action does.
+        base64 -d < "${out}/sigul-credentials.b64" > "${out}/credentials.json"
+        jq -r .config "${out}/credentials.json" | base64 -d > "${out}/client.conf"
+        jq -r .pki "${out}/credentials.json" | base64 -d > "${out}/sigul-pki.asc"
+        if [ "$(jq -r .password "${out}/credentials.json")" = "${CANARY_KEY_PASSPHRASE}" ]; then
+            pass "SIGUL_CREDENTIALS carries the key passphrase"
+        else
+            fail "SIGUL_CREDENTIALS carries the key passphrase"
+        fi
+    fi
+    in_toolbox mkdir -p "${dir}" >/dev/null
+    in_toolbox sh -c "cat > ${dir}/client.conf" < "${out}/client.conf" >/dev/null
+    in_toolbox sh -c "cat > ${dir}/sigul-pki.asc" < "${out}/sigul-pki.asc" >/dev/null
+    if ! printf '%s\n' "${CANARY_KEY_PASSPHRASE}" | in_toolbox bash -eu -o pipefail -c "
+            export GNUPGHOME=\$(mktemp -d)
+            gpg --batch --quiet --pinentry-mode loopback --passphrase-fd 0 \
+                -d ${dir}/sigul-pki.asc | tar -xJf - -C ${dir}
+            " >/dev/null; then
+        fail "the --format ${format} bundle decrypts and unpacks in the client image"
+        return
+    fi
+    if result="$(sign_as "${dir}/client.conf" "${CANARY_KEY_PASSPHRASE}" "${dir}/signed.asc")" \
+            && in_toolbox grep -q 'BEGIN PGP SIGNATURE' "${dir}/signed.asc"; then
+        pass "${CANARY} signs through the bridge with its --format ${format} bundle"
+    else
+        fail "${CANARY} signs through the bridge with its --format ${format} bundle"
+        printf '%s\n' "${result}"
+    fi
+}
+
+bundle_signs files
+bundle_signs action
+rm -rf "${BUNDLE_TMP}"
+
+if in_toolbox bash /scripts/make-bundle.sh --help >/dev/null; then
+    pass "the admin toolbox carries make-bundle.sh"
+else
+    fail "the admin toolbox carries make-bundle.sh"
 fi
 
 ### Cutting off a client (README runbook) ############################

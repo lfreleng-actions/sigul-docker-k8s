@@ -502,8 +502,8 @@ Keys, users and grants live on the server's volume and are untouched.
    later sync does not rotate again.
 4. Create the Sigul user for any name that does not have one yet, from
    the toolbox, and grant its key access.
-5. Build each client's new bundle from its Secret (below) and replace
-   the old ones.
+5. Build each client's new bundle with `make-bundle.sh` (below) and
+   replace the old ones.
 6. Delete the old shared `<release>-client-p12`. Nothing mounts it any
    more, but its deletion protection keeps it in the cluster, still
    holding a certificate the new CA did not sign.
@@ -542,19 +542,100 @@ nothing. Remove the entry at the next planned rotation.
 
 ## Producing the CI client bundle
 
-The GitHub Action consumes a GPG-encrypted tar.xz of the client
-`.sigul/` directory. Until automated, build it from the client's
-Secret - `<release>-client-<name>-p12` with `pki.clients`, otherwise
-`<release>-client-p12` - plus `<release>-ca-public` and
-`<release>-passwords` (`p12-password`), following the same import
-steps as `files/scripts/nss-init.sh`. The files hold the client's
-private key and its passwords, so `umask 077` keeps the directory and
-everything written into it readable by you alone, including after a
-failed import:
+The GitHub Action consumes a client's `client.conf` and a
+GPG-encrypted tar.xz of its NSS database. `files/toolbox/make-bundle.sh`
+builds both from the release's Secrets in one command, from a
+workstation with `kubectl` access to the namespace and NSS's
+`certutil` and `pk12util`, `gpg`, `xz` and (for `--format action`)
+`jq`:
 
 ```sh
-umask 077
-mkdir -p .sigul/nss && cd .sigul
+bash files/toolbox/make-bundle.sh \
+  --release <release> --namespace <ns> --client <name> \
+  --bridge <bridge-fqdn> --key-passphrase-file <file> --out <dir>
+```
+
+Required options:
+
+- `--release`: prefix of the release's Secrets (the chart's fullname)
+- `--namespace`: namespace holding the release
+- `--client`: Sigul user the bundle authenticates as, in
+  `server.adminUser`'s grammar; only a `pki.clients` name has a
+  Secret of its own, any other uses the shared certificate
+- `--bridge`: `bridge-hostname` the client dials
+- `--out`: output directory, created mode 0700 if absent
+
+Optional:
+
+- `--server-hostname`: must equal the server certificate's CN;
+  default `sigul-server.<release>-bridge.<ns>.svc.cluster.local`
+- `--bridge-port`: the bridge's client port; default `44334`
+- `--nss-dir`: where the consumer's database lives; default
+  `/home/jenkins/sigul`
+- `--key-passphrase-file`: its first line, less a trailing carriage
+  return, encrypts the bundle; prompted for when absent
+- `--format`: `files` (default) or `action` (below)
+- `--context`: `kubectl` context; default the current one
+- `--secrets-dir`: read the Secrets' keys from files instead (below)
+- `--shared-cert`: with `--secrets-dir`, `client.p12` is the shared
+  certificate (below)
+
+The passphrase is the client's key passphrase, the action's
+`sigul-pass`; it is read from the file's first line or prompted for,
+never taken as an argument. Outputs:
+
+- `client.conf` (the action's `sigul-conf`), holding the NSS password
+- `sigul-pki.asc` (`sigul-pki`), the encrypted bundle
+- with `--format action`, also `sigul-credentials.b64`: the base64 of
+  the single-line JSON document below (shown wrapped), which
+  `lfreleng-actions/sigul-sign-action`'s `live-signing` workflow takes
+  as `SIGUL_CREDENTIALS`
+
+```text
+{"version":1,"config":"<base64 client.conf>",
+ "password":"<passphrase>","pki":"<base64 sigul-pki.asc>"}
+```
+
+The archive's top directory is the last component of `--nss-dir`, so
+a consumer that unpacks it in the parent directory gets the database
+where `client.conf` names it. global-jjb's layout is the default;
+this repository's action unpacks `.sigul/` in its work directory, so
+pass `--nss-dir <work directory>/.sigul` for it. The script prints the
+NSS password once. Everything it writes holds the client's private
+key or a password: store each output in the consumer's secret store,
+then delete the directory. The script refuses to overwrite outputs,
+and creates each one exclusively, so two runs sharing `--out` cannot
+mix their files: the loser fails and removes what it wrote.
+
+It refuses, naming the check that failed:
+
+- an empty Secret, one the chart pre-created that the bootstrap Job
+  has not populated
+- a database lacking `sigul-ca` (`CT,C,C`), `sigul-bridge-cert`
+  (`P,P,P`) or `sigul-client-cert`, or holding the CA's private key
+- with `pki.clients`, a client certificate whose CN is not `--client`:
+  strict checking would reject every request
+- with `--shared-cert`, a certificate other than the shared one:
+  a `sigul-client.*` CN issued for `serverAuth` as well as
+  `clientAuth`, which tells it from a `pki.clients` certificate whose
+  client name happens to start `sigul-client.`
+- a bundle that does not decrypt and unpack to the same database
+
+**From the admin toolbox**, which has the tools but no `kubectl`, the
+chart mounts the script at `/scripts/make-bundle.sh`. Copy the four
+Secret keys into a directory there - `client.p12`, `ca.crt`,
+`bridge.crt` and `p12-password`, decoded - and pass
+`--secrets-dir <dir>`. The certificate's CN must then equal
+`--client`; for the shared `<release>-client-p12` (no `pki.clients`),
+add `--shared-cert` instead. Write the directory and `--out` under
+`/workspace`.
+
+What the script does, by hand: with `pki.clients` the client's Secret
+is `<release>-client-<name>-p12`, otherwise the shared
+`<release>-client-p12`, and under the shared certificate any
+`user-name` works through lenient checking. Under `umask 077`:
+
+```sh
 kubectl get secret <release>-client-<name>-p12 \
   -o jsonpath='{.data.client\.p12}' | base64 -d > client.p12
 kubectl get secret <release>-ca-public \
@@ -563,18 +644,21 @@ kubectl get secret <release>-ca-public \
   -o jsonpath='{.data.bridge\.crt}' | base64 -d > bridge.crt
 kubectl get secret <release>-passwords \
   -o jsonpath='{.data.p12-password}' | base64 -d > p12.pw
-printf '%s' "$NSS_PASSWORD" > nss.pw
-certutil -N -d sql:nss -f nss.pw
-certutil -A -d sql:nss -f nss.pw -n sigul-ca -t CT,C,C -a -i ca.crt
-certutil -A -d sql:nss -f nss.pw -n sigul-bridge-cert -t P,P,P -a -i bridge.crt
-pk12util -i client.p12 -d sql:nss -k nss.pw -w p12.pw
-rm client.p12 p12.pw
+printf '%s' "$NSS_PASSWORD" > nss.pw    # fresh and random
+mkdir sigul
+certutil -N -d sql:sigul -f nss.pw
+certutil -A -d sql:sigul -f nss.pw -n sigul-ca -t CT,C,C -a -i ca.crt
+certutil -A -d sql:sigul -f nss.pw -n sigul-bridge-cert -t P,P,P -a -i bridge.crt
+pk12util -i client.p12 -d sql:sigul -k nss.pw -w p12.pw
+tar -cJf sigul.tar.xz sigul
+gpg --batch --pinentry-mode loopback --passphrase-file <file> \
+  --symmetric --cipher-algo AES256 --armor -o sigul-pki.asc sigul.tar.xz
 ```
 
-Then write a `client.conf` like `files/conf/client.conf.template`,
-with `user-name: <name>` - under strict checking it must equal the
-certificate's CN - and package the directory (EVALUATION.md §9
-Phase 4).
+`client.conf` is `files/conf/client.conf.template` with
+`user-name: <name>` - under strict checking it must equal the
+certificate's CN - and the bridge, server name, `nss-dir` and NSS
+password filled in (EVALUATION.md §9 Phase 4).
 
 ## Uninstall and reinstall
 
@@ -968,5 +1052,6 @@ The per-client certificate tests, from the repository root:
 ```sh
 python3 test/test_chart_pki_clients.py      # helm + PyYAML
 python3 test/test_pki_bootstrap_clients.py  # certutil + pk12util
+python3 test/test_make_bundle.py            # certutil, gpg, xz + jq
 bash test/k8s_pki_clients.sh                # kind, images built locally
 ```

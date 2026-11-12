@@ -12,7 +12,8 @@
 #   - the bootstrap Role reaches exactly the Secrets the chart creates,
 #     and never holds "create" on Secrets
 #   - the Job is told the same client names and Secret prefix
-#   - the admin toolbox mounts server.adminUser's own certificate
+#   - the admin toolbox mounts server.adminUser's own certificate, and
+#     make-bundle.sh with the template it renders
 #   - the default render keeps the single shared client Secret
 #   - invalid client lists fail the render with a clear message
 #
@@ -161,6 +162,19 @@ def test_per_client_render() -> None:
         "the admin toolbox mounts the admin's own certificate",
         toolbox_client_secret(docs) == f"{RELEASE}-client-admin-p12",
         f"mounts {toolbox_client_secret(docs)!r}",
+    )
+    toolbox = find(docs, "Deployment", "-admin-toolbox")["spec"]["template"]["spec"]
+    mounts = {
+        m["mountPath"]: m["name"] for m in toolbox["containers"][0]["volumeMounts"]
+    }
+    scripts = find(docs, "ConfigMap", "-scripts")["data"]
+    bundler = (CHART / "files/toolbox/make-bundle.sh").read_text()
+    check(
+        "the admin toolbox carries make-bundle.sh and client.conf.template",
+        mounts.get("/scripts") == "scripts"
+        and mounts.get("/conf-templates") == "conf-templates"
+        and scripts.get("make-bundle.sh") == bundler,
+        f"mounts {mounts}",
     )
 
     server = find(docs, "StatefulSet", "-server")

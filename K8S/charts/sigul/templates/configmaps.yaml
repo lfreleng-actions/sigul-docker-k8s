@@ -27,6 +27,8 @@ data:
 {{ .Files.Get "files/scripts/db-init.sh" | indent 4 }}
   bridge-healthcheck.py: |
 {{ .Files.Get "files/scripts/bridge-healthcheck.py" | indent 4 }}
+  make-bundle.sh: |
+{{ .Files.Get "files/toolbox/make-bundle.sh" | indent 4 }}
 ---
 apiVersion: v1
 kind: ConfigMap
