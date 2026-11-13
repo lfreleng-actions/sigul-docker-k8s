@@ -23,7 +23,7 @@
 #     a per-client certificate, even one whose name starts with the
 #     shared certificate's sigul-client. prefix
 #   - an --nss-dir whose last component starts with '-' is archived
-#   - a CRLF passphrase file encrypts with, and puts in the JSON, the
+#   - a CRLF passphrase encrypts with, and puts in the JSON, the
 #     passphrase without its carriage return
 #   - the NSS password never reaches sed's argv
 #   - an empty Secret, a CN differing from --client and existing
@@ -139,15 +139,13 @@ class Cluster:
         _ = sed.write_text(SED.format(sed=shutil.which("sed") or "/bin/sed"))
         sed.chmod(0o755)
         self.root: Path = root
-        self.passfile: Path = root / "passphrase"
-        _ = self.passfile.write_text(f"{PASSPHRASE}\nignored second line\n")
 
     def make_bundle(
         self,
         out: Path,
         *extra: str,
         client: str = CLIENT,
-        passfile: Path | None = None,
+        passphrase: str = f"{PASSPHRASE}\nignored second line\n",
         stub_env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         env = {
@@ -170,13 +168,13 @@ class Cluster:
                 "--bridge",
                 BRIDGE,
                 "--key-passphrase-file",
-                str(passfile or self.passfile),
+                "/dev/stdin",
                 "--out",
                 str(out),
                 *extra,
             ],
             env=env,
-            stdin=subprocess.DEVNULL,
+            input=passphrase,
             capture_output=True,
             text=True,
             check=False,
@@ -196,8 +194,12 @@ def secrets_dir(cluster: Cluster, dest: Path, client_secret: str) -> Path:
     return dest
 
 
-def run(*argv: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False)
+def run(
+    *argv: str, cwd: Path | None = None, stdin: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        argv, cwd=cwd, input=stdin, capture_output=True, text=True, check=False
+    )
 
 
 def conf_value(conf: str, key: str) -> str:
@@ -365,9 +367,9 @@ def test_action_format(tmp: Path) -> None:
         },
         f"{trust}",
     )
-    pwfile = tmp / "action" / "nss.pw"
-    _ = pwfile.write_text(nss_password)
-    keys = run("certutil", "-K", "-d", f"sql:{db}", "-f", str(pwfile)).stdout
+    keys = run(
+        "certutil", "-K", "-d", f"sql:{db}", "-f", "/dev/stdin", stdin=nss_password
+    ).stdout
     check(
         "the NSS password unlocks the client's key, and only it",
         "sigul-client-cert" in keys and "sigul-ca" not in keys,
@@ -523,10 +525,11 @@ def test_shared_prefix_collision(tmp: Path) -> None:
 
 def test_crlf_passphrase(tmp: Path) -> None:
     cluster = Cluster(tmp / "crlf", ["admin", CLIENT])
-    passfile = tmp / "crlf" / "passphrase-crlf"
-    _ = passfile.write_bytes(f"{PASSPHRASE}\r\nignored\r\n".encode())
     out = tmp / "crlf" / "out"
-    done = cluster.make_bundle(out, "--format", "action", passfile=passfile)
+    # subprocess encodes text input as is on POSIX: the CRs reach the script.
+    done = cluster.make_bundle(
+        out, "--format", "action", passphrase=f"{PASSPHRASE}\r\nignored\r\n"
+    )
     password = ""
     if done.returncode == 0:
         encoded = (out / "sigul-credentials.b64").read_text().strip()
@@ -539,10 +542,14 @@ def test_crlf_passphrase(tmp: Path) -> None:
         if done.returncode == 0
         else []
     )
+    matches = password == PASSPHRASE
+    has_cr = "\r" in password
     check(
-        "a CRLF passphrase file loses its carriage return",
-        done.returncode == 0 and password == PASSPHRASE and bool(listing),
-        f"exit {done.returncode}, password {password!r}, "
+        "a CRLF passphrase loses its carriage return",
+        done.returncode == 0 and matches and bool(listing),
+        f"exit {done.returncode}, "
+        + f"password {'matches' if matches else 'differs from'} the first line, "
+        + f"{'still holds' if has_cr else 'holds no'} CR, "
         + f"{'decrypts' if listing else 'does not decrypt'} without the CR",
     )
 
