@@ -1101,6 +1101,57 @@ half fail; with it all do. Against the production OpenSearch bridge,
 unpinned, the released client fails and the patched one fetches the
 key.
 
+### 24-fix-bridge-deferred-reply.patch
+
+**Status:** HIGH - a fast server rejection reaches the client as an I/O
+error
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** Bridge
+
+**Problem:**
+The bridge relays the inner TLS stream with one `_InnerBridgingBuffer`
+per direction. Each parses the framed stream it reads from its peer,
+forwards the inner chunks, and defers any outer chunks it meets for that
+peer's `OuterBuffer` to hand out once the inner phase ends.
+`bridge_inner_stream` handed each side's deferred data to the other
+peer's buffer: the server's went to the client's buffer, and the
+client's to the server's. A server that rejects a request as soon as it
+has read the inner fields replies within a millisecond of its inner
+EOF, so both arrive in one read. The bridge then looked for the reply on
+the server's socket, met the server's EOF instead (`Unexpected EOF on
+outer stream`), and dropped both peers. The client reported
+`I/O error: EOFError()` in place of `Error: Authentication failed`
+(#123). The same parser also consumed the outer stream's end marker when
+it arrived in that read, so a buffer that should have reported EOF read
+the socket and waited for the idle deadline instead.
+
+Strict user checking (`server.lenientUsernameCheck: "no"`, which
+`pki.clients` requires) makes this reachable in production: a
+certificate/user mismatch is the first check the server makes. A request
+that checks a password or signs takes far longer, which is why the fault
+went unseen before. Upstream `master` carries the same two lines.
+
+**Fix:**
+Each buffer's deferred outer data goes back to the buffer of the peer it
+read from: `buf_1` read the client, `buf_2` the server. The
+`_InnerBridgingBuffer` records an outer EOF it reads during the inner
+phase instead of dropping it, and `OuterBuffer.add_outer_data` takes it
+as a flag, so `read()` raises `EOFError` once the deferred data is
+consumed rather than reading the socket. A reply that arrives after the
+inner phase is read from the socket exactly as before.
+
+**Test:** `test/test_bridge_fast_reply.py` drives `bridge_inner_stream`
+over real NSPR loopback sockets, queuing each peer's bytes before the
+relay starts so they come back in one read and nothing depends on
+timing. A reply arriving with the server's inner EOF is read from the
+server's buffer and leaves nothing on the client's; an outer EOF
+arriving with the reply is reported at once; the mirror case lands the
+client's outer data on the client's buffer; and a reply arriving after
+the inner phase is read as before. Without the patch the first three
+fail - the first with the production message - and with it all pass.
+`test/k8s_pki_clients.sh` (`expect_cn_rejection`) checks the whole path
+on kind and still requires `Authentication failed` from the client.
+
 ## Applying Patches
 
 The Docker build process automatically applies these patches:
