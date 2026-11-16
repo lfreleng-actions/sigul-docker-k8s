@@ -31,8 +31,36 @@
 #   PKI_TEST_SERVER_IMAGE   server image          (default server-linux-amd64-image:test)
 #   PKI_TEST_CLIENT_IMAGE   client image          (default client-linux-amd64-image:test)
 #   PKI_TEST_LOG_DIR        diagnostics on failure (default test-artifacts/k8s-pki-clients)
+#   PKI_TEST_DIAG_TIMEOUT   seconds each diagnostics kubectl call may take (default 60)
+#   PKI_TEST_DIAG_BUDGET    seconds all diagnostics together may take (default 180)
 #
 # --keep leaves the cluster up for inspection; otherwise it is deleted.
+#
+# On failure, PKI_TEST_LOG_DIR holds, for the bridge, server, admin
+# toolbox and bootstrap Job (COMPONENT), and each of their pods (POD):
+#   resources.txt                 pods, Jobs and Secrets (get -o wide)
+#   events.txt                    namespace events, oldest first
+#   workloads.yaml                StatefulSets, Deployments and Jobs
+#                                 (get -o yaml)
+#   COMPONENT.log                 current containers' stdout, every
+#                                 container, prefixed and timestamped
+#   COMPONENT.describe.txt        kubectl describe of the pods: probe
+#                                 failures, last state, restart reasons
+#   POD.CONTAINER.previous.log    the previous container's stdout
+#                                 (logs --previous --timestamps), for
+#                                 each container that restarted
+#   POD.sigul_bridge.log          /var/log/sigul_bridge.log and
+#   POD.sigul_server.log          /var/log/sigul_server.log, the
+#                                 daemons' own logs; a first line
+#                                 "UNAVAILABLE: ..." and kubectl's error
+#                                 instead when the container would not
+#                                 take an exec
+# Collection is best effort: it never changes the exit status or stops
+# the cluster being deleted. Every kubectl call in it has a deadline
+# (PKI_TEST_DIAG_TIMEOUT) and the calls together have a budget
+# (PKI_TEST_DIAG_BUDGET), so an API server that stops answering cannot
+# hold the cleanup trap past the budget. A file whose query the spent
+# budget skipped says "SKIPPED: ..." instead.
 
 set -euo pipefail
 
@@ -68,21 +96,80 @@ fail() { printf 'FAIL  %s\n' "$*"; FAILED+=("$*"); }
 kube() { kubectl --context "${CONTEXT}" -n "${NAMESPACE}" "$@"; }
 genpw() { head -c 18 /dev/urandom | base64 | tr -d '=+/'; }
 
+# A crash-looping container can leave kubectl waiting on its stream,
+# and an API server that stops answering can stall any call, so every
+# diagnostics query goes through diag and its deadline. Each call also
+# stops at DIAG_DEADLINE, which collect_diagnostics sets from the
+# budget, so the whole collection leaves the job time to delete the
+# cluster and upload the artefact.
+DIAG_TIMEOUT="${PKI_TEST_DIAG_TIMEOUT:-60}"
+DIAG_BUDGET="${PKI_TEST_DIAG_BUDGET:-180}"
+DIAG_DEADLINE=0
+diag() {
+    local left=$((DIAG_DEADLINE - SECONDS))
+    if [ "${left}" -le 0 ]; then
+        printf 'SKIPPED: diagnostics budget of %s s spent\n' "${DIAG_BUDGET}" >&2
+        return 124
+    fi
+    if [ "${left}" -gt "${DIAG_TIMEOUT}" ]; then
+        left="${DIAG_TIMEOUT}"
+    fi
+    timeout "${left}" kubectl --context "${CONTEXT}" -n "${NAMESPACE}" "$@"
+}
+
+# daemon_log POD DAEMON: Sigul writes /var/log/sigul_DAEMON.log, not
+# stdout, from the container named DAEMON. A container that will not
+# take an exec gets a file saying so instead.
+daemon_log() {
+    local pod="$1" daemon="$2" out rc
+    out="${LOG_DIR}/${pod}.sigul_${daemon}.log"
+    diag exec "${pod}" -c "${daemon}" -- cat "/var/log/sigul_${daemon}.log" \
+        > "${out}" 2> "${out}.err"
+    rc=$?
+    if [ "${rc}" -ne 0 ]; then
+        {
+            printf 'UNAVAILABLE: reading /var/log/sigul_%s.log from %s/%s exited %s\n' \
+                "${daemon}" "${pod}" "${daemon}" "${rc}"
+            cat "${out}.err"
+        } > "${out}"
+    fi
+    rm -f "${out}.err"
+}
+
+# Best effort throughout: cleanup runs this in a subshell where errexit
+# does not apply, so one failed kubectl call does not stop the rest.
 collect_diagnostics() {
+    local component pod container restarts
+    DIAG_DEADLINE=$((SECONDS + DIAG_BUDGET))
     mkdir -p "${LOG_DIR}"
-    kube get pods,jobs,secrets -o wide > "${LOG_DIR}/resources.txt" 2>&1 || true
-    kube get events --sort-by=.lastTimestamp > "${LOG_DIR}/events.txt" 2>&1 || true
+    diag get pods,jobs,secrets -o wide > "${LOG_DIR}/resources.txt" 2>&1
+    diag get events --sort-by=.lastTimestamp > "${LOG_DIR}/events.txt" 2>&1
+    diag get statefulset,deployment,job -o yaml > "${LOG_DIR}/workloads.yaml" 2>&1
     for component in bridge server admin-toolbox pki-bootstrap; do
-        kube logs -l "app.kubernetes.io/component=${component}" \
-            --all-containers --prefix --tail=2000 \
-            > "${LOG_DIR}/${component}.log" 2>&1 || true
+        diag logs -l "app.kubernetes.io/component=${component}" \
+            --all-containers --prefix --timestamps --tail=2000 \
+            > "${LOG_DIR}/${component}.log" 2>&1
+        diag describe pods -l "app.kubernetes.io/component=${component}" \
+            > "${LOG_DIR}/${component}.describe.txt" 2>&1
+        for pod in $(diag get pods -l "app.kubernetes.io/component=${component}" \
+                -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null); do
+            while read -r container restarts; do
+                [ -n "${container}" ] && [ "${restarts:-0}" -gt 0 ] 2>/dev/null \
+                    || continue
+                diag logs "${pod}" -c "${container}" --previous --timestamps \
+                    > "${LOG_DIR}/${pod}.${container}.previous.log" 2>&1
+            done < <(diag get pod "${pod}" -o jsonpath='{range .status.initContainerStatuses[*]}{.name}{" "}{.restartCount}{"\n"}{end}{range .status.containerStatuses[*]}{.name}{" "}{.restartCount}{"\n"}{end}' 2>/dev/null)
+            case "${component}" in
+                bridge | server) daemon_log "${pod}" "${component}" ;;
+            esac
+        done
     done
 }
 
 cleanup() {
     local rc=$?
     if [ "${rc}" -ne 0 ] || [ "${#FAILED[@]}" -gt 0 ]; then
-        collect_diagnostics
+        ( collect_diagnostics ) || true
         log "diagnostics in ${LOG_DIR}"
     fi
     if ! ${KEEP}; then

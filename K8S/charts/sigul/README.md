@@ -1053,5 +1053,6 @@ The per-client certificate tests, from the repository root:
 python3 test/test_chart_pki_clients.py      # helm + PyYAML
 python3 test/test_pki_bootstrap_clients.py  # certutil + pk12util
 python3 test/test_make_bundle.py            # certutil, gpg, xz + jq
+python3 test/test_k8s_pki_diagnostics.py    # bash; the kind test's diagnostics
 bash test/k8s_pki_clients.sh                # kind, images built locally
 ```
