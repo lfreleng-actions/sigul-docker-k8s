@@ -1,0 +1,114 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Deliver a reply the server sends with its inner EOF. The bridge relays
+# the inner TLS stream with one _InnerBridgingBuffer per direction; each
+# defers any outer-stream chunks it reads along with the inner ones, for
+# that peer's OuterBuffer to hand out once the inner phase ends.
+# bridge_inner_stream handed each side's deferred data to the other
+# peer's buffer: the server's went to the client's buffer, and the
+# client's to the server's. A server that rejects a request as soon as
+# it has read the inner fields - a certificate/user mismatch under
+# strict user checking - replies within the same read as its inner EOF.
+# The bridge then looked for that reply on the server's socket, met the
+# server's EOF instead, dropped both peers, and the client reported an
+# I/O error in place of the server's error. The same parser also
+# consumed the outer stream's end marker when it arrived in that read,
+# so a buffer that should have reported EOF read the socket and waited.
+# Each buffer's deferred data and EOF now go to the buffer of the peer
+# it read from. See patches/README.md.
+#
+--- a/src/double_tls.py
++++ b/src/double_tls.py
+@@ -1126,6 +1126,7 @@ class OuterBuffer(object):
+         self.__moved = 0
+         self.__inner_packets = b''
+         self.__outer_data = b''
++        self.__outer_eof = False
+         if idle_timeout is None:
+             self.__interval = nss.io.PR_INTERVAL_NO_TIMEOUT
+         else:
+@@ -1225,6 +1226,10 @@ class OuterBuffer(object):
+                 break
+             if len(self.__outer_data) != 0:
+                 raise Exception('Unexpected outer data')
++            if self.__outer_eof:
++                # The peer's end of stream was read along with the data
++                # above, during the inner phase; nothing follows it.
++                raise EOFError('Unexpected EOF on outer stream')
+             header = self.__recv_exact(utils.u32_size)
+             v = utils.u32_unpack(header)
+             _debug('o%s: header %08X', _id(self), v)
+@@ -1281,11 +1286,19 @@ class OuterBuffer(object):
+         self.__inner_packets = b''
+         return res
+
+-    def add_outer_data(self, data):
+-        '''Add data to be read as coming from the outer stream.'''
++    def add_outer_data(self, data, eof=False):
++        '''Add data to be read as coming from the outer stream.
++
++        If eof is True, the peer's end of the outer stream followed data,
++        and read() reports it once data is consumed instead of reading
++        the socket.
++
++        '''
+         self.__outer_data += data
+-        _debug('o%s: accepted %d bytes of outer data (total %d)', _id(self),
+-               len(data), len(self.__outer_data))
++        if eof:
++            self.__outer_eof = True
++        _debug('o%s: accepted %d bytes of outer data (total %d, eof %s)',
++               _id(self), len(data), len(self.__outer_data), eof)
+
+
+ class _InnerBridgingBuffer(_ForwardingBuffer):
+@@ -1303,6 +1316,7 @@ class _InnerBridgingBuffer(_ForwardingBuffer):
+         self.__src_open = True  # FIXME: closed in inner_packets?
+         self.__dst_shut_down = False
+         self.__outer_data = b''
++        self.__outer_eof = False
+
+     def pending_outer_data(self):
+         '''Return outer stream data that needs handling.
+@@ -1313,6 +1327,10 @@ class _InnerBridgingBuffer(_ForwardingBuffer):
+         self.__outer_data = b''
+         return res
+
++    def pending_outer_eof(self):
++        '''True if src's end of the outer stream was read with the inner.'''
++        return self.__outer_eof
++
+     @property
+     def _active(self):
+         _debug('b%s active: open:%s, len:%s', _id(self), self.__src_open,
+@@ -1407,6 +1425,12 @@ class _InnerBridgingBuffer(_ForwardingBuffer):
+                             self.__src_open = False
+                             # Don't send additional EOF
+                             self.__dst_shut_down = True
++                    elif v == 0:
++                        # The outer stream's end, read along with the
++                        # inner EOF ahead of it. Keep it for the outer
++                        # buffer; it must not simply vanish here.
++                        _debug('... deferred outer EOF')
++                        self.__outer_eof = True
+                     else:
+                         self.__outer_bytes_left = v
+                     self.__header_buffer = b''
+@@ -1450,5 +1474,14 @@ def bridge_inner_stream(client_buf, server_buf, idle_timeout=None,
+     client_fd.set_socket_option(nss.io.PR_SockOpt_Nonblocking, False)
+     server_fd.set_socket_option(nss.io.PR_SockOpt_Nonblocking, False)
+
+-    client_buf.add_outer_data(buf_2.pending_outer_data())
+-    server_buf.add_outer_data(buf_1.pending_outer_data())
++    # Each buffer defers the outer data it read from its own source
++    # along with the inner stream, so it goes back to the OuterBuffer
++    # of that same peer: buf_1 read the client, buf_2 the server. A
++    # server that rejects a request as soon as the inner fields arrive
++    # sends its reply within the same read as its inner EOF, and that
++    # reply used to be handed to the client's buffer, where nothing
++    # ever looked for it.
++    client_buf.add_outer_data(buf_1.pending_outer_data(),
++                              buf_1.pending_outer_eof())
++    server_buf.add_outer_data(buf_2.pending_outer_data(),
++                              buf_2.pending_outer_eof())
