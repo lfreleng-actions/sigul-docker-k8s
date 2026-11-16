@@ -1232,6 +1232,30 @@ jobs:
             "${SIGUL_BRIDGE_IMAGE}" \
             /test/test_bridge_slow_client.py
 
+      - name: 'Test bridge fast server rejection'
+        shell: bash
+        env:
+          SIGUL_BRIDGE_IMAGE: >-
+            bridge-${{
+              steps.runner-arch.outputs.platform-id
+            }}-image:test
+        run: |
+          # Regression guard for patches/24. A server that rejects a
+          # request at once sends its reply in the same read as its
+          # inner EOF, and the bridge handed that reply to the client's
+          # buffer, so the client saw an I/O error in place of
+          # `Authentication failed`. Checks that the reply, and an
+          # outer EOF arriving with it, are read from the server's
+          # buffer, that the mirror case lands on the client's, and
+          # that a reply arriving after the inner phase is read as
+          # before.
+          docker run --rm \
+            --user 1000:1000 \
+            -v "${PWD}/test:/test:ro" \
+            --entrypoint python3 \
+            "${SIGUL_BRIDGE_IMAGE}" \
+            /test/test_bridge_fast_reply.py
+
       - name: 'Test server liveness heartbeat'
         shell: bash
         env:
@@ -1583,6 +1607,11 @@ jobs:
             || python3 -m pip install --user --quiet pyyaml
           helm lint K8S/charts/sigul
           python3 test/test_chart_pki_clients.py
+          # The kind test collects its diagnostics only when it fails,
+          # so a passing run below never exercises the collector. This
+          # runs it against stand-ins for kind, helm and kubectl, and
+          # needs no cluster and no images.
+          python3 test/test_k8s_pki_diagnostics.py
 
       - name: 'Download Sigul Client image artifact'
         # yamllint disable-line rule:line-length

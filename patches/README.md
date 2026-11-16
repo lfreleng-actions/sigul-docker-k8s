@@ -1140,15 +1140,16 @@ as a flag, so `read()` raises `EOFError` once the deferred data is
 consumed rather than reading the socket. A reply that arrives after the
 inner phase is read from the socket exactly as before.
 
-**Test:** `test/test_bridge_fast_reply.py` drives `bridge_inner_stream`
-over real NSPR loopback sockets, queuing each peer's bytes before the
-relay starts so they come back in one read and nothing depends on
-timing. A reply arriving with the server's inner EOF is read from the
-server's buffer and leaves nothing on the client's; an outer EOF
-arriving with the reply is reported at once; the mirror case lands the
-client's outer data on the client's buffer; and a reply arriving after
-the inner phase is read as before. Without the patch the first three
-fail - the first with the production message - and with it all pass.
+**Test:** `test/test_bridge_fast_reply.py`, run in the bridge image in
+CI, drives `bridge_inner_stream` over real NSPR loopback sockets,
+queuing each peer's bytes before the relay starts so they come back in
+one read and nothing depends on timing. A reply arriving with the
+server's inner EOF is read from the server's buffer and leaves nothing
+on the client's; an outer EOF arriving with the reply is reported at
+once; the mirror case lands the client's outer data on the client's
+buffer; and a reply arriving after the inner phase is read as before.
+Without the patch the first three fail - the first with the production
+message - and with it all pass.
 `test/k8s_pki_clients.sh` (`expect_cn_rejection`) checks the whole path
 on kind and still requires `Authentication failed` from the client.
 
