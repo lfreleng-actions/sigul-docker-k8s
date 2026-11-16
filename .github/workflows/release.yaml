@@ -750,7 +750,7 @@ jobs:
 
       - name: 'Log in to GitHub Container Registry'
         # yamllint disable-line rule:line-length
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4.8.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -950,7 +950,7 @@ jobs:
 
       - name: 'Log in to GitHub Container Registry'
         # yamllint disable-line rule:line-length
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4.8.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -1119,7 +1119,7 @@ jobs:
         # step logs in again for its own push; a second login to the
         # same registry is harmless.
         # yamllint disable-line rule:line-length
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4.8.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
