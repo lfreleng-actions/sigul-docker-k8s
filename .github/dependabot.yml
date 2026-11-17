@@ -31,6 +31,15 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 15
+    ignore:
+      # A new Fedora release ships a new Python. Moving to it needs
+      # python-nss-ng wheels for that Python (the images install with
+      # --only-binary) and the Python paths named in the Dockerfiles
+      # updated in the same change. Lift this rule in that change;
+      # digest updates within a release still arrive.
+      - dependency-name: "fedora"
+        update-types:
+          - "version-update:semver-major"
 
   # Hash locks for the Python packages the images install with
   # --require-hashes. Each .in records the intent and the .txt beside
