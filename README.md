@@ -13,13 +13,14 @@ SPDX-FileCopyrightText: 2025 The Linux Foundation
 [![REUSE status](https://api.reuse.software/badge/github.com/lfreleng-actions/sigul-docker-k8s)](https://api.reuse.software/info/github.com/lfreleng-actions/sigul-docker-k8s)
 [![Latest Release](https://img.shields.io/github/v/release/lfreleng-actions/sigul-docker-k8s?label=Release&include_prereleases&sort=semver)](https://github.com/lfreleng-actions/sigul-docker-k8s/releases)
 
-[![Build & Test](https://github.com/lfreleng-actions/sigul-docker-k8s/actions/workflows/build-test.yaml/badge.svg?branch=main)](https://github.com/lfreleng-actions/sigul-docker-k8s/actions/workflows/build-test.yaml)
+[![Release](https://github.com/lfreleng-actions/sigul-docker-k8s/actions/workflows/release.yaml/badge.svg)](https://github.com/lfreleng-actions/sigul-docker-k8s/actions/workflows/release.yaml)
 [![pre-commit.ci status badge]][pre-commit.ci results page]
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/lfreleng-actions/sigul-docker-k8s/badge)](https://scorecard.dev/viewer/?uri=github.com/lfreleng-actions/sigul-docker-k8s)
 
-[![Client Image](https://img.shields.io/badge/ghcr.io-client-blue?logo=docker&logoColor=white)](https://github.com/lfreleng-actions/sigul-docker-k8s/pkgs/container/sigul-sign-docker%2Fclient)
-[![Server Image](https://img.shields.io/badge/ghcr.io-server-blue?logo=docker&logoColor=white)](https://github.com/lfreleng-actions/sigul-docker-k8s/pkgs/container/sigul-sign-docker%2Fserver)
-[![Bridge Image](https://img.shields.io/badge/ghcr.io-bridge-blue?logo=docker&logoColor=white)](https://github.com/lfreleng-actions/sigul-docker-k8s/pkgs/container/sigul-sign-docker%2Fbridge)
+[![Client Image](https://img.shields.io/badge/ghcr.io-client-blue?logo=docker&logoColor=white)](https://github.com/lfreleng-actions/sigul-docker-k8s/pkgs/container/sigul-docker-k8s%2Fclient)
+[![Server Image](https://img.shields.io/badge/ghcr.io-server-blue?logo=docker&logoColor=white)](https://github.com/lfreleng-actions/sigul-docker-k8s/pkgs/container/sigul-docker-k8s%2Fserver)
+[![Bridge Image](https://img.shields.io/badge/ghcr.io-bridge-blue?logo=docker&logoColor=white)](https://github.com/lfreleng-actions/sigul-docker-k8s/pkgs/container/sigul-docker-k8s%2Fbridge)
+[![Helm Chart](https://img.shields.io/badge/ghcr.io-chart-blue?logo=helm&logoColor=white)](https://github.com/lfreleng-actions/sigul-docker-k8s/pkgs/container/sigul-docker-k8s%2Fcharts%2Fsigul)
 
 <!-- markdownlint-enable MD013 -->
 
@@ -39,13 +40,12 @@ deliverables live in this repository:
 > `sigul-sign-docker` until it became `sigul-docker-k8s`. GitHub
 > redirects the old repository URLs, but GHCR package paths are **not**
 > redirected, and renaming a repository does not rename packages it has
-> already published. So everything released up to and including
-> `v2.2.0` stays at `ghcr.io/lfreleng-actions/sigul-sign-docker/...` —
-> the image badges above deliberately still point there. The publishing
-> workflows derive their target from `github.repository`, so the next
-> release will begin populating
-> `ghcr.io/lfreleng-actions/sigul-docker-k8s/...` instead. Consumers
-> pinned to a released tag or digest are unaffected and need no action.
+> already published. So releases up to and including `v2.2.0` remain
+> at `ghcr.io/lfreleng-actions/sigul-sign-docker/...`. The publishing
+> workflows derive their target from `github.repository`, so every
+> later release is at `ghcr.io/lfreleng-actions/sigul-docker-k8s/...`,
+> where the badges above point. Consumers pinned to a released tag or
+> digest are unaffected and need no action.
 
 ## Action usage
 
