@@ -1453,6 +1453,126 @@ jobs:
 
           echo "✅ Functional test infrastructure cleanup completed"
 
+  ### Soak relevance ###
+  soak-changes:
+    name: 'Soak: relevance'
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: read
+    # Decides whether the soak below can be affected by this change.
+    # A manual dispatch always soaks; a pull request soaks only when
+    # it touches the images, the stack or the harness. Any error in
+    # working that out also soaks. The weekly long soak
+    # (soak-nightly.yaml) is the backstop for anything the list misses.
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      # Load the egress allow-list out-of-band from the
+      # organisation's .github repository and publish it as
+      # $CONNECTION_ALLOW_LIST for the harden-runner step below.
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@f5a475661142cd2f1611ae6fbf8af2be0f36a9a7  # v0.16.3
+        with:
+          config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+          allow_list_summary: 'false'
+
+      # Harden the runner with the just-loaded allow-list.
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      # A failed checkout must not skip the decision step: it then
+      # fails to list the changes and falls back to soaking.
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        continue-on-error: true
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 'Decide whether to soak'
+        id: decide
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+
+          # Everything a pull request can change that alters the
+          # soak's result, one path per line; a trailing slash matches
+          # the whole directory. The image inputs come from the COPY
+          # lines of the three Dockerfiles; the stack is the compose
+          # pair run-soak.sh drives, plus the scripts it deploys with.
+          # The Helm chart (K8S/charts/) is absent on purpose: the
+          # soak never deploys it, and chart-pki-clients covers it.
+          mapfile -t soak_paths <<'EOF'
+          .build-context/
+          .dockerignore
+          .github/workflows/build-test.yaml
+          Dockerfile.bridge
+          Dockerfile.client
+          Dockerfile.server
+          build-scripts/
+          docker-compose.sigul.yml
+          entrypoint.sh
+          patches/
+          pki/
+          scripts/
+          soak/
+          EOF
+
+          run=true
+          matches=()
+          if [ "${EVENT_NAME}" != 'pull_request' ]; then
+            reason="${EVENT_NAME} always soaks"
+          elif [ -z "${BASE_SHA}" ] || [ -z "${HEAD_SHA}" ]; then
+            reason='pull request SHAs missing; soaking to be safe'
+          # --no-renames lists a move as a deletion and an addition,
+          # so moving a file out of a listed path still soaks. -z
+          # keeps unusual filenames unquoted; a file holds the NUL
+          # separators, which command substitution would drop.
+          elif ! changed="$(mktemp "${RUNNER_TEMP:-/tmp}/soak.XXXXXX")" \
+            || ! git diff --name-only -z --no-renames \
+              "${BASE_SHA}...${HEAD_SHA}" > "${changed}"; then
+            reason='could not list changed files; soaking to be safe'
+          else
+            while IFS= read -r -d '' file; do
+              [ -n "${file}" ] || continue
+              for path in "${soak_paths[@]}"; do
+                if [[ "${path}" == */ && "${file}" == "${path}"* ]] \
+                  || [ "${file}" = "${path}" ]; then
+                  matches+=("${file}")
+                  break
+                fi
+              done
+            done < "${changed}"
+            if [ "${#matches[@]}" -gt 0 ]; then
+              reason='image or harness change'
+            else
+              run=false
+              reason='no image or harness change'
+            fi
+          fi
+
+          echo "run=${run}" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Soak relevance"
+            echo ""
+            echo "- **Run soak**: ${run} (${reason})"
+            if [ "${#matches[@]}" -gt 0 ]; then
+              echo "- **Matching files**:"
+              printf "  - \`%s\`\n" "${matches[@]}"
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
   ### Soak and chaos test ###
   soak-test:
     name: 'Soak: linux/amd64'
@@ -1468,8 +1588,17 @@ jobs:
     # Known defects are recorded as expected failures in
     # soak/harness/expectations.json, so this job is green while they
     # are being fixed and turns red when a marker goes stale.
+    #
+    # Skipped only when soak-changes decided run=false; a job skipped
+    # this way reports 'skipped', which passes as a check. If
+    # soak-changes fails or times out, run is empty and the soak still
+    # runs, provided the images built and the run is not cancelled.
     timeout-minutes: 50
-    needs: build-containers
+    needs: [build-containers, soak-changes]
+    if: >-
+      !cancelled()
+      && needs.build-containers.result == 'success'
+      && needs.soak-changes.outputs.run != 'false'
     steps:
       # yamllint disable-line rule:line-length
       - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
@@ -1758,6 +1887,7 @@ jobs:
       pr-sbom,
       pr-grype,
       functional-tests,
+      soak-changes,
       soak-test,
       chart-pki-clients
     ]
@@ -1773,11 +1903,19 @@ jobs:
           GRYPE_RESULT: ${{ needs.pr-grype.result }}
           TESTS_RESULT: ${{ needs.functional-tests.result }}
           SOAK_RESULT: ${{ needs.soak-test.result }}
+          SOAK_RUN: ${{ needs.soak-changes.outputs.run }}
           CHART_PKI_RESULT: ${{ needs.chart-pki-clients.result }}
           PUBLISH_RESULT: ${{ needs.publish-ghcr.result }}
           REGISTRY_NAME: ${{ env.REGISTRY }}
           IMAGE: ${{ env.IMAGE_NAME }}
         run: |
+          # The soak is skipped by design when soak-changes finds no
+          # image or harness change; say why rather than a bare skip.
+          if [ "${SOAK_RESULT}" = 'skipped' ] \
+            && [ "${SOAK_RUN}" = 'false' ]; then
+            SOAK_RESULT='skipped (no image or harness change)'
+          fi
+
           {
             echo "## Sigul Deploy Summary 🐳"
             echo ""
