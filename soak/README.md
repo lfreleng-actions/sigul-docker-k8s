@@ -226,6 +226,23 @@ docker compose -f docker-compose.sigul.yml -f soak/compose.soak.yml \
     run --rm --no-deps soak-runner pr --analyse-only
 ```
 
+### When CI runs it
+
+The `Soak: linux/amd64` job in `.github/workflows/build-test.yaml`
+runs the `pr` profile, but only when it can learn something. The
+`soak-changes` job before it compares a pull request against its merge
+base and soaks only when a changed file matches the path list in its
+`Decide whether to soak` step: the three Dockerfiles and what they
+copy in, the compose stack, the deploy scripts, `soak/` itself and
+the workflow. Documentation, the Helm chart, tests and tooling bumps
+skip it, and the deploy summary reports the soak as
+`skipped (no image or harness change)`. A manual dispatch of the
+workflow always soaks, as does any error working out the change set,
+including a failure or timeout of `soak-changes` itself.
+Extend the path list there when the images or the stack gain an input;
+the weekly long soak in `soak-nightly.yaml` runs regardless and catches
+what the list misses.
+
 ### Comparing images
 
 Everything is parameterised by image, so an A/B is two runs:
