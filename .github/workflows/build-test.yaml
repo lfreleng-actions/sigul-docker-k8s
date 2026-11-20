@@ -28,6 +28,16 @@ on:
         type: boolean
         default: false
         required: false
+      large_file_bytes:
+        # Passed to test/k8s_pki_clients.sh as
+        # PKI_TEST_LARGE_FILE_BYTES. Never set on a pull request.
+        description: >-
+          Sign a file of this many bytes on kind, with the payload
+          limit raised above it (2147483648 for 2 GiB); empty for
+          the 4 MiB default
+        type: string
+        default: ''
+        required: false
 
   pull_request:
     branches: ['main']
@@ -1758,6 +1768,10 @@ jobs:
             || python3 -m pip install --user --quiet pyyaml
           helm lint K8S/charts/sigul
           python3 test/test_chart_pki_clients.py
+          # The large-file limits (#156): both reach the server as
+          # plain decimal integers from --set and from a values file,
+          # and a value that is not a positive integer fails.
+          python3 test/test_chart_large_file_limits.py
           # The kind test collects its diagnostics only when it fails,
           # so a passing run below never exercises the collector. This
           # runs it against stand-ins for kind, helm and kubectl, and
@@ -1825,10 +1839,16 @@ jobs:
 
       - name: 'Test strict checking with per-client certificates (kind)'
         shell: bash
+        env:
+          # Empty on a pull request, where the script signs 4 MiB.
+          PKI_TEST_LARGE_FILE_BYTES: ${{ inputs.large_file_bytes }}
         run: |
           # kind ships with the runner image. Installs with the shared
           # certificate, adopts pki.clients as the chart README's
           # runbook does, then signs and impersonates through it.
+          # The same install sets the large-file limits (#156): a file
+          # under the payload limit signs and verifies, one over it is
+          # refused promptly, and the next request is served.
           # make-bundle.sh runs on the host and needs NSS's tools.
           if ! command -v certutil >/dev/null; then
             sudo apt-get update -q

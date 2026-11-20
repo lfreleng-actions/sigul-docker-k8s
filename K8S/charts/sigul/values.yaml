@@ -199,6 +199,24 @@ server:
   # its certificate's CN. Required by pki.clients, which issues the
   # per-user certificates that make it usable.
   lenientUsernameCheck: "yes"
+  # The largest file the server accepts for a file-backed request, in
+  # bytes: import-key, sign-text, sign-data, decrypt, sign-git-tag,
+  # sign-ostree, sign-pe and sign-container. The server refuses a
+  # larger one before it reads it. A positive integer of at most
+  # 9007199254740991; anything else fails the render.
+  #
+  # Raising this does not by itself make a larger file signable. The
+  # chart README, "Large files", lists the limits it does not move:
+  # the bridge's idle deadline and throughput floor, the server's
+  # /tmp and memory, and one request at a time.
+  maxFilePayloadSize: 1073741824
+  # How long the server gives one request, in seconds, from the
+  # arrival of its first bytes: upload, hashing and signing together.
+  # A request still running then is killed and logged as a timeout. A
+  # positive integer of at most 2147483647; anything else fails the
+  # render. Needs a server image carrying patches/25: an older one
+  # ignores the setting and keeps the hour. See "Large files" too.
+  requestTimeoutSeconds: 3600
   persistence:
     # Explicit StorageClass for the key-material volume, and the
     # supported way to consume a platform-managed class: on the

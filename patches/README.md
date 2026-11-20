@@ -1201,7 +1201,8 @@ one in full.
 The option moves this bound and no other. The bridge still drops a
 request when no byte crosses it for 120 s (patch 11) or when the client
 falls below its throughput floor (patch 18), whatever the server
-allows.
+allows. The chart sets the option from `server.requestTimeoutSeconds`;
+its README, "Large files", lists the limits that stay where they are.
 
 **Test:** `test/test_server_request_timeout.py`, run in the server image
 in CI, reads real `server.conf` files through `ServerConfiguration`: one

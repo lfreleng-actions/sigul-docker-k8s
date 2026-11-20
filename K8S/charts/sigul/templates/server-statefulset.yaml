@@ -145,6 +145,10 @@ spec:
               value: {{ .Values.bridge.ports.server | quote }}
             - name: LENIENT_USERNAME_CHECK
               value: {{ .Values.server.lenientUsernameCheck | quote }}
+            - name: MAX_FILE_PAYLOAD_SIZE
+              value: {{ include "sigul.server.maxFilePayloadSize" . | quote }}
+            - name: REQUEST_TIMEOUT_SECONDS
+              value: {{ include "sigul.server.requestTimeoutSeconds" . | quote }}
           volumeMounts:
             - name: scripts
               mountPath: /scripts
