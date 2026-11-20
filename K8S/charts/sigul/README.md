@@ -721,10 +721,18 @@ relying on a size above 1 GiB:
 PKI_TEST_LARGE_FILE_BYTES=2147483648 bash test/k8s_pki_clients.sh
 ```
 
-signs a 2 GiB file through the chart with the limit raised above it,
-and prints the time taken, the server's peak memory and its peak use of
-`/tmp`. The `Sigul Build/Test` workflow runs the same from its
-`large_file_bytes` input.
+signs a 2 GiB file through the chart with the limit raised above it.
+It prints the time taken; when the upload's own file in the server's
+`/tmp` first held the whole file, and the time from then to the
+signature, which approximates the interval the bridge's idle deadline
+bounds, with the bounds on it that the samples of `/tmp` set; the server
+log's timestamps for the request; the server's `memory.peak`,
+`memory.stat` and `memory.events`; its peak use of `/tmp`; and the free
+disk on the host and the node. When the signing fails it reports those
+times as the failure's, not a signature's. It keeps the daemons' logs
+even when it passes. The `Sigul Build/Test` workflow runs the same from
+its `large_file_bytes` input, with a longer time limit, and uploads
+those logs.
 
 ### A file over the limit
 
