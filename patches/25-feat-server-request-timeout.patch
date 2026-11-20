@@ -1,0 +1,113 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Make the per-request time limit configurable. A request child may
+# spend CHILD_TIMEOUT_SECS, an hour, on a request, timed from its
+# arrival (patch 20). That was a constant, so no server.conf could give
+# a file that takes longer to upload, hash and sign the time it needs.
+# The [server] request-timeout option, in seconds, now sets the bound
+# and defaults to the hour; a value signal.alarm() cannot arm stops the
+# server as it reads its configuration. The bound on a child that is
+# still waiting for a request keeps its hour. See patches/README.md.
+#
+--- a/src/server.py
++++ b/src/server.py
+@@ -121,10 +121,13 @@
+ # server exits for its supervisor to restart it, as it used to on the first.
+ MAX_CHILD_DEATHS = 5
+ CHILD_DEATH_WINDOW_SECONDS = 60
+-# How long a request child may wait for a request, and then how long it
+-# may spend on one, before it is killed. The first bounds an idle child,
+-# which is then replaced; the second is timed from the request's arrival.
++# How long a request child may wait for a request before it is killed
++# and replaced, and the default for how long it may then spend on one.
++# The second is timed from the request's arrival, and the request-timeout
++# option sets it.
+ CHILD_TIMEOUT_SECS = 60 * 60
++# The largest bound signal.alarm() accepts.
++MAX_REQUEST_TIMEOUT_SECS = 2 ** 31 - 1
+
+ # Infrastructure
+
+@@ -133,6 +136,26 @@
+ User = server_common.User
+
+
++def _request_timeout_secs(value):
++    '''Return the request-timeout option value as a number of seconds.
++
++    Raise ValueError, which stops the server as it reads its
++    configuration, unless value is a whole number signal.alarm() can
++    arm: zero would disarm the alarm, and one too large would only be
++    refused later, in each request child.
++
++    '''
++    try:
++        secs = int(value)
++    except ValueError:
++        secs = 0
++    if not 0 < secs <= MAX_REQUEST_TIMEOUT_SECS:
++        raise ValueError(
++            'request-timeout must be a whole number of seconds from 1 to '
++            '{0:d}, not {1!r}'.format(MAX_REQUEST_TIMEOUT_SECS, str(value)))
++    return secs
++
++
+ class ServerConfiguration(server_common.GPGConfiguration,
+                           server_common.KeysConfiguration,
+                           server_common.ServerBaseConfiguration):
+@@ -146,6 +169,7 @@
+                          'passphrase-length': 64,
+                          'server-cert-nickname': 'sigul-server-cert',
+                          'signing-timeout': 60,
++                         'request-timeout': CHILD_TIMEOUT_SECS,
+                          'lenient-username-check': 'no',
+                          'proxy-usernames': ''})
+
+@@ -167,6 +191,8 @@
+         self.server_cert_nickname = parser.get(
+             'server', 'server-cert-nickname')
+         self.signing_timeout = parser.getint('server', 'signing-timeout')
++        self.request_timeout = _request_timeout_secs(
++            parser.get('server', 'request-timeout'))
+         self.lenient_username_check = parser.getboolean(
+             'server', 'lenient-username-check')
+         self.proxy_usernames = [
+@@ -346,7 +372,7 @@
+         '''
+         proxy = ServerProxy(self.__client)
+         buf = proxy.stored_outer_read(utils.u32_size)
+-        _request_arrived()
++        _request_arrived(self.config)
+         logging.debug('Started processing a request')
+         client_version = utils.u32_unpack(buf)
+         if client_version != utils.protocol_version:
+@@ -2974,19 +3000,24 @@
+
+ # The alarm is armed when the child is forked, and bounds a child that
+ # never gets a request: it is then replaced. Once a request arrives the
+-# alarm is armed again, so the request has all of CHILD_TIMEOUT_SECS
++# alarm is armed again, so the request has all of its request-timeout
+ # from its arrival rather than whatever the idle wait left. A child that
+ # waited most of an hour otherwise cut off a request seconds in.
+ _request_since = None
+ _request_timed_out = False
+
+
+-def _request_arrived():
+-    '''Start timing the request that has just begun to arrive.'''
++def _request_arrived(config):
++    '''Start timing the request that has just begun to arrive.
++
++    Its bound is config's request-timeout; a configuration object that
++    carries none gets CHILD_TIMEOUT_SECS, the option's default.
++
++    '''
+     global _request_since
+     if _request_since is None:
+         _request_since = time.monotonic()
+-        signal.alarm(CHILD_TIMEOUT_SECS)
++        signal.alarm(getattr(config, 'request_timeout', CHILD_TIMEOUT_SECS))
+
+
+ def sigalarm_handler(*args):

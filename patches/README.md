@@ -1153,6 +1153,72 @@ message - and with it all pass.
 `test/k8s_pki_clients.sh` (`expect_cn_rejection`) checks the whole path
 on kind and still requires `Authentication failed` from the client.
 
+### 25-feat-server-request-timeout.patch
+
+**Status:** Optional - changes nothing until `request-timeout` is set
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** Server
+
+**Problem:**
+A request child may spend `CHILD_TIMEOUT_SECS`, an hour, on a request,
+timed from its arrival (patch 20). The hour was a constant in
+`server.py`, not a `server.conf` option, so nothing an operator could
+set gave a request longer. A file that takes more than an hour to
+upload, hash and sign could not be signed at all.
+
+**Fix:**
+A `[server]` option, `request-timeout`, in seconds, sets the bound
+`read_request` arms as a request's first bytes arrive. It defaults to
+`CHILD_TIMEOUT_SECS`, so a `server.conf` without it behaves as before.
+The value must be a whole number from 1 to 2147483647, the largest
+`signal.alarm()` accepts. Anything else - nothing, zero, a negative
+number, a fraction, a word - stops the server as it reads its
+configuration, with `Error reading configuration: request-timeout must
+be a whole number of seconds from 1 to 2147483647, not '<value>'` on
+standard error and exit status 1. Zero would otherwise disarm the alarm
+and leave a request unbounded, and a value too large would be refused
+only later, in every request child.
+
+**The idle bound keeps its hour.** The alarm armed at fork bounds a
+child that is still waiting for a request, and stays at
+`CHILD_TIMEOUT_SECS` whatever `request-timeout` says. The two bound
+different things. The idle bound replaces a child whose connection to
+the bridge has gone unused for an hour; how long a signature may take
+has no bearing on how often that should happen. Following the option
+would make an operator who raises it for large files keep idle
+connections for as long, and one who lowers it to fail slow requests
+early replace an idle child, and reconnect to the bridge, that often.
+The wait for a request is not charged to `request-timeout` either: a
+child may wait longer than the option allows a request and still serve
+one in full.
+
+**Impact:**
+
+- Without `request-timeout` in `server.conf`: identical to patch 20.
+- With it: a request is killed, logged and reported as a timeout that
+  many seconds after it arrives.
+
+The option moves this bound and no other. The bridge still drops a
+request when no byte crosses it for 120 s (patch 11) or when the client
+falls below its throughput floor (patch 18), whatever the server
+allows.
+
+**Test:** `test/test_server_request_timeout.py`, run in the server image
+in CI, reads real `server.conf` files through `ServerConfiguration`: one
+without the option gives 3600, a set value is read, and each refused
+value is rejected by name, by `main()` too, which exits 1 with the
+message. It then runs the real `request_handling_child` and
+`read_request` in a forked child over a fake bridge connection, as
+`test/test_server_request_alarm.py` does, with the idle bound and
+`request-timeout` scaled to different numbers of seconds so each check
+tells them apart: a request overrunning `request-timeout` is killed on
+time and reported as a timeout though the idle bound is four times
+longer; one outlasting the idle bound finishes within a raised
+`request-timeout`; an idle child is replaced on the idle bound; and a
+child that waited longer than `request-timeout` still serves its
+request. Without the patch all but three checks fail.
+`test/test_server_request_alarm.py` passes unchanged.
+
 ## Applying Patches
 
 The Docker build process automatically applies these patches:

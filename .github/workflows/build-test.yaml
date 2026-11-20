@@ -1302,6 +1302,28 @@ jobs:
             "${SIGUL_SERVER_IMAGE}" \
             /test/test_server_request_alarm.py
 
+      - name: 'Test server request timeout'
+        shell: bash
+        env:
+          SIGUL_SERVER_IMAGE: >-
+            server-${{
+              steps.runner-arch.outputs.platform-id
+            }}-image:test
+        run: |
+          # Guard for patches/25. The hour a request may take was a
+          # constant; the request-timeout option now sets it. Checks
+          # that a server.conf without the option keeps the hour, that
+          # a value that is not a positive whole number stops the
+          # server at start, that a request is killed on the option
+          # and one within a raised option finishes, and that an idle
+          # child keeps its own bound.
+          docker run --rm \
+            --user 1000:1000 \
+            -v "${PWD}/test:/test:ro" \
+            --entrypoint python3 \
+            "${SIGUL_SERVER_IMAGE}" \
+            /test/test_server_request_timeout.py
+
       - name: 'Test importing a subkey-only key'
         shell: bash
         env:
