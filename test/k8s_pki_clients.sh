@@ -23,8 +23,9 @@
 # server.requestTimeoutSeconds:
 #   - the server.conf the server reads holds both values
 #   - a file under the payload limit signs and its signature verifies
-#   - a file over it fails promptly, with the reason in the server's
-#     log, and the next request is served
+#   - a file over it fails promptly, with the client naming the file's
+#     size and the limit and the reason in the server's log, and the
+#     next request is served
 #
 # The Compose stack the other integration tests use has no PKI
 # bootstrap Job, so this runs the chart's own.
@@ -608,16 +609,25 @@ else
     printf '%s\n' "${out}"
 fi
 
-# Over the limit the server logs the reason and, in Sigul v1.4, sends
-# no reply. What the client then prints is logged here and not
-# asserted. Its status is: 124 and 137 are this script's own timeouts
-# ending a client that hung, so they do not count as failing promptly.
+# Over the limit the server logs the reason and stores none of the
+# payload, and the client reports the refusal with the payload's size
+# and the limit (patches/26). The status is checked too: 124 and 137
+# are this script's own timeouts ending a client that hung, so they do
+# not count as failing promptly.
 refusals_before="$(server_log_count 'Payload too large')"
 started="${SECONDS}"
 status=0
 out="$(sign_data_as "${CANARY_CONF}" "${CANARY_KEY_PASSPHRASE}" over-limit)" || status=$?
 elapsed=$((SECONDS - started))
+# The client can exit before the server's log line can be read back:
+# wait for the line.
 refusals_after="$(server_log_count 'Payload too large')"
+refusal_deadline=$((SECONDS + 30))
+while [ "${refusals_after}" -le "${refusals_before}" ] \
+        && [ "${SECONDS}" -lt "${refusal_deadline}" ]; do
+    sleep 1
+    refusals_after="$(server_log_count 'Payload too large')"
+done
 log "over the limit the client exited ${status} after ${elapsed} s, printing: ${out//$'\n'/ }"
 case "${status}" in
     0 | 124 | 137) refused=false ;;
@@ -627,6 +637,12 @@ if ${refused} && [ "${elapsed}" -lt "${OVER_LIMIT_BOUND}" ]; then
     pass "a ${OVER_LIMIT_BYTES}-byte file, over the limit, fails within ${OVER_LIMIT_BOUND} s"
 else
     fail "a ${OVER_LIMIT_BYTES}-byte file, over the limit, fails within ${OVER_LIMIT_BOUND} s: exit ${status} after ${elapsed} s"
+fi
+over_limit_error="Error: The payload is larger than the server accepts: payload of ${OVER_LIMIT_BYTES} bytes, limit ${PAYLOAD_LIMIT} bytes"
+if ${refused} && [[ "${out}" == *"${over_limit_error}"* ]]; then
+    pass "the client names the file's size and the limit: '${over_limit_error}'"
+else
+    fail "the client names the file's size and the limit: wanted '${over_limit_error}', got '${out//$'\n'/ }'"
 fi
 if [ "${refusals_after}" -gt "${refusals_before}" ]; then
     pass "the server's log names the reason: 'Payload too large'"

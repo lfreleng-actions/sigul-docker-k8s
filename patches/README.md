@@ -1220,6 +1220,243 @@ child that waited longer than `request-timeout` still serves its
 request. Without the patch all but three checks fail.
 `test/test_server_request_alarm.py` passes unchanged.
 
+### 26-fix-payload-limit-refusal.patch
+
+**Status:** HIGH - a file over the server's limit fails like a network
+fault
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** Server, bridge and client
+
+**Problem:**
+The server reads a payload's size before the payload, and for one over
+`max-file-payload-size` or `max-memory-payload-size` raises
+`InvalidRequestError('Payload too large')`. That is logged and the
+request child ends. No reply was sent. Reproduced with real processes
+(#160), the rest went like this:
+
+- The bridge went on copying the upload to a server that had stopped
+  reading, until the server's connection closed under it, up to 5 s
+  later, and then dropped both peers.
+- The client writes its payload to a local forwarding child, which
+  discards what it can no longer send. So the client read the whole
+  file to the end, into nothing, and only then opened its inner TLS
+  session, which ended at once: `ERROR: I/O error: Unexpected EOF in
+  NSPR`. A file 2 GiB over the limit took 26 s to fail on a test
+  machine and 37 s on kind, all of it spent reading the file.
+- Which I/O error the client reports is a matter of timing. Its
+  writes go to that child over a loopback socket, and one that fails
+  before the upload ends stops the client there, with `I/O error:
+  BrokenPipeError(...)` or `I/O error: ConnectionResetError(...)`.
+  None of them names the limit.
+
+**Fix:**
+The server answers, the bridge relays the answer whenever it comes, and
+the client looks for it.
+
+- **Server.** `read_request` logs the refusal as before, ends the
+  inner session it will never open and sends a complete error reply: a
+  new code, `errors.PAYLOAD_TOO_LARGE`, a `message` field holding the
+  payload's size and the limit, and an empty payload. It then discards
+  what still arrives until the bridge closes, and ends as before. The
+  log line comes first because that wait can outlast a short
+  `request-timeout`, whose alarm ends the request where it stands.
+- **Bridge.** While it copies a request payload, the bridge waits on
+  the client and the server together, and receives from the client
+  what has arrived and no more. It still sends the server 4096 bytes
+  at a time, however small the client's frames. A server that sends
+  anything is refusing the request: the bridge stops copying, relays
+  the reply,
+  ends both of the client's streams behind it and reads from the
+  client until it closes, for 5 s at most
+  (`_EARLY_REPLY_LINGER_SECONDS`), so that the reply is not lost to a
+  reset. Neither wait depends on the client: one that has stopped
+  sending, between frames, inside one or inside a TLS record, gets
+  the reply at once and holds the bridge's one slot no longer than
+  those 5 s. What the
+  client sends during them is dropped 64 KiB at a time, whatever
+  frame it announces, and none of it is kept: a frame may announce
+  2 GiB, and the bridge has 512 MiB.
+
+  In both waits the poll is the only wait, and the receive that
+  follows it takes what has arrived and returns. A receive with a
+  timeout takes the whole timeout again for each read of a TLS
+  record, so a record sent a byte at a time would hold it, deaf to
+  the server, for as long as the bytes kept coming. The copy
+  therefore counts the 120 s idle deadline itself, from the last data
+  the client's TLS session delivered, and judges the client's
+  throughput floor after every poll, on the time the poll took. The
+  bytes of an unfinished record move neither.
+
+  A payload short enough to be copied before the refusal arrives
+  needs nothing new in the bridge: the reply is a well-formed one,
+  and is relayed after the inner phase as any reply is.
+- **Client.** While it sends a request's payload from a file, the
+  client checks before each 4 KiB whether anything has arrived, and
+  when its inner session ends before it began it reads the outer
+  stream. A reply found either way is reported like any error reply,
+  with exit status 1:
+
+  <!-- markdownlint-disable MD013 -->
+
+  ```text
+  Error: The payload is larger than the server accepts: payload of 5242881 bytes, limit 5242880 bytes
+  ```
+
+  <!-- markdownlint-enable MD013 -->
+
+  The refusal takes a fraction of a second whatever the file's size.
+
+**Why this approach.** Each constraint in #160 ruled something out:
+
+- *The client cannot read while it writes.* It can: the forwarding
+  child relays the bridge's data to the client whatever the client is
+  doing, so a `poll()` on that pipe between writes sees a reply. The
+  test shows the client receiving one mid-upload and after it. It is
+  `poll()` because `select()` refuses a descriptor numbered 1024 or
+  above, which a client started with many files open would have.
+- *Read and discard the payload, then reply in the ordinary way.* This
+  needs no client change and authenticates the reply, but holds the
+  only signing slot, and the bridge, for the whole upload, and makes a
+  refusal as slow as the upload over the network, slower than the
+  local read it costs today. Rejected. What the server discards now is
+  bounded by time, not size: it stops when the bridge closes, which a
+  patched bridge does at once, or when the server's forwarding child
+  gives up on the bridge after 5 s (`_SHUTDOWN_LINGER_SECONDS`), as
+  long as the teardown before this patch waited for the same peer.
+  Nothing discarded is written to `/tmp` or kept in memory:
+  `read_request` refuses before `mkstemp()`, and the test watches the
+  directory.
+- *Close at once after replying.* Closing over unread payload resets
+  the pipe under the server's forwarding child, which can then exit
+  before it has forwarded the reply (`(child) NSPR error: Connection
+  reset` in the server's debug log). Over 900 refusals of payloads of
+  about 100 kB that lost the reply 80 times; with the bounded discard
+  it lost none of 900, nor of a further 1600.
+- *Check the limit before uploading.* The protocol has no place to ask.
+  An older bridge drops a request with an op or a field it does not
+  know, and an older server answers nothing before the payload, so a
+  query would cost every upload a second connection and a fallback.
+  The refusal reaches the client a fraction of a second into the
+  upload, which serves.
+
+**The reply is not authenticated.** A reply carries two HMACs whose
+keys the client sends in the inner session, after the payload. A
+refused request never gets there, so the two authenticators are zero
+and the client does not check them. It uses the reply for its error
+message and nothing else: a reply that arrives early is always a
+failure, whatever its code. Of the `message` field it prints printable
+ASCII alone, and every other byte, the backslash included, as `\xNN`:
+a forged message cannot break the line, drive a terminal or pass for
+other output in a CI log. The outer TLS session still authenticates
+the bridge, which could already fail any request, so a forged refusal
+gains nothing a dropped connection did not. `UNKNOWN_VERSION`, upstream's
+one other reply sent before the inner session, is unauthenticated too.
+
+**Older peers.** The images update together; external clients may lag.
+The test runs each pairing below against a copy of the code with this
+patch taken out again.
+
+- An older client with a patched bridge and server fails as before,
+  with an I/O error, and no later: it never looks for the reply.
+  A file 2 GiB over the limit took 23.8 s, and 25.0 s against an older
+  bridge and server, each ending in `Unexpected EOF in NSPR` on a
+  test machine. The test takes any `I/O error:` from it, since which
+  one it is depends on timing, and compares the two times.
+- A patched client with an older bridge and server gets no reply, and
+  fails with an I/O error as before. It now stops when the connection
+  closes, about 5 s in, instead of reading the file to the end, and
+  says how far it got: `I/O error: EOFError('Connection closed after
+  125485056 of 536936448 payload bytes')`.
+- A patched server behind an older bridge reaches a patched client
+  only for a payload short enough to be copied before the refusal.
+- A patched bridge with an older server drops both peers as soon as
+  the server closes, instead of when its next write fails.
+
+**Impact:**
+
+- A request within the limits: a poll of both peers before each
+  receive in the bridge and one `poll()` per 4 KiB in the client. A
+  64 MiB upload took 5.26 s with the patch and 5.14 s without, each
+  the mean of six.
+- `OuterBuffer.read()` now assembles each frame a receive at a time,
+  so that the bridge's two new waits can share its state. It returns
+  what it did, and waits as long as it did.
+- A client that goes silent during its upload is still dropped after
+  the 120 s idle deadline. The bridge now logs that as `Request
+  abandoned: Nothing from either peer for 120 s; dropping both peers`,
+  where it logged `Peer stopped responding`.
+- A client that sends a TLS record a byte at a time during its upload
+  used to start the idle deadline again with every byte, and met the
+  throughput floor only once the record was whole. It now meets
+  whichever comes first, and its refusal is not held up meanwhile. A
+  client whose one record takes over 120 s to arrive is dropped where
+  it was served before; the floor of 4 KiB/s sheds it sooner in any
+  case. The bridge's other reads of a client, its request header
+  among them, wait inside a receive as they did (`patches/11`,
+  `patches/18`): #160 leaves the idle deadline itself to #158.
+- Subrequest payloads (`sign-rpms`) are sent while their replies
+  arrive, so the client's check covers a request's primary payload
+  only.
+- Other refusals are unchanged and still end in an I/O error: the
+  bridge's own payload limits, `Unexpected payload`, and a `sign-rpm`
+  payload the bridge fetches from Koji, which it sends to the server
+  without this check.
+- The bridge logs `The server replied before the request payload
+  ended; dropping the rest of it` and the usual `Request error:` line.
+
+**Test:** `test/test_payload_limit_refusal.py`, run in the server image
+in CI, starts the real bridge and server daemons on loopback over a
+throwaway NSS database and runs the real client against them. A file
+one byte over the limit, refused after the bridge has forwarded all of
+it, and one 2 GiB over, refused mid-upload, must each fail with the
+message above; the second within 10 s, with the bridge logging one
+early reply. The server's temporary directory must not change across
+the two refusals, and must change for the accepted payload that follows,
+which is answered in the ordinary way. A client that announces a file
+over the limit and then sends nothing must not keep the bridge from
+relaying the refusal, nor from serving the next client within 20 s,
+and must report the limit once it looks. The bridge's buffer, driven
+over loopback sockets, must do the same for a client that stops inside
+a frame, must drop a 64 MiB frame a refused client announces with the
+test's peak memory rising by less than 16 MiB. Over TLS, with a
+record arriving a byte at a time, its bounded wait must end on time,
+and its copy of a payload must return for the server's reply at once,
+give up at the idle deadline and hold the client to the throughput
+floor. The
+client's reading of a refusal, driven directly, must print a message
+holding a line break, a terminal escape and a right-to-left override
+as printable ASCII. Four more parts are driven directly. The bridge's
+copy of a payload sent in 5000 frames of one byte must reach the
+server as one frame of 4096 bytes and one of 904. The client's two
+waits on its pipe must work on descriptor 1024. The server's
+refusal must be in its log when the request alarm goes off in the wait
+that follows the reply. And `max-memory-payload-size` must be the
+limit a refusal names for a payload the server keeps in memory, with
+one at that limit read. The server keeps a payload in memory only for
+an operation it does not know, and the bridge, which knows the same
+operations, turns any other away itself (`Unknown op value`). No
+client can reach that limit through the bridge, so no daemon case
+does: the check gives `read_request` what a bridge that knew one more
+operation would forward.
+
+For the older peers the test takes this patch out of a copy of the
+code with `patch --reverse`, so CI mounts `patches/` beside `test/`.
+An older client against the patched bridge and server, and a patched
+client against an older bridge and server, must each fail a file one
+byte over the limit and one 2 GiB over with an I/O error, the second
+no more than 10 s later than an older client against older peers,
+which the test times in the same run; and the bridge must serve the
+next request.
+
+Which path a refusal takes is a race, so the test runs each component
+through a launcher of its own that imports the real module and orders
+one step: the server holds a refusal until the bridge has forwarded the
+payload, and the silent client waits before its first write.
+
+Without the patch sixteen checks fail, the first two requests with an
+I/O error in place of the refusal. `test/k8s_pki_clients.sh` requires
+the refusal's message from the client on kind.
+
 ## Applying Patches
 
 The Docker build process automatically applies these patches:
