@@ -18,6 +18,9 @@
 #   BRIDGE_PORT         (server) bridge server-facing port
 #   CLIENT_PORT         (bridge/client) client-facing port
 #   SERVER_PORT         (bridge) server-facing port
+#   LENIENT_USERNAME_CHECK   (server) yes | no
+#   MAX_FILE_PAYLOAD_SIZE    (server) largest file payload, bytes
+#   REQUEST_TIMEOUT_SECONDS  (server) time one request may take
 #
 # Mounts:
 #   /pki-input          Secrets: ca.crt, bridge.crt, <role>.p12
@@ -89,6 +92,8 @@ if [ -f "${TEMPLATE}" ]; then
         -e "s|\${SERVER_HOSTNAME}|${SERVER_HOSTNAME:-}|g" \
         -e "s|\${SIGUL_USER_NAME}|${SIGUL_USER_NAME:-admin}|g" \
         -e "s|\${LENIENT_USERNAME_CHECK}|${LENIENT_USERNAME_CHECK:-yes}|g" \
+        -e "s|\${MAX_FILE_PAYLOAD_SIZE}|${MAX_FILE_PAYLOAD_SIZE:-1073741824}|g" \
+        -e "s|\${REQUEST_TIMEOUT_SECONDS}|${REQUEST_TIMEOUT_SECONDS:-3600}|g" \
         -e "s|\${BRIDGE_PORT}|${BRIDGE_PORT:-44333}|g" \
         -e "s|\${CLIENT_PORT}|${CLIENT_PORT:-44334}|g" \
         -e "s|\${SERVER_PORT}|${SERVER_PORT:-44333}|g" \

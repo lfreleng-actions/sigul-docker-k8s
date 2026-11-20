@@ -359,6 +359,42 @@ sigul-server.{{ include "sigul.bridge.internalFQDN" . }}
 {{- if $out -}}{{ toYaml $out }}{{- end -}}
 {{- end -}}
 
+{{/* A value that must reach server.conf as a plain positive decimal
+     integer. Call with a dict: value, name (for the message) and max.
+
+     A number from a values file arrives as a float64, which prints as
+     8.589934592e+09; from --set it is an int64, and from --set-string
+     or a quoted value a string. All three render as the same digits.
+     Anything else fails the render: zero, a negative number, a
+     fraction, a word, or more than max.
+
+     A float64 holds every integer up to 2^53 - 1 exactly and rounds
+     beyond it, so no max above 9007199254740991 can be honoured. */}}
+{{- define "sigul.positiveInteger" -}}
+{{- $text := toString .value -}}
+{{- if kindIs "float64" .value -}}
+{{- $whole := printf "%.0f" .value -}}
+{{- if eq (float64 $whole) .value -}}
+{{- $text = $whole -}}
+{{- end -}}
+{{- end -}}
+{{- if or (gt (len $text) 16) (not (regexMatch "^[1-9][0-9]*$" $text)) (gt (int64 $text) (int64 .max)) -}}
+{{- fail (printf "%s must be a positive integer of at most %d, got %q" .name .max $text) -}}
+{{- end -}}
+{{- $text -}}
+{{- end -}}
+
+{{/* The largest file-backed payload the server accepts, in bytes. */}}
+{{- define "sigul.server.maxFilePayloadSize" -}}
+{{- include "sigul.positiveInteger" (dict "value" .Values.server.maxFilePayloadSize "name" "server.maxFilePayloadSize" "max" 9007199254740991) -}}
+{{- end -}}
+
+{{/* How long the server gives one request, in seconds. The maximum is
+     the largest value signal.alarm() accepts, and the server's own. */}}
+{{- define "sigul.server.requestTimeoutSeconds" -}}
+{{- include "sigul.positiveInteger" (dict "value" .Values.server.requestTimeoutSeconds "name" "server.requestTimeoutSeconds" "max" 2147483647) -}}
+{{- end -}}
+
 {{/* Restricted-PSS-compliant pod security context (UID/GID 1000). */}}
 {{- define "sigul.podSecurityContext" -}}
 runAsNonRoot: true

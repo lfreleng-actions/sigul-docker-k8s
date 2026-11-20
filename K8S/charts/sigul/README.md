@@ -660,6 +660,89 @@ gpg --batch --pinentry-mode loopback --passphrase-file <file> \
 certificate's CN - and the bridge, server name, `nss-dir` and NSS
 password filled in (EVALUATION.md §9 Phase 4).
 
+## Large files
+
+Two values bound how large a file the server signs. Each must be a
+positive integer, written as plain digits in a values file or given
+with `--set`; anything else fails the render.
+
+- `server.maxFilePayloadSize`, in bytes, default `1073741824` (1 GiB),
+  at most `9007199254740991`. The largest file the server accepts for a
+  file-backed request: `import-key`, `sign-text`, `sign-data`,
+  `decrypt`, `sign-git-tag`, `sign-ostree`, `sign-pe` and
+  `sign-container`. It becomes `max-file-payload-size` in
+  `server.conf`.
+- `server.requestTimeoutSeconds`, default `3600`, at most `2147483647`.
+  How long the server gives one request from the arrival of its first
+  bytes: the upload, hashing and signing together. A request still
+  running then is killed, and the server logs
+  `Request timed out after <n> s and was killed`. It becomes
+  `request-timeout` in `server.conf`, an option `patches/25` adds to
+  Sigul. A server image built without that patch ignores it and keeps
+  the hour, and so does the `v0.1.6` image `values.yaml` pins as its
+  development baseline.
+
+To accept files of up to 4 GiB and give a request two hours:
+
+```yaml
+server:
+  maxFilePayloadSize: 4294967296
+  requestTimeoutSeconds: 7200
+```
+
+### Limits these values do not move
+
+Raising the two values removes two refusals. It does not make a file of
+any size signable, because other limits stay where they are, and none
+of them is a chart value:
+
+- **The bridge's idle deadline.** The bridge drops a request when no
+  byte crosses it for 120 s (`_REQUEST_IDLE_SECONDS`, `patches/11`).
+  That includes the time the server spends hashing and signing after
+  the upload ends, when nothing crosses the bridge until the reply.
+- **The bridge's throughput floor.** Once a client has had 60 s, the
+  bridge drops it for moving less than 4 KiB/s while the bridge waits
+  on it (`patches/18`).
+- **The server's scratch space and memory.** The server writes each
+  upload to `/tmp`, an `emptyDir` on the node's ephemeral storage with
+  no size limit, so a large file competes with everything else on that
+  disk. The server container's memory limit is `1Gi`
+  (`server.resources.limits.memory`).
+- **One request at a time.** The service handles a single request at a
+  time, so a large file holds up every other request, health checks
+  included, until it finishes.
+
+Which of these binds first for a given size has not been measured.
+The soak signs 64 MiB, in 8 to 22 s, and the kind test below signs
+4 MiB under a raised limit; nothing larger runs in CI. Measure before
+relying on a size above 1 GiB:
+
+```sh
+PKI_TEST_LARGE_FILE_BYTES=2147483648 bash test/k8s_pki_clients.sh
+```
+
+signs a 2 GiB file through the chart with the limit raised above it,
+and prints the time taken, the server's peak memory and its peak use of
+`/tmp`. The `Sigul Build/Test` workflow runs the same from its
+`large_file_bytes` input.
+
+### A file over the limit
+
+The server reads a payload's size before the payload. For a file over
+`server.maxFilePayloadSize` it logs `Invalid request: Payload too
+large` in `/var/log/sigul_server.log`, reads no more, sends no reply
+and closes the connection. The server gives the client no reason, so
+whatever the client prints cannot name the limit: look in the server's
+log for it.
+
+What the client prints, and how soon, has not been recorded here. The
+kind test requires the client to exit with a non-zero status within
+60 s, half the bridge's idle deadline, so that a client which only
+fails when the bridge gives up on it does not pass. It also requires
+the log line and that the next request is served, and it prints what
+the client said (`over the limit the client exited ...`) without
+asserting it.
+
 ## Uninstall and reinstall
 
 The race below is specific to plain Helm; under Argo CD there is no
@@ -1047,10 +1130,12 @@ helm lint .
 helm template sigul . --namespace opensearch-sigul
 ```
 
-The per-client certificate tests, from the repository root:
+The per-client certificate and large-file limit tests, from the
+repository root:
 
 ```sh
 python3 test/test_chart_pki_clients.py      # helm + PyYAML
+python3 test/test_chart_large_file_limits.py  # helm + PyYAML
 python3 test/test_pki_bootstrap_clients.py  # certutil + pk12util
 python3 test/test_make_bundle.py            # certutil, gpg, xz + jq
 python3 test/test_k8s_pki_diagnostics.py    # bash; the kind test's diagnostics

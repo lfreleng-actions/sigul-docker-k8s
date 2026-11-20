@@ -18,6 +18,14 @@
 #     format, unpacks in the client image and signs through the bridge
 #   - once a client's user is deleted its bundle can do nothing
 #
+# It also proves the chart's large-file limits (#156), which the same
+# install sets - server.maxFilePayloadSize and
+# server.requestTimeoutSeconds:
+#   - the server.conf the server reads holds both values
+#   - a file under the payload limit signs and its signature verifies
+#   - a file over it fails promptly, with the reason in the server's
+#     log, and the next request is served
+#
 # The Compose stack the other integration tests use has no PKI
 # bootstrap Job, so this runs the chart's own.
 #
@@ -33,6 +41,18 @@
 #   PKI_TEST_LOG_DIR        diagnostics on failure (default test-artifacts/k8s-pki-clients)
 #   PKI_TEST_DIAG_TIMEOUT   seconds each diagnostics kubectl call may take (default 60)
 #   PKI_TEST_DIAG_BUDGET    seconds all diagnostics together may take (default 180)
+#   PKI_TEST_LARGE_FILE_BYTES    size of the file signed under the
+#                           payload limit (default 4194304, 4 MiB). The
+#                           limit is set 1 MiB above it. Set it above
+#                           1 GiB - 2147483648, say - to sign a file
+#                           that large; the run then also reports the
+#                           time taken and the server's peak memory
+#                           and /tmp use. Needs twice that, and 1 MiB,
+#                           free in the toolbox's /workspace and as
+#                           much again in the server's /tmp.
+#   PKI_TEST_LARGE_FILE_TIMEOUT  seconds that signing may take when
+#                           PKI_TEST_LARGE_FILE_BYTES is set (default
+#                           1800, the request timeout installed)
 #
 # --keep leaves the cluster up for inspection; otherwise it is deleted.
 #
@@ -86,6 +106,33 @@ KEY=pki-clients-test-key
 # hang the job. `timeout` inside the pod ends the client; the outer
 # one ends a kubectl exec whose stream never closes.
 REQUEST_TIMEOUT=120
+
+# The large-file limits (#156). The payload limit sits 1 MiB above the
+# file signed under it, and the file refused is one byte over the
+# limit, so the default run moves only a few mebibytes.
+LARGE_FILE_BYTES="${PKI_TEST_LARGE_FILE_BYTES:-4194304}"
+case "${LARGE_FILE_BYTES}" in
+    '' | 0* | *[!0-9]*)
+        printf 'PKI_TEST_LARGE_FILE_BYTES must be a positive integer, got %s\n' \
+            "${LARGE_FILE_BYTES}" >&2
+        exit 2
+        ;;
+esac
+PAYLOAD_LIMIT=$((LARGE_FILE_BYTES + 1048576))
+OVER_LIMIT_BYTES=$((PAYLOAD_LIMIT + 1))
+# Not the chart's default, so that finding it in server.conf shows the
+# value was carried there.
+SERVER_REQUEST_TIMEOUT=1800
+# How long signing the file under the limit may take: an ordinary
+# request's bound, or far longer for a run above 1 GiB.
+LARGE_FILE_TIMEOUT="${REQUEST_TIMEOUT}"
+if [ -n "${PKI_TEST_LARGE_FILE_BYTES:-}" ]; then
+    LARGE_FILE_TIMEOUT="${PKI_TEST_LARGE_FILE_TIMEOUT:-${SERVER_REQUEST_TIMEOUT}}"
+fi
+# A refused upload must fail well inside this. Half the bridge's idle
+# deadline (patch 11, 120 s): a client that only fails when the bridge
+# gives up on a silent connection has hung, and does not pass.
+OVER_LIMIT_BOUND=60
 
 PASSED=0
 FAILED=()
@@ -216,6 +263,8 @@ BASE_VALUES=(
     --set "server.persistence.storageClassName="
     --set "server.persistence.volumePermissions.enabled=false"
     --set "storageClass.create=false"
+    --set "server.maxFilePayloadSize=${PAYLOAD_LIMIT}"
+    --set "server.requestTimeoutSeconds=${SERVER_REQUEST_TIMEOUT}"
 )
 
 # The workloads and the Job, by label: the chart's fullname helper
@@ -383,15 +432,18 @@ CANARY_CONF="/workspace/${CANARY}/client.conf"
 OTHER_CONF="/workspace/${OTHER}/client.conf"
 printf 'per-client certificate test\n' | in_toolbox sh -c 'cat > /workspace/msg.txt' >/dev/null
 
-# The server's rejections, counted before and after each negative
-# check so each one is attributed to the request just made.
-cn_mismatches() {
+# Lines of the server's log matching a pattern. The server's
+# rejections are counted before and after each negative check so each
+# one is attributed to the request just made.
+server_log_count() {
     {
         kube logs "${SERVER_POD}" -c server 2>/dev/null || true
         kube exec "${SERVER_POD}" -c server -- \
             cat /var/log/sigul_server.log 2>/dev/null || true
-    } | grep -c 'Cert CN and user differ' || true
+    } | grep -c -- "$1" || true
 }
+
+cn_mismatches() { server_log_count 'Cert CN and user differ'; }
 
 sign_as() {
     # sign_as CONFIG PASSPHRASE OUTPUT [extra sigul args before the command]
@@ -441,6 +493,151 @@ if sign_as "${OTHER_CONF}" "${OTHER_KEY_PASSPHRASE}" /workspace/other.asc >/dev/
     pass "${OTHER} still signs as itself"
 else
     fail "${OTHER} still signs as itself"
+fi
+
+### Large-file limits (#156) #########################################
+
+# The limits this release was installed with, in the server.conf
+# nss-init.sh rendered. Counted, never printed: the file holds the NSS
+# password.
+conf_lines() {
+    kube exec "${SERVER_POD}" -c server -- \
+        grep -cx -- "$1" /etc/sigul/server.conf 2>/dev/null || true
+}
+for line in "max-file-payload-size: ${PAYLOAD_LIMIT}" \
+        "request-timeout: ${SERVER_REQUEST_TIMEOUT}"; do
+    if [ "$(conf_lines "${line}")" = 1 ]; then
+        pass "the server's server.conf holds '${line}'"
+    else
+        fail "the server's server.conf holds '${line}'"
+    fi
+done
+
+# large_toolbox CMD...: in_toolbox, given as long as the large file may
+# take rather than an ordinary request's bound.
+large_toolbox() { REQUEST_TIMEOUT="${LARGE_FILE_TIMEOUT}" in_toolbox "$@"; }
+
+# Both files are generated in the toolbox, as the soak generates its
+# payloads: the apiserver's exec stream is far too slow to carry them.
+if large_toolbox sh -c "
+        head -c ${LARGE_FILE_BYTES} /dev/urandom > /workspace/under-limit.bin &&
+        head -c ${OVER_LIMIT_BYTES} /dev/urandom > /workspace/over-limit.bin
+        " >/dev/null \
+        && printf '%s\0' "${ADMIN_PASSWORD}" | in_toolbox sh -c "
+        sigul --batch -c ${ADMIN_CONF} get-public-key --password ${KEY} \
+            > /workspace/large-file-key.asc" >/dev/null; then
+    pass "the toolbox holds a ${LARGE_FILE_BYTES}-byte file, a ${OVER_LIMIT_BYTES}-byte file and ${KEY}'s public key"
+else
+    fail "the toolbox holds a ${LARGE_FILE_BYTES}-byte file, a ${OVER_LIMIT_BYTES}-byte file and ${KEY}'s public key"
+fi
+
+# sign_data_as CONFIG PASSPHRASE NAME: a detached signature of
+# /workspace/NAME.bin in /workspace/NAME.sig.
+sign_data_as() {
+    printf '%s\0' "$2" | sigul_as "$1" \
+        sign-data -o "/workspace/$3.sig" "${KEY}" "/workspace/$3.bin"
+}
+
+# A run above 1 GiB reports what the request cost the server. The
+# upload is in the server's /tmp only while the request runs, so its
+# size is sampled meanwhile: watch_server_tmp FILE keeps the largest
+# seen in FILE until FILE.stop appears or the request's bound passes.
+# Each sample's exec is bounded too, by 30 s or the time left, so a
+# stalled exec stream cannot hold the sampler, and the wait for it,
+# past that bound; with no time left it stops rather than sample.
+watch_server_tmp() {
+    local peak=0 used left deadline=$((SECONDS + LARGE_FILE_TIMEOUT))
+    while [ ! -e "$1.stop" ] && [ "${SECONDS}" -lt "${deadline}" ]; do
+        left=$((deadline - SECONDS))
+        # SECONDS may tick past the deadline after the loop's check,
+        # and GNU timeout reads 0 as no limit at all.
+        if [ "${left}" -le 0 ]; then
+            break
+        elif [ "${left}" -gt 30 ]; then
+            left=30
+        fi
+        used="$(timeout --kill-after=5 "${left}" \
+            kubectl --context "${CONTEXT}" -n "${NAMESPACE}" \
+            exec "${SERVER_POD}" -c server -- du -sb /tmp 2>/dev/null \
+            | cut -f1 || true)"
+        if [ "${used:-0}" -gt "${peak}" ] 2>/dev/null; then
+            peak="${used}"
+        fi
+        printf '%s\n' "${peak}" > "$1"
+        sleep 2
+    done
+}
+
+LARGE_TMP=""
+if [ -n "${PKI_TEST_LARGE_FILE_BYTES:-}" ]; then
+    LARGE_TMP="$(mktemp -d)"
+    watch_server_tmp "${LARGE_TMP}/tmp-peak" &
+    tmp_watcher=$!
+fi
+started="${SECONDS}"
+if out="$(REQUEST_TIMEOUT="${LARGE_FILE_TIMEOUT}" \
+        sign_data_as "${CANARY_CONF}" "${CANARY_KEY_PASSPHRASE}" under-limit)"; then
+    pass "a ${LARGE_FILE_BYTES}-byte file, under the ${PAYLOAD_LIMIT}-byte limit, is signed"
+else
+    fail "a ${LARGE_FILE_BYTES}-byte file, under the ${PAYLOAD_LIMIT}-byte limit, is signed"
+    printf '%s\n' "${out}"
+fi
+elapsed=$((SECONDS - started))
+if [ -n "${LARGE_TMP}" ]; then
+    touch "${LARGE_TMP}/tmp-peak.stop"
+    wait "${tmp_watcher}" || true
+    memory_peak="$(timeout --kill-after=5 30 \
+        kubectl --context "${CONTEXT}" -n "${NAMESPACE}" \
+        exec "${SERVER_POD}" -c server -- \
+        cat /sys/fs/cgroup/memory.peak 2>/dev/null || echo unavailable)"
+    tmp_peak="$(cat "${LARGE_TMP}/tmp-peak" 2>/dev/null || echo unavailable)"
+    log "large-file run: ${LARGE_FILE_BYTES} bytes signed in ${elapsed} s"
+    log "large-file run: server memory.peak ${memory_peak} bytes, since the container started"
+    log "large-file run: server /tmp peak ${tmp_peak} bytes, sampled every 2 s"
+    rm -rf "${LARGE_TMP}"
+fi
+
+if out="$(large_toolbox bash -eu -c "
+        export GNUPGHOME=\$(mktemp -d)
+        gpg --batch --quiet --import /workspace/large-file-key.asc
+        gpg --batch --verify /workspace/under-limit.sig /workspace/under-limit.bin
+        ")"; then
+    pass "the signature of the ${LARGE_FILE_BYTES}-byte file verifies against ${KEY}'s public key"
+else
+    fail "the signature of the ${LARGE_FILE_BYTES}-byte file verifies against ${KEY}'s public key"
+    printf '%s\n' "${out}"
+fi
+
+# Over the limit the server logs the reason and, in Sigul v1.4, sends
+# no reply. What the client then prints is logged here and not
+# asserted. Its status is: 124 and 137 are this script's own timeouts
+# ending a client that hung, so they do not count as failing promptly.
+refusals_before="$(server_log_count 'Payload too large')"
+started="${SECONDS}"
+status=0
+out="$(sign_data_as "${CANARY_CONF}" "${CANARY_KEY_PASSPHRASE}" over-limit)" || status=$?
+elapsed=$((SECONDS - started))
+refusals_after="$(server_log_count 'Payload too large')"
+log "over the limit the client exited ${status} after ${elapsed} s, printing: ${out//$'\n'/ }"
+case "${status}" in
+    0 | 124 | 137) refused=false ;;
+    *) refused=true ;;
+esac
+if ${refused} && [ "${elapsed}" -lt "${OVER_LIMIT_BOUND}" ]; then
+    pass "a ${OVER_LIMIT_BYTES}-byte file, over the limit, fails within ${OVER_LIMIT_BOUND} s"
+else
+    fail "a ${OVER_LIMIT_BYTES}-byte file, over the limit, fails within ${OVER_LIMIT_BOUND} s: exit ${status} after ${elapsed} s"
+fi
+if [ "${refusals_after}" -gt "${refusals_before}" ]; then
+    pass "the server's log names the reason: 'Payload too large'"
+else
+    fail "the server's log names the reason: 'Payload too large' counted ${refusals_before} -> ${refusals_after}"
+fi
+
+if sign_as "${CANARY_CONF}" "${CANARY_KEY_PASSPHRASE}" /workspace/after-refusal.asc >/dev/null; then
+    pass "the next request after the refused upload is served"
+else
+    fail "the next request after the refused upload is served"
 fi
 
 ### Bundles from make-bundle.sh (#116) ###############################

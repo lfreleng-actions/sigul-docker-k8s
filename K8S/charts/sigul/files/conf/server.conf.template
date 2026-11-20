@@ -24,16 +24,22 @@
 # values.
 #
 # Variables: NSS_PASSWORD, SERVER_CERT_NICKNAME, BRIDGE_HOSTNAME,
-#            BRIDGE_PORT
+#            BRIDGE_PORT, LENIENT_USERNAME_CHECK,
+#            MAX_FILE_PAYLOAD_SIZE, REQUEST_TIMEOUT_SECONDS
 
 [server]
 bridge-hostname: ${BRIDGE_HOSTNAME}
 bridge-port: ${BRIDGE_PORT}
-max-file-payload-size: 1073741824
+# server.maxFilePayloadSize: the largest file-backed payload, in bytes.
+max-file-payload-size: ${MAX_FILE_PAYLOAD_SIZE}
 max-memory-payload-size: 1048576
 max-rpms-payload-size: 10737418240
 server-cert-nickname: ${SERVER_CERT_NICKNAME}
 signing-timeout: 60
+# server.requestTimeoutSeconds: how long one request may take from its
+# arrival (patches/25). A server image without that patch ignores it
+# and keeps the hour.
+request-timeout: ${REQUEST_TIMEOUT_SECONDS}
 # Matches the CI stack (scripts/cert-init.sh): authentication still
 # requires a CA-signed client cert AND the user's password. Strict
 # mode (CN == username) needs per-user client certs - a candidate
