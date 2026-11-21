@@ -1745,7 +1745,11 @@ jobs:
     # checking a client bundle can act only as its own user. The
     # Compose stack the functional tests use has no bootstrap Job, so
     # this is the only job that runs the chart's own PKI.
-    timeout-minutes: 30
+    # Thirty minutes covers a pull request, which signs 4 MiB. A
+    # dispatched large-file run signs gigabytes (#159): the signing
+    # alone may take the 30 minutes the script allows it, before the
+    # file is generated and its signature verified.
+    timeout-minutes: ${{ inputs.large_file_bytes && 120 || 30 }}
     needs: build-containers
     steps:
       # Audit (not block): kind pulls its node image at runtime.
@@ -1772,10 +1776,12 @@ jobs:
           # plain decimal integers from --set and from a values file,
           # and a value that is not a positive integer fails.
           python3 test/test_chart_large_file_limits.py
-          # The kind test collects its diagnostics only when it fails,
-          # so a passing run below never exercises the collector. This
-          # runs it against stand-ins for kind, helm and kubectl, and
-          # needs no cluster and no images.
+          # The kind test collects its diagnostics only when it fails
+          # or signs a large file, so a passing pull-request run below
+          # never exercises the collector. This runs it against
+          # stand-ins for kind, helm and kubectl, and needs no cluster
+          # and no images. It also runs the script to a pass, with
+          # and without a large file, to check what each reports.
           python3 test/test_k8s_pki_diagnostics.py
 
       - name: 'Download Sigul Client image artifact'
@@ -1857,7 +1863,9 @@ jobs:
           bash test/k8s_pki_clients.sh
 
       - name: 'Upload diagnostics'
-        if: failure()
+        # A large-file run keeps its diagnostics when it passes too:
+        # they hold the server's own timings for the request (#159).
+        if: failure() || inputs.large_file_bytes
         # yamllint disable-line rule:line-length
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:

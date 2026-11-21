@@ -38,26 +38,38 @@
 #   PKI_TEST_BRIDGE_IMAGE   bridge image          (default bridge-linux-amd64-image:test)
 #   PKI_TEST_SERVER_IMAGE   server image          (default server-linux-amd64-image:test)
 #   PKI_TEST_CLIENT_IMAGE   client image          (default client-linux-amd64-image:test)
-#   PKI_TEST_LOG_DIR        diagnostics on failure (default test-artifacts/k8s-pki-clients)
+#   PKI_TEST_LOG_DIR        diagnostics on failure, and after any run
+#                           with PKI_TEST_LARGE_FILE_BYTES set
+#                           (default test-artifacts/k8s-pki-clients)
 #   PKI_TEST_DIAG_TIMEOUT   seconds each diagnostics kubectl call may take (default 60)
 #   PKI_TEST_DIAG_BUDGET    seconds all diagnostics together may take (default 180)
 #   PKI_TEST_LARGE_FILE_BYTES    size of the file signed under the
 #                           payload limit (default 4194304, 4 MiB). The
 #                           limit is set 1 MiB above it. Set it above
 #                           1 GiB - 2147483648, say - to sign a file
-#                           that large; the run then also reports the
-#                           time taken and the server's peak memory
-#                           and /tmp use. Needs twice that, and 1 MiB,
-#                           free in the toolbox's /workspace and as
-#                           much again in the server's /tmp.
+#                           that large. Whenever it is set, the run
+#                           also reports what the request cost: the
+#                           time taken, when the server's /tmp first
+#                           held the whole file and how long the
+#                           signature took from then (the interval in
+#                           which no byte crosses the bridge), the
+#                           server log's timestamps for the request,
+#                           the server's memory and /tmp use, and the
+#                           free disk on this host and on the node. It
+#                           collects the diagnostics below even when
+#                           it passes, and creates the file over the
+#                           limit sparse. Needs that many bytes free
+#                           in the toolbox's /workspace and as many
+#                           again in the server's /tmp.
 #   PKI_TEST_LARGE_FILE_TIMEOUT  seconds that signing may take when
 #                           PKI_TEST_LARGE_FILE_BYTES is set (default
 #                           1800, the request timeout installed)
 #
 # --keep leaves the cluster up for inspection; otherwise it is deleted.
 #
-# On failure, PKI_TEST_LOG_DIR holds, for the bridge, server, admin
-# toolbox and bootstrap Job (COMPONENT), and each of their pods (POD):
+# On failure, and after any run with PKI_TEST_LARGE_FILE_BYTES set,
+# PKI_TEST_LOG_DIR holds, for the bridge, server, admin toolbox and
+# bootstrap Job (COMPONENT), and each of their pods (POD):
 #   resources.txt                 pods, Jobs and Secrets (get -o wide)
 #   events.txt                    namespace events, oldest first
 #   workloads.yaml                StatefulSets, Deployments and Jobs
@@ -213,9 +225,12 @@ collect_diagnostics() {
     done
 }
 
+# A large-file run keeps its diagnostics when it passes too: the
+# daemons' logs hold the server's own timings for the request.
 cleanup() {
     local rc=$?
-    if [ "${rc}" -ne 0 ] || [ "${#FAILED[@]}" -gt 0 ]; then
+    if [ "${rc}" -ne 0 ] || [ "${#FAILED[@]}" -gt 0 ] \
+            || [ -n "${PKI_TEST_LARGE_FILE_BYTES:-}" ]; then
         ( collect_diagnostics ) || true
         log "diagnostics in ${LOG_DIR}"
     fi
@@ -517,11 +532,46 @@ done
 # take rather than an ordinary request's bound.
 large_toolbox() { REQUEST_TIMEOUT="${LARGE_FILE_TIMEOUT}" in_toolbox "$@"; }
 
+# server_exec SECONDS CMD...: CMD in the server container, bounded so
+# that a stalled exec stream cannot hold the run.
+server_exec() {
+    local limit="$1"
+    shift
+    timeout --kill-after=5 "${limit}" \
+        kubectl --context "${CONTEXT}" -n "${NAMESPACE}" \
+        exec "${SERVER_POD}" -c server -- "$@" 2>/dev/null
+}
+
+# log_df LABEL CMD...: the output of CMD, a df, one log line each.
+log_df() {
+    local label="$1" out line
+    shift
+    if out="$("$@" 2>&1)" && [ -n "${out}" ]; then
+        while IFS= read -r line; do
+            log "large-file run: df ${label}: ${line}"
+        done <<< "${out}"
+    else
+        log "large-file run: df ${label}: unavailable"
+    fi
+}
+
+# A large-file run reports the disk it starts with, and creates the
+# file over the limit without writing its data: the server refuses
+# that file on its declared size, so its content does not matter.
+over_limit_file="head -c ${OVER_LIMIT_BYTES} /dev/urandom > /workspace/over-limit.bin"
+if [ -n "${PKI_TEST_LARGE_FILE_BYTES:-}" ]; then
+    log_df "on the runner" df -h /
+    log_df "on the node, from the server's /tmp" server_exec 30 df -h /tmp
+    log_df "on the node, from the toolbox's /workspace" in_toolbox df -h /workspace
+    over_limit_file="truncate -s ${OVER_LIMIT_BYTES} /workspace/over-limit.bin"
+    log "large-file run: the ${OVER_LIMIT_BYTES}-byte file over the limit is sparse, which saves ${OVER_LIMIT_BYTES} bytes of the toolbox's /workspace and the time to write them"
+fi
+
 # Both files are generated in the toolbox, as the soak generates its
 # payloads: the apiserver's exec stream is far too slow to carry them.
 if large_toolbox sh -c "
         head -c ${LARGE_FILE_BYTES} /dev/urandom > /workspace/under-limit.bin &&
-        head -c ${OVER_LIMIT_BYTES} /dev/urandom > /workspace/over-limit.bin
+        ${over_limit_file}
         " >/dev/null \
         && printf '%s\0' "${ADMIN_PASSWORD}" | in_toolbox sh -c "
         sigul --batch -c ${ADMIN_CONF} get-public-key --password ${KEY} \
@@ -538,15 +588,43 @@ sign_data_as() {
         sign-data -o "/workspace/$3.sig" "${KEY}" "/workspace/$3.bin"
 }
 
-# A run above 1 GiB reports what the request cost the server. The
+# TMP_SAMPLE, run in the server container, prints 'total' and the
+# bytes in /tmp, when du reports them, and 'payload' and the size of
+# the largest upload in it, 0 for none, when find succeeds.
+# shellcheck disable=SC2016  # expanded by the server container
+TMP_SAMPLE='used="$(du -sb /tmp 2>/dev/null)"
+[ -z "${used}" ] || printf "total %s\n" "${used%%[[:space:]]*}"
+sizes="$(find /tmp -mindepth 1 -maxdepth 1 -type f -name "tmp*" -printf "%s\n")" &&
+    printf "payload %s\n" "$(printf "0\n%s\n" "${sizes}" | sort -n | tail -n 1)"'
+
+# A large-file run reports what the request cost the server. The
 # upload is in the server's /tmp only while the request runs, so its
 # size is sampled meanwhile: watch_server_tmp FILE keeps the largest
-# seen in FILE until FILE.stop appears or the request's bound passes.
+# total use of /tmp seen in FILE until FILE.stop appears or the
+# request's bound passes. That total counts directories and any other
+# file too, so it can reach the file's size before the upload has, and
+# says nothing of when the upload ended. The server writes the upload,
+# in order, to a file of its own directly in /tmp (tempfile.mkstemp,
+# so named tmp*), which holds the whole file once it is as large as
+# it: each sample reads the largest such file's size for that.
+# The upload ends between two samples: after the last one that began
+# and answered with less than the whole file, and before the first
+# that answered with all of it. FILE.full then holds the two, in
+# seconds since signing began (${started}): when that last sample
+# began, 0 if none did, and when the first full one returned. A
+# failed or timed-out sample tells nothing, so the two may lie more
+# than one sampling period apart. After the upload nothing crosses
+# the bridge until the server replies, and the bridge drops a
+# request silent for 120 s. The second time may fall after signing
+# has ended, when that sample's exec returned late: the reader of
+# FILE.full must not take a time later than the signing's own for
+# the end of the upload.
 # Each sample's exec is bounded too, by 30 s or the time left, so a
 # stalled exec stream cannot hold the sampler, and the wait for it,
 # past that bound; with no time left it stops rather than sample.
 watch_server_tmp() {
-    local peak=0 used left deadline=$((SECONDS + LARGE_FILE_TIMEOUT))
+    local peak=0 sample used payload left asked below=0 full=""
+    local deadline=$((SECONDS + LARGE_FILE_TIMEOUT))
     while [ ! -e "$1.stop" ] && [ "${SECONDS}" -lt "${deadline}" ]; do
         left=$((deadline - SECONDS))
         # SECONDS may tick past the deadline after the loop's check,
@@ -556,27 +634,54 @@ watch_server_tmp() {
         elif [ "${left}" -gt 30 ]; then
             left=30
         fi
-        used="$(timeout --kill-after=5 "${left}" \
-            kubectl --context "${CONTEXT}" -n "${NAMESPACE}" \
-            exec "${SERVER_POD}" -c server -- du -sb /tmp 2>/dev/null \
-            | cut -f1 || true)"
-        if [ "${used:-0}" -gt "${peak}" ] 2>/dev/null; then
+        asked=$((SECONDS - started))
+        sample="$(server_exec "${left}" sh -c "${TMP_SAMPLE}" || true)"
+        used="$(sed -n 's/^total //p' <<< "${sample}")"
+        payload="$(sed -n 's/^payload //p' <<< "${sample}")"
+        if [[ "${used}" =~ ^[0-9]+$ ]] && [ "${used}" -gt "${peak}" ]; then
             peak="${used}"
         fi
         printf '%s\n' "${peak}" > "$1"
+        if ! [[ "${payload}" =~ ^[0-9]+$ ]]; then
+            payload=""
+        fi
+        if [ -z "${full}" ] && [ -n "${payload}" ]; then
+            if [ "${payload}" -ge "${LARGE_FILE_BYTES}" ]; then
+                full=$((SECONDS - started))
+                printf '%s %s\n' "${below}" "${full}" > "$1.full"
+            else
+                below="${asked}"
+            fi
+        fi
         sleep 2
     done
 }
 
+# log_stamp LINE MARKER: what the server's log wrote ahead of MARKER
+# on LINE, its timestamp and level.
+log_stamp() {
+    local stamp="${1%%"$2"*}"
+    stamp="${stamp%"${stamp##*[![:space:]]}"}"
+    printf '%s' "${stamp:-unavailable}"
+}
+
 LARGE_TMP=""
+signed=""
+log_lines_before=0
+started="${SECONDS}"
 if [ -n "${PKI_TEST_LARGE_FILE_BYTES:-}" ]; then
     LARGE_TMP="$(mktemp -d)"
+    # Where the server's log stands, so that the lines read from it
+    # afterwards are this request's.
+    log_lines_before="$(server_exec 30 cat /var/log/sigul_server.log \
+        | wc -l || true)"
+    started="${SECONDS}"
     watch_server_tmp "${LARGE_TMP}/tmp-peak" &
     tmp_watcher=$!
 fi
-started="${SECONDS}"
 if out="$(REQUEST_TIMEOUT="${LARGE_FILE_TIMEOUT}" \
         sign_data_as "${CANARY_CONF}" "${CANARY_KEY_PASSPHRASE}" under-limit)"; then
+    signed=yes
     pass "a ${LARGE_FILE_BYTES}-byte file, under the ${PAYLOAD_LIMIT}-byte limit, is signed"
 else
     fail "a ${LARGE_FILE_BYTES}-byte file, under the ${PAYLOAD_LIMIT}-byte limit, is signed"
@@ -586,13 +691,62 @@ elapsed=$((SECONDS - started))
 if [ -n "${LARGE_TMP}" ]; then
     touch "${LARGE_TMP}/tmp-peak.stop"
     wait "${tmp_watcher}" || true
-    memory_peak="$(timeout --kill-after=5 30 \
-        kubectl --context "${CONTEXT}" -n "${NAMESPACE}" \
-        exec "${SERVER_POD}" -c server -- \
-        cat /sys/fs/cgroup/memory.peak 2>/dev/null || echo unavailable)"
+    memory_peak="$(server_exec 30 cat /sys/fs/cgroup/memory.peak \
+        || echo unavailable)"
+    # anon is the server's own memory and file is page cache, which
+    # the kernel can give back: memory.peak at the limit with events
+    # showing no oom is page cache, not the server running out.
+    memory_stat="$(server_exec 30 cat /sys/fs/cgroup/memory.stat \
+        | grep -E '^(anon|file) ' | paste -sd ' ' - || true)"
+    memory_events="$(server_exec 30 cat /sys/fs/cgroup/memory.events \
+        | paste -sd ' ' - || true)"
     tmp_peak="$(cat "${LARGE_TMP}/tmp-peak" 2>/dev/null || echo unavailable)"
-    log "large-file run: ${LARGE_FILE_BYTES} bytes signed in ${elapsed} s"
+    tmp_below=""
+    tmp_full=""
+    read -r tmp_below tmp_full 2>/dev/null < "${LARGE_TMP}/tmp-peak.full" || true
+    # The request's own lines in the server's log: the first 'Signed
+    # data' written since signing began, and the 'Request:' before it.
+    request_line=""
+    signed_line=""
+    {
+        IFS= read -r request_line
+        IFS= read -r signed_line
+    } < <(server_exec 30 cat /var/log/sigul_server.log \
+        | awk -v skip="${log_lines_before:-0}" '
+            NR <= skip { next }
+            /Request:/ { request = $0 }
+            /Signed data/ { print request; print; signed = 1; exit }
+            END { if (!signed) print request }') || true
+    # A request that failed returned no signature, and the bridge's
+    # deadline is one way it fails: its times are those of the
+    # failure, and are not reported as a signature's.
+    if [ -n "${signed}" ]; then
+        log "large-file run: ${LARGE_FILE_BYTES} bytes signed in ${elapsed} s"
+    else
+        log "large-file run: signing ${LARGE_FILE_BYTES} bytes failed after ${elapsed} s, so the time to a signature is unavailable"
+    fi
+    if [ -z "${tmp_full}" ] || [ -z "${tmp_below}" ]; then
+        log "large-file run: server /tmp was never seen holding the whole file, so the silent interval is unavailable"
+    elif [ "${tmp_full}" -gt "${elapsed}" ]; then
+        # The sample's exec returned after signing had ended, so
+        # its time is not the upload's end.
+        log "large-file run: the sample that found the whole file in server /tmp returned ${tmp_full} s after signing began, later than the ${elapsed} s the signing took, so the silent interval is unavailable"
+    else
+        # The upload ended after the last sample to find less began
+        # and before the first to find it all returned, so the time
+        # from its end lies between the two differences below.
+        log "large-file run: server /tmp first held the whole file ${tmp_full} s after signing began; the last sample to find less began at ${tmp_below} s, so the upload ended between the two, each to the second"
+        if [ -n "${signed}" ]; then
+            log "large-file run: $((elapsed - tmp_full)) s from then to the signature returning; that approximates the silent interval, which lies between $((elapsed - tmp_full)) and $((elapsed - tmp_below)) s"
+        else
+            log "large-file run: $((elapsed - tmp_full)) s from then to the failure, which came between $((elapsed - tmp_full)) and $((elapsed - tmp_below)) s after the upload ended; no signature returned, so the time from then to a signature is unavailable"
+        fi
+    fi
+    log "large-file run: server log 'Request:' line stamped $(log_stamp "${request_line}" 'Request:')"
+    log "large-file run: server log 'Signed data' line stamped $(log_stamp "${signed_line}" 'Signed data')"
     log "large-file run: server memory.peak ${memory_peak} bytes, since the container started"
+    log "large-file run: server memory.stat after signing: ${memory_stat:-unavailable}"
+    log "large-file run: server memory.events since the container started: ${memory_events:-unavailable}"
     log "large-file run: server /tmp peak ${tmp_peak} bytes, sampled every 2 s"
     rm -rf "${LARGE_TMP}"
 fi
