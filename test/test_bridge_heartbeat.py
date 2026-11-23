@@ -23,6 +23,12 @@
 # Timings are scaled down through the module's own constants, so the
 # run takes seconds rather than minutes.
 #
+# Heartbeat has no stop, so every check leaves a publisher thread
+# behind. Each is made overdue, and seen to withhold, before the
+# temporary directory goes: one still writing would recreate its file
+# under the cleanup and fail a run whose checks had all passed. A
+# directory whose publishers were not all seen to stop is left alone.
+#
 # Run inside the sigul bridge image:
 #   python3 test/test_bridge_heartbeat.py
 
@@ -32,11 +38,16 @@
 # bridge and double_tls are upstream code this repository only patches,
 # and ship no type stubs, so their members are untyped by nature.
 
+import logging
 import os
+import shutil
 import sys
 import tempfile
+import threading
 import time
-from contextlib import AbstractContextManager
+from collections import Counter
+from collections.abc import Callable, Generator
+from contextlib import AbstractContextManager, contextmanager
 from typing import Protocol, cast
 
 sys.path.insert(0, os.environ.get("SIGUL_LIB", "/usr/share/sigul"))
@@ -51,6 +62,16 @@ PATCHED = hasattr(bridge, "Heartbeat")
 # Scaled down so each check takes a second or two: the publisher beats
 # every INTERVAL, and slack of one INTERVAL is added to every bound.
 INTERVAL = 0.2
+
+# How long a publisher gets to act on a report before the run gives up
+# on it. Each acts within one INTERVAL; the rest is for a slow runner.
+RETIRE_TIMEOUT = 50 * INTERVAL
+
+# Every started heartbeat, with its file and its publisher thread.
+PUBLISHERS: list[tuple["Heartbeat", str, int]] = []
+
+# Per publisher thread, how often it has said it is withholding.
+WITHHELD: Counter[int] = Counter()
 
 
 class Heartbeat(Protocol):
@@ -74,10 +95,107 @@ def _age(path: str) -> float:
         return float("inf")
 
 
+def _note_withheld(record: logging.LogRecord) -> bool:
+    """Count a publisher's own word that it has stopped writing.
+
+    A logger filter rather than a handler, so the warnings still reach
+    the test's output as they always have.
+    """
+    if record.getMessage().startswith("Main loop overdue"):
+        WITHHELD[record.thread or 0] += 1
+    return True
+
+
 def _started(path: str) -> Heartbeat:
+    before = set(threading.enumerate())
     hb = cast(Heartbeat, bridge.Heartbeat(path))
     hb.start()
+    (publisher,) = set(threading.enumerate()) - before
+    PUBLISHERS.append((hb, path, publisher.ident or 0))
     return hb
+
+
+def _mtime_ns(path: str) -> int:
+    try:
+        return os.stat(path).st_mtime_ns
+    except OSError:
+        return 0
+
+
+def _wait_until_none(pending: Callable[[], list[str]]) -> list[str]:
+    """Poll until nothing is pending; return what still is at the timeout."""
+    deadline = time.monotonic() + RETIRE_TIMEOUT
+    late = pending()
+    while late and time.monotonic() < deadline:
+        time.sleep(INTERVAL / 10)
+        late = pending()
+    return late
+
+
+def _retire_publishers() -> bool:
+    """Stop every publisher writing, and say whether each was seen to stop.
+
+    A publisher withholds once its deadline has passed, and warns of
+    it once a minute at most, so one that has warned already would
+    stop without a sign. Each is therefore first made to publish,
+    which shows in its file and rearms the warning, and is then made
+    overdue as of now. The warning that follows is its word that it
+    found the deadline passed; with no report after that, it never
+    writes again, and the directory can go.
+
+    The first report's bound outlasts the wait for the slowest
+    publisher: one that had published and then run out while the
+    others were waited for would warn before its count was taken,
+    and then have nothing left to say.
+    """
+    for hb, _, _ in PUBLISHERS:
+        hb.progress(2 * RETIRE_TIMEOUT)
+    # Read after the reports, so only a write made under them counts.
+    written = {path: _mtime_ns(path) for _, path, _ in PUBLISHERS}
+    late = _wait_until_none(
+        lambda: [path for path, was in written.items() if _mtime_ns(path) == was]
+    )
+
+    warned = {path: (thread, WITHHELD[thread]) for _, path, thread in PUBLISHERS}
+    for hb, _, _ in PUBLISHERS:
+        # A negative bound cancels the slack progress() adds, so the
+        # deadline is now rather than one INTERVAL away.
+        hb.progress(-bridge._HEARTBEAT_INTERVAL_SECONDS)
+    late += _wait_until_none(
+        lambda: [
+            path for path, (thread, was) in warned.items() if WITHHELD[thread] == was
+        ]
+    )
+
+    names = sorted({os.path.basename(path) for path in late})
+    check(
+        "every publisher stopped before cleanup",
+        not late,
+        f"still live after {RETIRE_TIMEOUT:.1f}s: {names}"
+        if late
+        else f"{len(PUBLISHERS)} withheld, none left writing",
+    )
+    return not late
+
+
+@contextmanager
+def _heartbeat_directory() -> Generator[str]:
+    """A directory for heartbeat files, removed once nothing writes to it.
+
+    Removed only then. A publisher that gave no sign of stopping may
+    be paused short of its next write, and would recreate its file
+    under the removal, which would end the run in a traceback in
+    place of the failure already recorded against it. Its directory
+    stays where it is, and the run fails on that check.
+    """
+    directory = tempfile.mkdtemp()
+    try:
+        yield directory
+    finally:
+        if _retire_publishers():
+            shutil.rmtree(directory)
+        else:
+            print(f"      {directory} left in place: a publisher may still write")
 
 
 def test_publishes_while_progressing(directory: str) -> None:
@@ -255,7 +373,8 @@ def main() -> int:
         return 1
     bridge._HEARTBEAT_INTERVAL_SECONDS = INTERVAL
     bridge._IDLE_WAIT_SLICE_SECONDS = INTERVAL
-    with tempfile.TemporaryDirectory() as directory:
+    logging.getLogger().addFilter(_note_withheld)
+    with _heartbeat_directory() as directory:
         test_publishes_while_progressing(directory)
         test_fresh_within_declared_bound(directory)
         test_withheld_once_overdue(directory)
