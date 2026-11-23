@@ -1334,6 +1334,39 @@ jobs:
             "${SIGUL_SERVER_IMAGE}" \
             /test/test_server_request_timeout.py
 
+      - name: 'Test the payload limit refusal'
+        shell: bash
+        env:
+          SIGUL_SERVER_IMAGE: >-
+            server-${{
+              steps.runner-arch.outputs.platform-id
+            }}-image:test
+        run: |
+          # Regression guard for patches/26. A file over the server's
+          # payload limit was refused without a reply, and the client
+          # read the whole file before failing with `Unexpected EOF in
+          # NSPR`. Starts the real bridge and server on loopback, in
+          # the server image, which ships every component's code, and
+          # runs the real client: a file one byte over the limit and
+          # one 2 GiB over must each fail at once with an error naming
+          # the size and the limit, with nothing written to the
+          # server's temporary directory, and a file at the limit must
+          # still be accepted. A client that goes silent after it is
+          # refused must hold up neither its own reply nor the next
+          # client, and what a refused client sends must be dropped,
+          # not kept. An older client against these, and this client
+          # against an older bridge and server, must fail no later
+          # than before: the test takes patches/26 out of a copy of
+          # the code for the older side, so patches/ is mounted too.
+          # Needs certutil and patch, which the image ships.
+          docker run --rm \
+            --user 1000:1000 \
+            -v "${PWD}/test:/test:ro" \
+            -v "${PWD}/patches:/patches:ro" \
+            --entrypoint python3 \
+            "${SIGUL_SERVER_IMAGE}" \
+            /test/test_payload_limit_refusal.py
+
       - name: 'Test importing a subkey-only key'
         shell: bash
         env:

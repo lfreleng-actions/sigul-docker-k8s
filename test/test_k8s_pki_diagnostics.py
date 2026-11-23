@@ -196,7 +196,11 @@ toolbox() {
             touch "${STUB_STATE}/deleted" ;;
         " sigul "*" sign-data "*over-limit.bin*)
             echo "Invalid request: Payload too large" >> "${server_log}"
-            echo "Error: Unexpected EOF in NSPR"
+            # The refusal as patches/26 has the client print it. The
+            # limit is the script's: 1 MiB over the file it signs.
+            limit=$((${PKI_TEST_LARGE_FILE_BYTES:-4194304} + 1048576))
+            echo "Error: The payload is larger than the server accepts:" \
+                "payload of $((limit + 1)) bytes, limit ${limit} bytes"
             return 1 ;;
         " sigul "*" sign-data "*)
             echo "REQUEST_STAMP Request: op = sign-data" >> "${server_log}"

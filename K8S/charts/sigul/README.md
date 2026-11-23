@@ -738,18 +738,35 @@ those logs.
 
 The server reads a payload's size before the payload. For a file over
 `server.maxFilePayloadSize` it logs `Invalid request: Payload too
-large` in `/var/log/sigul_server.log`, reads no more, sends no reply
-and closes the connection. The server gives the client no reason, so
-whatever the client prints cannot name the limit: look in the server's
-log for it.
+large` in `/var/log/sigul_server.log`, stores none of the payload, and
+replies with the reason (`patches/26`). The bridge relays that reply
+while the upload is still under way, and the client stops sending and
+exits with status 1, printing the file's size and the limit:
 
-What the client prints, and how soon, has not been recorded here. The
-kind test requires the client to exit with a non-zero status within
-60 s, half the bridge's idle deadline, so that a client which only
-fails when the bridge gives up on it does not pass. It also requires
-the log line and that the next request is served, and it prints what
-the client said (`over the limit the client exited ...`) without
-asserting it.
+<!-- markdownlint-disable MD013 -->
+
+```text
+Error: The payload is larger than the server accepts: payload of 5242881 bytes, limit 5242880 bytes
+```
+
+<!-- markdownlint-enable MD013 -->
+
+That takes a fraction of a second whatever the file's size. The same
+refusal used to take as long as the client needed to read the whole
+file, 37 s for one 2 GiB over the limit, and end in `ERROR: I/O error:
+Unexpected EOF in NSPR`, or in another `I/O error:` where a write
+failed before the upload ended.
+
+The message needs all three images at `patches/26`. A client built
+without it still fails with the I/O error against this chart, and a
+client with it fails with an I/O error against an older bridge and
+server: no slower than before, and with the reason in the server's
+log alone.
+
+The kind test requires that message from the client, with a non-zero
+status, within 60 s, half the bridge's idle deadline, so that a client
+which only fails when the bridge gives up on it does not pass. It also
+requires the log line and that the next request is served.
 
 ## Uninstall and reinstall
 
