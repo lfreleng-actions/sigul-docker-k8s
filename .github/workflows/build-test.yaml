@@ -775,7 +775,7 @@ jobs:
     # rpmbuild + sqlite rpmdb init + 64 MiB binary streaming
     # test, plus per-step Docker pulls.  5 minutes was hitting
     # the cap mid-suite and triggering 'operation was canceled'.
-    timeout-minutes: 15
+    timeout-minutes: 30
     needs: build-containers
     strategy:
       fail-fast: false
