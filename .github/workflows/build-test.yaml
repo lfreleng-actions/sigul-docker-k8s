@@ -2070,3 +2070,73 @@ jobs:
                 "logs for details."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # The table above is written first, so a failing run still shows
+      # it. This job is the one required check for the workflow, so it
+      # must fail when any job it needs did not pass.
+      - name: 'Fail when a job did not pass'
+        shell: bash
+        env:
+          BUILD_RESULT: ${{ needs.build-containers.result }}
+          PUBLISH_RESULT: ${{ needs.publish-ghcr.result }}
+          SBOM_RESULT: ${{ needs.pr-sbom.result }}
+          GRYPE_RESULT: ${{ needs.pr-grype.result }}
+          TESTS_RESULT: ${{ needs.functional-tests.result }}
+          SOAK_CHANGES_RESULT: ${{ needs.soak-changes.result }}
+          SOAK_RUN: ${{ needs.soak-changes.outputs.run }}
+          SOAK_RESULT: ${{ needs.soak-test.result }}
+          CHART_PKI_RESULT: ${{ needs.chart-pki-clients.result }}
+        run: |
+          failed=0
+
+          fail() {
+            echo "::error::$*"
+            failed=1
+          }
+
+          require_success() {
+            if [ "$2" != 'success' ]; then
+              fail "$1: result is '$2', expected 'success'"
+            fi
+          }
+
+          require_success 'build-containers' "${BUILD_RESULT}"
+          require_success 'pr-sbom' "${SBOM_RESULT}"
+          require_success 'pr-grype' "${GRYPE_RESULT}"
+          require_success 'functional-tests' "${TESTS_RESULT}"
+          require_success 'chart-pki-clients' "${CHART_PKI_RESULT}"
+          require_success 'soak-changes' "${SOAK_CHANGES_RESULT}"
+
+          # Publishing runs only on a manual dispatch that asks for it.
+          case "${PUBLISH_RESULT}" in
+            success | skipped) ;;
+            *)
+              fail "publish-ghcr: result is '${PUBLISH_RESULT}'," \
+                "expected 'success' or 'skipped'"
+              ;;
+          esac
+
+          # A skipped soak passes only when soak-changes decided it:
+          # one skipped because soak-changes failed, timed out or left
+          # no output was never judged unnecessary.
+          case "${SOAK_RESULT}" in
+            success) ;;
+            skipped)
+              if [ "${SOAK_CHANGES_RESULT}" != 'success' ] \
+                || [ "${SOAK_RUN}" != 'false' ]; then
+                fail "soak-test: skipped, but soak-changes" \
+                  "(result '${SOAK_CHANGES_RESULT}', run '${SOAK_RUN}')" \
+                  "did not decide to skip it"
+              fi
+              ;;
+            *)
+              fail "soak-test: result is '${SOAK_RESULT}', expected" \
+                "'success', or 'skipped' by soak-changes"
+              ;;
+          esac
+
+          if [ "${failed}" -ne 0 ]; then
+            echo 'One or more jobs did not pass; see the errors above.'
+            exit 1
+          fi
+          echo '✅ Every job passed, or was skipped by design.'
