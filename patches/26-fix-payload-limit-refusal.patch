@@ -1,0 +1,687 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Tell the client why a payload over the server's limit was refused.
+# The server reads a payload's size before the payload and refused one
+# over max-file-payload-size (or max-memory-payload-size) by logging
+# the reason and closing: it sent no reply. The bridge went on copying
+# the upload until the server's connection closed under it, and the
+# client's forwarding child discarded the rest, so the client read its
+# whole file to the end before meeting the end of its inner TLS session
+# and reporting "I/O error: Unexpected EOF in NSPR". The server now
+# sends an error reply naming the payload's size and the limit, and
+# discards what still arrives until the bridge closes. The bridge
+# relays a reply that arrives while it is copying the request payload,
+# and stops copying. It waits on both peers meanwhile, and takes from
+# the client what has arrived without waiting for more, so that a
+# client which has stopped sending, even part-way through a TLS record,
+# does not hold the reply up; it counts the idle deadline and the
+# throughput floor itself while it does. It gives the client a bounded
+# time to close, dropping what it sends meanwhile as it arrives. The
+# client stops sending when a reply arrives and reports it, and looks
+# for one when its inner session ends before it began.
+# The reply cannot be authenticated - its keys travel in the inner
+# session a refused request never opens - so the client uses it for its
+# error message alone, and prints of that message nothing but printable
+# ASCII. See patches/README.md.
+#
+--- a/src/bridge.py
++++ b/src/bridge.py
+@@ -414,11 +414,56 @@ class ForwardingError(Exception):
+     pass
+
+
++class ServerRepliedEarly(Exception):
++    '''The server replied while the request payload was still being sent.'''
++    pass
++
++
++# How long the bridge keeps reading from a client it has just relayed an
++# early reply to. A client that looks for one stops and closes within
++# milliseconds; one that does not is still sending a payload nobody
++# wants, and is dropped when this runs out, as it was dropped before
++# when the server closed. Reading meanwhile is what lets the reply
++# arrive: closing a socket with unread data sends a reset, which
++# discards a reply still on its way.
++_EARLY_REPLY_LINGER_SECONDS = 5
++
++
+ def copy_file_data(dest, src, size):
+     '''Copy size bytes from file-like src to file-like dst.'''
+     utils.copy_data(dest.write, src.read, size)
+
+
++def copy_request_payload(conn):
++    '''Copy the request payload in conn from the client to the server.
++
++    Raise ServerRepliedEarly if the server sends anything, or goes away,
++    before the payload ends.  A server says nothing until it has the
++    whole request unless it refuses the payload by its size alone, and
++    then it reads no more: the rest would be sent to nobody.  The wait
++    is on both peers, so that a client which has stopped sending, or
++    is part-way through a frame, does not hold up the server's reply.
++
++    The server is sent 4096 bytes at a time, however the client framed
++    them, as copy_file_data() sends them: read_unless() returns what
++    one frame held, and a payload sent in small frames would otherwise
++    cost a write to the server for each.
++
++    '''
++    size = conn.request_payload_size
++    while size > 0:
++        wanted = min(size, 4096)
++        data = b''
++        while len(data) < wanted:
++            run = conn.client_buf.read_unless(wanted - len(data),
++                                              conn.server_buf)
++            if run is None:
++                raise ServerRepliedEarly()
++            data += run
++        conn.server_buf.write(data)
++        size -= len(data)
++
++
+ _fas_connection = None
+
+
+@@ -621,8 +666,7 @@ class RequestHandler(object):
+     def forward_request_payload(self, conn):
+         '''Forward (optionally modify) request payload in conn.'''
+         conn.server_buf.write(utils.u64_pack(conn.request_payload_size))
+-        copy_file_data(conn.server_buf, conn.client_buf,
+-                       conn.request_payload_size)
++        copy_request_payload(conn)
+
+     def forward_reply_payload(self, conn):
+         '''Forward (optionally modify) reply payload in conn.'''
+@@ -1543,8 +1587,12 @@ class BridgeConnection(object):
+         conn = BridgeConnection(config, user_name, client_buf, server_buf)
+         try:
+             conn.__forward_request_headers()
+-            with _lease(_HANDLER_PHASE_SECONDS):
+-                conn.__handler.forward_request_payload(conn)
++            try:
++                with _lease(_HANDLER_PHASE_SECONDS):
++                    conn.__handler.forward_request_payload(conn)
++            except ServerRepliedEarly:
++                conn.__forward_early_reply()
++                return
+
+             double_tls.bridge_inner_stream(conn.client_buf, conn.server_buf,
+                                            idle_timeout=_REQUEST_IDLE_SECONDS,
+@@ -1657,6 +1705,30 @@ class BridgeConnection(object):
+         buf = self.server_buf.read(64)
+         self.client_buf.write(buf)
+
++    def __forward_early_reply(self):
++        '''Relay a reply the server sent before the request payload ended.
++
++        The client is still sending, and has no inner session yet.  End
++        both of its streams behind the reply, so that whichever it tries
++        next fails at once, then wait a bounded time for it to close.
++
++        Raise InvalidReplyError, and EOFError if the server left without
++        replying.
++
++        '''
++        logging.info('The server replied before the request payload ended; '
++                     'dropping the rest of it')
++        self.__forward_reply_headers()
++        buf = self.server_buf.read(utils.u64_size)
++        if utils.u64_unpack(buf) != 0:
++            raise InvalidReplyError('Early reply carries a payload')
++        self.client_buf.write(buf)
++        self.client_buf.write(self.server_buf.read(64))
++        self.client_buf.send_inner_eof()
++        self.client_buf.send_outer_eof()
++        self.client_buf.discard_input(
++            time.monotonic() + _EARLY_REPLY_LINGER_SECONDS)
++
+     def __terminate_client_connection(self):
+         '''Correctly terminate the client's connection.'''
+         # Closing the socket should technically be enough, but make sure the
+--- a/src/client.py
++++ b/src/client.py
+@@ -135,12 +135,19 @@ class ClientsConnection(object):
+         '''
+         self.__client.outer_write(utils.u64_pack(payload_size))
+
+-    def __send_payload_from_file(self, writer, fd):
++    def __send_payload_from_file(self, writer, fd, primary=False):
+         '''Send contents of fd to the server as payload, using writer.
+
+         Valid both for the primary payload and for subreply payloads.  Note
+         that the subrequest HMAC, if any, is not sent!
+
++        Nothing answers a request whose primary payload is still being
++        sent, unless to refuse it.  If primary, stop as soon as anything
++        arrives, or the connection ends, rather than send the rest to
++        nobody: raise ClientError for a reply, EOFError without one.
++        Subreplies do arrive while subrequest payloads are sent, and are
++        left to their reader.
++
+         '''
+         fd.seek(0)
+         file_size = os.fstat(fd.fileno()).st_size
+@@ -151,11 +158,56 @@ class ClientsConnection(object):
+             data = fd.read(4096)
+             if len(data) == 0:
+                 break
+-            writer.write(data)
++            closed = primary and self.__client.outer_input_pending()
++            if not closed:
++                try:
++                    writer.write(data)
++                except socket.timeout:
++                    raise
++                except socket.error:
++                    if not primary:
++                        raise
++                    closed = True
++            if closed:
++                self.__raise_early_reply()
++                raise EOFError('Connection closed after {0:d} of {1:d} '
++                               'payload bytes'.format(sent, file_size))
+             sent += len(data)
+         if sent != file_size:
+             raise IOError('File size did not match size returned by fstat()')
+
++    def __raise_early_reply(self):
++        '''Raise ClientError for a reply sent before the request was complete.
++
++        Return if the outer stream ends without one.  Such a reply
++        refuses the request: the server sends it on reading a payload
++        size it will not accept, before it has the keys that
++        authenticate a reply, so its authenticator is not verified and
++        nothing but its error is used.
++
++        '''
++        try:
++            buf = self.__client.outer_read(utils.u32_size)
++            fields = utils.read_fields(self.__client.outer_read)
++            self.__client.outer_read(64)  # Unauthenticated, see above
++        except (EOFError, socket.error, utils.InvalidFieldsError):
++            return
++        error_code = utils.u32_unpack(buf)
++        if error_code == errors.OK:
++            raise InvalidResponseError('Unexpected early response')
++        message = fields.get('message')
++        if message is not None:
++            # Whoever holds the bridge can have written this, so leave
++            # it nothing a terminal or a log would act on: no line
++            # break, no control or escape sequence, no other script.
++            message = ''.join(
++                chr(c) if 0x20 <= c < 0x7F and c != 0x5C
++                else '\\x{0:02x}'.format(c)
++                for c in bytearray(message))
++            raise ClientError('Error: {0!s}: {1!s}'.format(
++                errors.message(error_code), message))
++        raise ClientError('Error: {0!s}'.format(errors.message(error_code)))
++
+     def empty_payload(self):
+         '''Send an empty payload.'''
+         self.__send_payload_size(0)
+@@ -169,7 +221,8 @@ class ClientsConnection(object):
+
+     def send_payload_from_file(self, fd):
+         '''Send contents of file as payload.'''
+-        self.__send_payload_from_file(self.__request_payload_writer, fd)
++        self.__send_payload_from_file(self.__request_payload_writer, fd,
++                                      primary=True)
+
+     def send_inner(self, inner_fields, omit_payload_auth=False):
+         '''Send the inner header, including inner_fields.'''
+@@ -197,6 +250,15 @@ class ClientsConnection(object):
+                                             self.config.client_cert_nickname)
+         except double_tls.InnerCertificateNotFound as e:
+             raise ClientError(str(e))
++        except nss.error.NSPRError as e:
++            if e.errno in (nss.error.PR_END_OF_FILE_ERROR,
++                           nss.error.PR_CONNECT_RESET_ERROR):
++                # The server never opened its side.  If it refused the
++                # request instead, its reply follows once our side of
++                # the inner session is closed as well.
++                self.__client.inner_close()
++                self.__raise_early_reply()
++            raise
+         try:
+             self.__client.inner_write(utils.format_fields(fields))
+         finally:
+--- a/src/double_tls.py
++++ b/src/double_tls.py
+@@ -19,6 +19,7 @@
+ import collections
+ import logging
+ import os
++import select
+ import signal
+ import six
+ import socket
+@@ -214,6 +215,9 @@ _CHILD_EXIT_TIMEOUT_SECONDS = 10
+
+ _chunk_inner_mask = 1 << 31
+
++# How much OuterBuffer.discard_input() receives at a time.
++_DISCARD_CHUNK_BYTES = 65536
++
+
+ class _ForwardingBuffer(object):
+     '''A buffer that can be used for forwarding data between sockets.'''
+@@ -794,6 +798,53 @@ class DoubleTLSClient(object):
+         '''
+         self.__outer_pipe.sendall(data)
+
++    def outer_input_pending(self):
++        '''Return True if the outer TLS session has data, or its end, to read.
++
++        Never blocks.  The forwarding child relays what the peer sends
++        whatever this process is doing, so this is how a caller that is
++        still writing learns that the peer has already answered.
++
++        '''
++        return self.__outer_readable(0)
++
++    def __outer_readable(self, milliseconds):
++        '''Return True if the outer TLS session has data, or its end, to
++        read within milliseconds.
++
++        With poll(), not select(), which refuses a descriptor numbered
++        FD_SETSIZE or above: a process started with that many open
++        descriptors could then send no payload at all.
++
++        '''
++        poller = select.poll()
++        poller.register(self.__outer_pipe, select.POLLIN)
++        return len(poller.poll(milliseconds)) != 0
++
++    def outer_finish(self):
++        '''End our side of the outer TLS session, and discard the peer's.
++
++        Return once the peer has closed its side, or the forwarding
++        child has stopped waiting for it to.  For a caller that has said
++        its last word while the peer is still sending: closing over
++        the peer's unread data resets the pipe under the forwarding
++        child, which can end it before it has forwarded that last word.
++
++        '''
++        self.__outer_pipe.shutdown(socket.SHUT_WR)
++        deadline = time.monotonic() + _CHILD_EXIT_TIMEOUT_SECONDS
++        try:
++            while True:
++                remaining = deadline - time.monotonic()
++                if remaining <= 0:
++                    break
++                if not self.__outer_readable(max(1, int(remaining * 1000))):
++                    break
++                if len(self.__outer_pipe.recv(65536)) == 0:
++                    break
++        except socket.error:
++            pass
++
+     def outer_shutdown(self, flags):
+         '''Shut down the outer TLS session.'''
+         self.__outer_pipe.shutdown(flags)
+@@ -1127,6 +1178,10 @@ class OuterBuffer(object):
+         self.__inner_packets = b''
+         self.__outer_data = b''
+         self.__outer_eof = False
++        # The part received so far of a frame, header first.  Whole
++        # frames go to the two buffers above, so they never hold a part
++        # of one.
++        self.__frame = b''
+         if idle_timeout is None:
+             self.__interval = nss.io.PR_INTERVAL_NO_TIMEOUT
+         else:
+@@ -1193,21 +1248,86 @@ class OuterBuffer(object):
+                                               self.__rate_window, rate,
+                                               self.__min_rate))
+
+-    def __recv_exact(self, buf_size):
+-        '''Return exactly buf_size bytes of data from self.socket.
++    def __missing(self):
++        '''Return how much of the next frame's header, or else of its
++        data, is still to be received.'''
++        missing = utils.u32_size - len(self.__frame)
++        if missing <= 0:
++            v = utils.u32_unpack(self.__frame[:utils.u32_size])
++            missing += v & ~_chunk_inner_mask
++        return missing
++
++    def __receive_some(self):
++        '''Receive once from self.socket, towards the next frame.
++
++        Return True once that frame is whole, and stored as outer data
++        or as an inner packet.  Waits for the idle deadline, which
++        starts again with each read of a TLS record.
+
+         Raise EOFError.
+
+         '''
+-        res = b''
+-        while len(res) < buf_size:
+-            _progress(self.__bound)
+-            wanted = buf_size - len(res)
+-            run = self.__timed(
+-                lambda: self.__socket.recv(wanted, self.__interval), len)
+-            if len(run) == 0:
+-                raise EOFError('Unexpected EOF on _DoubleTLS')
+-            res += run
++        missing = self.__missing()
++        _progress(self.__bound)
++        return self.__add_to_frame(self.__timed(
++            lambda: self.__socket.recv(missing, self.__interval), len))
++
++    def __receive_arrived(self, buf_size):
++        '''Return up to buf_size bytes that have arrived, without waiting.
++
++        None means that what has arrived is part of a TLS record, and
++        the rest has yet to.  For a caller that polls first and keeps
++        its own deadline: a receive that waits takes its whole timeout
++        again for every read of a TLS record, so a record sent a byte
++        at a time holds it for as long as the bytes keep coming.
++
++        '''
++        try:
++            return self.__socket.recv(buf_size, nss.io.PR_INTERVAL_NO_WAIT)
++        except nss.error.NSPRError as e:
++            if e.errno not in (nss.error.PR_IO_TIMEOUT_ERROR,
++                               nss.error.PR_WOULD_BLOCK_ERROR):
++                raise
++            return None
++
++    def __add_to_frame(self, run):
++        '''Add run, just received, to the next frame.
++
++        Return True once that frame is whole, and stored as outer data
++        or as an inner packet.
++
++        Raise EOFError.
++
++        '''
++        if len(run) == 0:
++            raise EOFError('Unexpected EOF on _DoubleTLS')
++        self.__frame += run
++        if len(self.__frame) < utils.u32_size:
++            return False
++        v = utils.u32_unpack(self.__frame[:utils.u32_size])
++        size = v & ~_chunk_inner_mask
++        if len(self.__frame) < utils.u32_size + size:
++            return False
++        frame = self.__frame
++        self.__frame = b''
++        _debug('o%s: header %08X', _id(self), v)
++        if (v & _chunk_inner_mask) != 0:
++            self.__inner_packets += frame
++            _debug('o%s: added %d inner bytes, total %d', _id(self), size,
++                   len(self.__inner_packets))
++        else:
++            if v == 0:
++                raise EOFError('Unexpected EOF on outer stream')
++            self.__outer_data += frame[utils.u32_size:]
++            _debug('o%s: received %d outer data bytes', _id(self), v)
++        return True
++
++    def __consume(self, buf_size):
++        '''Return up to buf_size bytes of the outer data already received.'''
++        run = min(buf_size, len(self.__outer_data))
++        _debug('o%s: consuming %d outer data bytes', _id(self), run)
++        res = self.__outer_data[:run]
++        self.__outer_data = self.__outer_data[run:]
+         return res
+
+     def read(self, buf_size):
+@@ -1218,34 +1338,116 @@ class OuterBuffer(object):
+         '''
+         res = b''
+         while len(res) < buf_size:
+-            run = min(buf_size - len(res), len(self.__outer_data))
+-            _debug('o%s: consuming %d outer data bytes', _id(self), run)
+-            res += self.__outer_data[:run]
+-            self.__outer_data = self.__outer_data[run:]
++            res += self.__consume(buf_size - len(res))
+             if len(res) == buf_size:
+                 break
+-            if len(self.__outer_data) != 0:
+-                raise Exception('Unexpected outer data')
+             if self.__outer_eof:
+                 # The peer's end of stream was read along with the data
+                 # above, during the inner phase; nothing follows it.
+                 raise EOFError('Unexpected EOF on outer stream')
+-            header = self.__recv_exact(utils.u32_size)
+-            v = utils.u32_unpack(header)
+-            _debug('o%s: header %08X', _id(self), v)
+-            if (v & _chunk_inner_mask) != 0:
+-                self.__inner_packets += header
+-                self.__inner_packets += self.__recv_exact(
+-                    v & ~_chunk_inner_mask)
+-                _debug('o%s: added %d inner bytes, total %d', _id(self),
+-                       v & ~_chunk_inner_mask, len(self.__inner_packets))
+-            else:
+-                if v == 0:
+-                    raise EOFError('Unexpected EOF on outer stream')
+-                self.__outer_data += self.__recv_exact(v)
+-                _debug('o%s: received %d outer data bytes', _id(self), v)
++            while not self.__receive_some():
++                pass
+         return res
+
++    def read_unless(self, buf_size, other):
++        '''Return up to buf_size bytes of outer data, or None.
++
++        None means that other, an OuterBuffer, had input pending, or had
++        gone, before any outer data was to be had.  read() waits for a
++        whole frame from this peer whatever the other one does; this
++        waits on both, and receives only what has arrived, so that no
++        peer that has stopped sending keeps the caller from the other:
++        not between frames, nor part-way through a frame, nor part-way
++        through a TLS record.
++
++        The poll is the only wait.  The idle deadline is counted here,
++        from the call and then from each receive that brought data, and
++        not by the receive, which would start it again with every read
++        of a TLS record: a record sent a byte at a time brings no data,
++        and neither moves the deadline nor escapes the throughput
++        floor, which is judged on the time each poll took whether or
++        not a receive followed it with data.
++
++        Raise EOFError on EOF, IdleTimeoutError if neither peer sends
++        anything within the idle deadline, and SlowPeerError.
++
++        '''
++        if self.__bound is None:
++            deadline = None
++        else:
++            deadline = time.monotonic() + self.__bound
++        while True:
++            if self.__outer_data:
++                wait = nss.io.PR_INTERVAL_NO_WAIT
++            elif self.__outer_eof:
++                raise EOFError('Unexpected EOF on outer stream')
++            elif deadline is None:
++                wait = self.__interval
++                _progress(None)
++            else:
++                remaining = deadline - time.monotonic()
++                if remaining <= 0:
++                    raise IdleTimeoutError(
++                        'Nothing from either peer for %g s' % self.__bound)
++                wait = nss.io.milliseconds_to_interval(
++                    max(1, int(remaining * 1000)))
++                _progress(remaining)
++            started = time.monotonic()
++            flags = poll_sockets([(other.socket, nss.io.PR_POLL_READ),
++                                  (self.__socket, nss.io.PR_POLL_READ)],
++                                 wait)
++            if flags[0] != 0:
++                return None
++            if self.__outer_data:
++                return self.__consume(buf_size)
++            if flags[1] == 0:
++                # Timed out: the deadline is judged above.
++                continue
++            run = self.__receive_arrived(self.__missing())
++            if self.__min_rate is not None:
++                # The wait was for this peer, as one inside a receive is.
++                self.__charge(time.monotonic() - started,
++                              0 if run is None else len(run))
++                self.__check_rate()
++            if run is None:
++                continue
++            if deadline is not None:
++                deadline = time.monotonic() + self.__bound
++            self.__add_to_frame(run)
++
++    def discard_input(self, deadline):
++        '''Read and drop what the peer sends until it closes.
++
++        Give up once time.monotonic() reaches deadline.  For a peer
++        that is about to be dropped: what arrives is received a fixed
++        amount at a time and none of it is kept, whatever frame the
++        peer announces, so the buffer must not be read again.  The
++        throughput floor is not applied: the peer has until the
++        deadline, and no longer.
++
++        The poll is the only wait, for the time that is left: the
++        receive takes what has arrived and returns, as read_unless()
++        does and for the same reason.
++
++        '''
++        self.__frame = b''
++        self.__outer_data = b''
++        self.__inner_packets = b''
++        while True:
++            remaining = deadline - time.monotonic()
++            if remaining <= 0:
++                return
++            _progress(remaining)
++            flags = poll_sockets(
++                [(self.__socket, nss.io.PR_POLL_READ)],
++                nss.io.milliseconds_to_interval(
++                    max(1, int(remaining * 1000))))
++            if flags[0] == 0:
++                continue
++            run = self.__receive_arrived(_DISCARD_CHUNK_BYTES)
++            if run is not None and len(run) == 0:
++                return
++
+     def write(self, data):
+         '''Send data over the outer stream.
+
+@@ -1273,6 +1475,13 @@ class OuterBuffer(object):
+         _progress(self.__bound)
+         self.__socket.send(utils.u32_pack(0), self.__interval)
+
++    def send_inner_eof(self):
++        '''Send an EOF on the inner stream, which the peer need not have
++        opened: its inner session, begun now or later, ends at once.'''
++        _debug('o%s: sending inner EOF', _id(self))
++        _progress(self.__bound)
++        self.__socket.send(utils.u32_pack(_chunk_inner_mask), self.__interval)
++
+     def pending_inner_packets(self):
+         '''Return inner stream packets that need handling.
+
+--- a/src/errors.py
++++ b/src/errors.py
+@@ -32,6 +32,7 @@ INVALID_IMPORT = 13
+ IMPORT_PASSPHRASE_ERROR = 14
+ DECRYPT_FAILED = 15
+ UNSUPPORTED_KEYTYPE = 16
++PAYLOAD_TOO_LARGE = 17
+
+ _messages = {
+     OK: 'No error',
+@@ -51,6 +52,7 @@ _messages = {
+     IMPORT_PASSPHRASE_ERROR: 'Import passphrase does not match',
+     DECRYPT_FAILED: 'Decryption failed',
+     UNSUPPORTED_KEYTYPE: 'Unsupported keytype for operation',
++    PAYLOAD_TOO_LARGE: 'The payload is larger than the server accepts',
+ }
+
+
+--- a/src/server.py
++++ b/src/server.py
+@@ -209,6 +209,11 @@ class InvalidRequestError(Exception):
+     pass
+
+
++class RefusedPayloadError(InvalidRequestError):
++    '''A payload refused for its size, which is already in the log.'''
++    pass
++
++
+ class RequestHandler(object):
+     '''Information about a request type and its handler.'''
+
+@@ -404,7 +409,8 @@ class ServersConnection(object):
+                 raise InvalidRequestError('Unexpected payload')
+         elif handler.payload_storage == RequestHandler.PAYLOAD_MEMORY:
+             if payload_size > self.config.max_memory_payload_size:
+-                raise InvalidRequestError('Payload too large')
++                self.__refuse_payload(payload_size,
++                                      self.config.max_memory_payload_size)
+             f = StringIO()
+             utils.copy_data(f.write, reader.read, payload_size)
+             self.__payload = f.getvalue()
+@@ -412,7 +418,8 @@ class ServersConnection(object):
+             if handler.payload_storage != RequestHandler.PAYLOAD_FILE:
+                 raise InvalidRequestError('Payload type is not file')
+             if payload_size > self.config.max_file_payload_size:
+-                raise InvalidRequestError('Payload too large')
++                self.__refuse_payload(payload_size,
++                                      self.config.max_file_payload_size)
+             (fd, self.payload_path) = tempfile.mkstemp(text=False)
+             f = os.fdopen(fd, 'w+b')
+             try:
+@@ -473,6 +480,42 @@ class ServersConnection(object):
+             utils.SHA512HMACWriter(self.__client.outer_write, nss_key)
+         return handler
+
++    def __refuse_payload(self, payload_size, limit):
++        '''Refuse a payload of payload_size, over limit, without storing it.
++
++        Log the refusal, send the reason as a complete error reply, then
++        raise RefusedPayloadError.  The reply's two authenticators are
++        zero: their keys only arrive in the inner session, which a
++        refused request never reaches, so the client cannot verify this
++        reply and uses it for nothing but its error message.
++
++        The payload is on its way all the same.  What arrives before the
++        peer closes is read and dropped, never stored, for no longer
++        than the connection's teardown already waited for the peer.
++        The request's alarm may end that wait, and the request with it,
++        so the refusal is logged here, before the wait, rather than
++        where the exception is caught.
++
++        '''
++        logging.warning('Invalid request: Payload too large')
++        message = 'payload of {0:d} bytes, limit {1:d} bytes'.format(
++            payload_size, limit)
++        reply = (utils.u32_pack(errors.PAYLOAD_TOO_LARGE)
++                 + utils.format_fields({'message': message})
++                 + b'\0' * 64
++                 + utils.u64_pack(0)
++                 + b'\0' * 64)
++        # There will be no inner session: say so first, or a client that
++        # has sent a short payload waits in its handshake for this side.
++        self.__client.inner_close()
++        try:
++            self.__client.outer_write(reply)
++            self.__client.outer_finish()
++        except socket.error:
++            # The peer has gone, and the refusal is in the log.
++            pass
++        raise RefusedPayloadError('Payload too large')
++
+     def send_reply_header(self, error_code, fields):
+         '''Send a reply header to the client.'''
+         self.__reply_header_writer.write(utils.u32_pack(error_code))
+@@ -2968,6 +3011,8 @@ def request_handling_child(config):
+                 child_exception = e
+     except RequestHandled:
+         pass
++    except RefusedPayloadError:
++        pass  # Logged when it was refused
+     except InvalidRequestError as e:
+         logging.warning('Invalid request: %s', str(e))
+     except (IOError, socket.error) as e:
