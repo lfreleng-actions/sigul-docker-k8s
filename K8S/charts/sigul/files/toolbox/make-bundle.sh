@@ -353,8 +353,67 @@ fi
 ### Bundle ###########################################################
 
 log "packing and encrypting ${NSS_BASE}/"
-tar -C "${STAGE}" -cJf "${WORK}/bundle.tar.xz" -- "${NSS_BASE}" \
-    || die "tar failed"
+# macOS bsdtar would add an AppleDouble ._ member beside each file
+# (COPYFILE_DISABLE stops it) and an extended-attribute pax header on
+# each member (--no-xattrs stops it). GNU tar takes --no-xattrs and
+# ignores the variable.
+COPYFILE_DISABLE=1 tar --no-xattrs -C "${STAGE}" -cJf "${WORK}/bundle.tar.xz" \
+    -- "${NSS_BASE}" || die "tar failed"
+
+# tar_field TAR OFFSET LENGTH: LENGTH bytes of TAR from OFFSET, NULs
+# dropped.
+tar_field() {
+    dd if="$1" bs=1 skip="$2" count="$3" 2>/dev/null | tr -d '\0'
+}
+
+# tar_members TAR: the path of each member of an uncompressed archive,
+# one per line, read from its headers rather than through tar, since
+# macOS bsdtar hides AppleDouble members when listing and extracting.
+tar_members() {
+    local file="$1" total off=0 name size type prefix path=""
+    total="$(wc -c < "${file}")"
+    total="${total//[[:space:]]/}"
+    while [ $((off + 512)) -le "${total}" ]; do
+        name="$(tar_field "${file}" "${off}" 100)"
+        [ -n "${name}" ] || break
+        size="$(tar_field "${file}" $((off + 124)) 12)"
+        size="${size// /}"
+        [[ "${size}" =~ ^[0-7]+$ ]] \
+            || die "check: the bundle has a header with size '${size}'"
+        type="$(tar_field "${file}" $((off + 156)) 1)"
+        # POSIX ustar ("ustar\0" "00") splits long names into a prefix;
+        # GNU tar's "ustar  \0" uses those bytes for other fields.
+        if [ "$(dd if="${file}" bs=1 skip=$((off + 257)) count=8 2>/dev/null \
+                | tr '\0' '@')" = "ustar@00" ]; then
+            prefix="$(tar_field "${file}" $((off + 345)) 155)"
+            [ -z "${prefix}" ] || name="${prefix}/${name}"
+        fi
+        size=$((8#${size}))
+        off=$((off + 512))
+        case "${type}" in
+            x) path="$(tar_field "${file}" "${off}" "${size}" \
+                | sed -n 's/^[0-9]* path=//p')" ;;
+            L) path="$(tar_field "${file}" "${off}" "${size}")" ;;
+            g|K) ;;
+            *) printf '%s\n' "${path:-${name}}"; path="" ;;
+        esac
+        off=$((off + (size + 511) / 512 * 512))
+    done
+}
+
+# The archive holds the database directory and its files, nothing else.
+xz -dc "${WORK}/bundle.tar.xz" > "${WORK}/bundle.tar" \
+    || die "check: the bundle does not decompress"
+expected="$(cd "${STAGE}" && find "./${NSS_BASE}" | sed 's|^\./||')"
+members="$(tar_members "${WORK}/bundle.tar")"
+[ -n "${members}" ] || die "check: the bundle lists no members"
+while IFS= read -r member; do
+    member="${member#./}"
+    member="${member%/}"
+    grep -qxF -- "${member}" <<< "${expected}" \
+        || die "check: the bundle holds an unexpected member '${member}'"
+done <<< "${members}"
+rm -f "${WORK}/bundle.tar"
 gpg_batch() {
     gpg --homedir "${GNUPG_HOME}" --batch --quiet --yes --no-symkey-cache \
         --pinentry-mode loopback --passphrase-file "${PASSFILE}" "$@"
