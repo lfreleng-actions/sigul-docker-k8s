@@ -14,7 +14,6 @@ SPDX-FileCopyrightText: 2025 The Linux Foundation
 [![Latest Release](https://img.shields.io/github/v/release/lfreleng-actions/sigul-docker-k8s?label=Release&include_prereleases&sort=semver)](https://github.com/lfreleng-actions/sigul-docker-k8s/releases)
 
 [![Release](https://github.com/lfreleng-actions/sigul-docker-k8s/actions/workflows/release.yaml/badge.svg)](https://github.com/lfreleng-actions/sigul-docker-k8s/actions/workflows/release.yaml)
-[![pre-commit.ci status badge]][pre-commit.ci results page]
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/lfreleng-actions/sigul-docker-k8s/badge)](https://scorecard.dev/viewer/?uri=github.com/lfreleng-actions/sigul-docker-k8s)
 
 [![Client Image](https://img.shields.io/badge/ghcr.io-client-blue?logo=docker&logoColor=white)](https://github.com/lfreleng-actions/sigul-docker-k8s/pkgs/container/sigul-docker-k8s%2Fclient)
@@ -435,6 +434,4 @@ workflow logs, and — for stack-level bugs — the diagnostic bundle
 from `scripts/collect-sigul-diagnostics.sh --compress` (see
 [Troubleshooting](#troubleshooting)).
 
-[pre-commit.ci results page]: https://results.pre-commit.ci/latest/github/lfreleng-actions/sigul-docker-k8s/main
-[pre-commit.ci status badge]: https://results.pre-commit.ci/badge/github/lfreleng-actions/sigul-docker-k8s/main.svg
 [gh-issues]: https://github.com/lfreleng-actions/sigul-docker-k8s/issues
