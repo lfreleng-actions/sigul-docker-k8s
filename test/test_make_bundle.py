@@ -23,6 +23,11 @@
 #     a per-client certificate, even one whose name starts with the
 #     shared certificate's sigul-client. prefix
 #   - an --nss-dir whose last component starts with '-' is archived
+#   - the archive is created with COPYFILE_DISABLE=1 and --no-xattrs,
+#     so macOS bsdtar adds no AppleDouble members or xattr headers,
+#     and holds exactly the database directory and its files
+#   - an archive with any other member (._sigul, sigul/._cert9.db) is
+#     refused, naming the member, whatever the creating tar hides
 #   - a CRLF passphrase encrypts with, and puts in the JSON, the
 #     passphrase without its carriage return
 #   - the NSS password never reaches sed's argv
@@ -113,6 +118,29 @@ exec {sed} "$@"
 """
 
 
+# tar, logging COPYFILE_DISABLE and its argv when STUB_TAR_LOG names a
+# file. With STUB_TAR_EXTRA, an archive it creates also holds that
+# path, as macOS bsdtar adds an AppleDouble member: created under -C,
+# archived, then removed again.
+TAR = """#!/bin/sh
+[ -z "${{STUB_TAR_LOG:-}}" ] \\
+    || printf '%s|%s\\n' "${{COPYFILE_DISABLE-unset}}" "$*" >> "${{STUB_TAR_LOG}}"
+case " $* " in *" -cJf "*) ;; *) exec {tar} "$@" ;; esac
+[ -n "${{STUB_TAR_EXTRA:-}}" ] || exec {tar} "$@"
+dir=.
+prev=
+for arg in "$@"; do
+    [ "$prev" != -C ] || dir="$arg"
+    prev="$arg"
+done
+: > "$dir/$STUB_TAR_EXTRA"
+{tar} "$@" "$STUB_TAR_EXTRA"
+status=$?
+rm -f "$dir/$STUB_TAR_EXTRA"
+exit $status
+"""
+
+
 def check(label: str, ok: bool, detail: str) -> None:
     print(f"{'PASS' if ok else 'FAIL'}  {label}: {detail}")
     if not ok:
@@ -138,6 +166,9 @@ class Cluster:
         sed = self.bin / "sed"
         _ = sed.write_text(SED.format(sed=shutil.which("sed") or "/bin/sed"))
         sed.chmod(0o755)
+        tar = self.bin / "tar"
+        _ = tar.write_text(TAR.format(tar=shutil.which("tar") or "/bin/tar"))
+        tar.chmod(0o755)
         self.root: Path = root
 
     def make_bundle(
@@ -244,8 +275,12 @@ def test_action_format(tmp: Path) -> None:
     cluster = Cluster(tmp / "action", ["admin", CLIENT])
     out = tmp / "action" / "out"
     sed_argv = tmp / "action" / "sed-argv"
+    tar_log = tmp / "action" / "tar-log"
     done = cluster.make_bundle(
-        out, "--format", "action", stub_env={"STUB_SED_ARGV": str(sed_argv)}
+        out,
+        "--format",
+        "action",
+        stub_env={"STUB_SED_ARGV": str(sed_argv), "STUB_TAR_LOG": str(tar_log)},
     )
     check(
         "make-bundle.sh --format action succeeds",
@@ -342,15 +377,31 @@ def test_action_format(tmp: Path) -> None:
         f"{len(argv.splitlines())} sed call(s) logged",
     )
 
-    listing = unpack(out / "sigul-pki.asc", tmp / "action" / "unpacked")
+    creates = [
+        line.split("|", 1)
+        for line in (tar_log.read_text() if tar_log.exists() else "").splitlines()
+        if " -cJf " in f" {line} "
+    ]
     check(
-        "the bundle decrypts to a tar.xz of sigul/ holding the NSS database",
+        "the archive is created with COPYFILE_DISABLE=1 and --no-xattrs",
+        len(creates) == 1
+        and creates[0][0] == "1"
+        and "--no-xattrs" in creates[0][1].split(),
+        f"{creates}",
+    )
+
+    listing = unpack(out / "sigul-pki.asc", tmp / "action" / "unpacked")
+    db = tmp / "action" / "unpacked" / "sigul"
+    staged: set[str] = set()
+    if db.is_dir():
+        staged = {"sigul"} | {f"sigul/{p.name}" for p in db.iterdir()}
+    check(
+        "the bundle decrypts to a tar.xz of sigul/ and its files alone",
         bool(listing)
-        and all(m.split("/")[0] == "sigul" for m in listing)
+        and {m.rstrip("/") for m in listing} == staged
         and {"sigul/cert9.db", "sigul/key4.db"} <= set(listing),
         f"{listing}",
     )
-    db = tmp / "action" / "unpacked" / "sigul"
     certs = run("certutil", "-L", "-d", f"sql:{db}").stdout
     trust = {
         line.rsplit(None, 1)[0].strip(): line.rsplit(None, 1)[1]
@@ -570,6 +621,22 @@ def test_concurrent_publication(tmp: Path) -> None:
     )
 
 
+def test_extra_members(tmp: Path) -> None:
+    # What macOS bsdtar adds and then hides from its own listing and
+    # extraction: AppleDouble members beside the directory and files.
+    cluster = Cluster(tmp / "extra", ["admin", CLIENT])
+    for name, extra in (("top", "._sigul"), ("inner", "sigul/._cert9.db")):
+        out = tmp / "extra" / name
+        done = cluster.make_bundle(out, stub_env={"STUB_TAR_EXTRA": extra})
+        check(
+            f"an archive holding {extra} is refused, naming it",
+            done.returncode != 0
+            and f"unexpected member '{extra}'" in done.stderr
+            and not any(out.iterdir()),
+            done.stderr.strip().splitlines()[-1] if done.stderr.strip() else "",
+        )
+
+
 def test_refusals(tmp: Path) -> None:
     cluster = Cluster(tmp / "refuse", ["admin", CLIENT])
     store = cluster.release.store
@@ -635,6 +702,7 @@ def main() -> int:
         test_shared_prefix_collision(Path(tmp))
         test_crlf_passphrase(Path(tmp))
         test_concurrent_publication(Path(tmp))
+        test_extra_members(Path(tmp))
         test_refusals(Path(tmp))
     print()
     if FAILURES:

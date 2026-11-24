@@ -650,10 +650,14 @@ certutil -N -d sql:sigul -f nss.pw
 certutil -A -d sql:sigul -f nss.pw -n sigul-ca -t CT,C,C -a -i ca.crt
 certutil -A -d sql:sigul -f nss.pw -n sigul-bridge-cert -t P,P,P -a -i bridge.crt
 pk12util -i client.p12 -d sql:sigul -k nss.pw -w p12.pw
-tar -cJf sigul.tar.xz sigul
+COPYFILE_DISABLE=1 tar --no-xattrs -cJf sigul.tar.xz sigul
 gpg --batch --pinentry-mode loopback --passphrase-file <file> \
   --symmetric --cipher-algo AES256 --armor -o sigul-pki.asc sigul.tar.xz
 ```
+
+`COPYFILE_DISABLE=1` and `--no-xattrs` stop macOS's bsdtar adding
+`._` AppleDouble members and extended-attribute headers that a Linux
+consumer would unpack beside the database; GNU tar accepts both.
 
 `client.conf` is `files/conf/client.conf.template` with
 `user-name: <name>` - under strict checking it must equal the
