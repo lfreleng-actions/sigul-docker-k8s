@@ -1457,6 +1457,64 @@ Without the patch sixteen checks fail, the first two requests with an
 I/O error in place of the refusal. `test/k8s_pki_clients.sh` requires
 the refusal's message from the client on kind.
 
+### 27-log-subkey-import-refusal.patch
+
+**Status:** Diagnostic - changes no decision
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** Server
+
+**Problem:**
+Patch 21 refuses an import whose passphrase edit ended in `FAILURE`
+unless the key passes its check. One such refusal in CI, of a generated
+key with a signing and an encryption secret, could not be explained
+afterwards (#187). The server logged at most `GPG passphrase change
+failed: gpg-exit 33554433`, and two of the three refusals logged
+nothing. That line also appears in every run of the test, from the
+wrong passphrase on a complete key, so its presence did not show which
+case had logged it. Nothing said which secret was refused, or what the
+check had seen.
+
+**Fix:**
+Each refusal logs what it rested on. No check changes, and no
+passphrase or key material reaches the log; a keygrip names a secret
+and is not secret.
+
+- Every refusal logs the listing the check read, taken before the edit
+  session, beside one taken at that moment. Each line gives every
+  subkey's keygrip, whether its secret is listed, whether it can sign,
+  and whether its key file is in the home. A stale or early listing
+  shows as two lines that disagree.
+- A secret that does not accept the new passphrase, or still accepts
+  the old one, is named by keygrip, with whether it can sign and how
+  many secrets the key holds.
+- A verifying agent that answered neither "unlocked" nor "bad
+  passphrase" logs `Could not verify a passphrase`, with
+  `gpg-connect-agent`'s exit status, its `ERR` lines and its
+  diagnostics. That tells a check that could not be made from a secret
+  left on the wrong passphrase.
+- Every refusal also logs how long the edit session took and which
+  passphrase answered each prompt, in order.
+
+That line is there for one cause found while looking, and not
+confirmed as the one CI met. `generate_gpg_config` sets
+`max-cache-ttl 1`, and gpg-agent applies that to the two nonces under
+which GnuPG carries the old and new passphrase from one secret of a key
+to the next. Hold GnuPG for about a second between the two secrets and
+the nonces have expired: the agent asks again, the responder answers
+the request for the old passphrase with the new one, and the second
+secret stays on the old passphrase. Patch 21 then refuses the key, as
+it should. In the log that reads as three prompts answered `old, new,
+new`, and a second secret that does not accept the new passphrase,
+with no `Could not verify` line. Three prompts on an import that
+succeeds are harmless: there only the new passphrase's nonce had
+expired.
+
+**Test:** `test/test_server_subkey_import.py` checks that the refusal
+of a key with one secret left on the old passphrase names that secret
+in the log. It also prints each result as it happens, and the message
+of each refused import, so the server's log lines stay beside the case
+they belong to.
+
 ## Applying Patches
 
 The Docker build process automatically applies these patches:
