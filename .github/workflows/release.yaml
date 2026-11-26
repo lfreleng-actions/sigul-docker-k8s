@@ -251,6 +251,11 @@ jobs:
             org.opencontainers.image.title=${{ matrix.title }}
             org.opencontainers.image.description=${{ matrix.description }}
 
+      - name: 'Compute weekly package refresh key'
+        id: refresh
+        shell: bash
+        run: echo "key=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
       # yamllint disable rule:line-length
       - name: 'Build ${{ matrix.component }} (${{ matrix.platform }})'
         # yamllint disable-line rule:line-length
@@ -271,6 +276,8 @@ jobs:
           outputs: |
             type=docker,dest=/tmp/${{ matrix.component }}-${{ steps.platform.outputs.id }}.tar
           push: false
+          build-args: |
+            DNF_REFRESH=${{ steps.refresh.outputs.key }}
           cache-from: type=gha,scope=release-${{ matrix.component }}-${{ matrix.platform }}-${{ matrix.runner }}
           cache-to: type=gha,mode=max,scope=release-${{ matrix.component }}-${{ matrix.platform }}-${{ matrix.runner }}
       # yamllint enable rule:line-length

@@ -22,7 +22,12 @@ LABEL maintainer="releng@linuxfoundation.org"
 # .github/workflows/{build-test,release}.yaml for the values used.
 
 # Update package manager
-RUN dnf update -y && \
+# CI passes a value that changes each ISO week, so this layer and
+# every later one rebuild at least weekly instead of keeping stale
+# packages from the BuildKit cache. Local builds leave it empty.
+ARG DNF_REFRESH=""
+RUN echo "dnf refresh: ${DNF_REFRESH:-unset}" && \
+    dnf update -y && \
     dnf clean all
 
 # Install base dependencies for all architectures
