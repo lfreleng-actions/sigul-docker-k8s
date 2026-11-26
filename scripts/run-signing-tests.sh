@@ -939,7 +939,7 @@ phase "3: RPM SIGNING"
 
 # Use a stable, dist-tag-agnostic filename for the test RPM.  We
 # rename the rpmbuild output (which embeds the running container's
-# %{?dist} tag, e.g. .fc44 on the current images) to a fixed name
+# %{?dist} tag, such as .fc44) to a fixed name
 # so the rest of the suite can reference it without caring about
 # the platform.
 RPM_FILENAME="sigul-ci-test.rpm"
@@ -1018,22 +1018,43 @@ showrun "docker run --rm \\
     '${CLIENT_IMAGE}' \\
     --dbpath /work/rpmdb -Kv ${RPM_PATH}"
 
-# An unsigned noarch RPM produces 'NO ' for the V4 / V3 signature
-# checks.  We confirm the baseline so that the post-sign check is
-# meaningful.
+# Confirm the baseline so that the post-sign check is meaningful:
+# every digest of the unsigned RPM checks out, and it carries no
+# signature yet.
+#
+# Judge the per-check lines of 'rpm -Kv', not the one-line summary
+# of 'rpm -K'.  The summary is policy, and its wording and exit status
+# change between releases: for this same RPM, rpm 6.0 (Fedora 44)
+# prints 'digests OK' and exits 0, while rpm 6.1 (Fedora 45) treats a
+# missing signature as a failure, printing 'digests SIGNATURES NOT OK'
+# and exiting 1.  Both print the same per-check lines:
+#   Header SHA256 digest: OK
+#   Payload SHA256 digest: OK
+# and rpm 6.1 adds one 'NOTFOUND' line per signature kind it looked
+# for.  rpm's exit status is therefore ignored here.
+#
+# So: every digest line must end ': OK', and every signature line, if
+# rpm prints any, must end ': NOTFOUND'.  A signature that verifies,
+# or one whose key is missing ('NOKEY'), means the RPM is already
+# signed, and the baseline fails.
 UNSIGNED_OUT=$(
     docker run --rm \
         -v "${HOST_WORKDIR}:/work:ro" \
         --entrypoint rpm \
         "${CLIENT_IMAGE}" \
-        --dbpath /work/rpmdb -K "${RPM_PATH}" 2>&1
+        --dbpath /work/rpmdb -Kv "${RPM_PATH}" 2>&1
 )
 echo "$UNSIGNED_OUT"
-if grep -q 'digests OK' <<< "$UNSIGNED_OUT" \
-        && ! grep -q 'signatures OK' <<< "$UNSIGNED_OUT"; then
-    pass "baseline: unsigned RPM passes digest check, no signature yet"
+DIGEST_LINES=$(grep -cE '[[:space:]]digest:' <<< "$UNSIGNED_OUT")
+DIGEST_OK_LINES=$(grep -cE '[[:space:]]digest: OK$' <<< "$UNSIGNED_OUT")
+SIGNED_LINES=$(grep -iE '[[:space:]].*signature' <<< "$UNSIGNED_OUT" \
+    | grep -cvE ': NOTFOUND$')
+if [[ "$DIGEST_LINES" -ge 2 ]] \
+        && [[ "$DIGEST_OK_LINES" -eq "$DIGEST_LINES" ]] \
+        && [[ "$SIGNED_LINES" -eq 0 ]]; then
+    pass "baseline: unsigned RPM passes its ${DIGEST_LINES} digest checks, no signature yet"
 else
-    fail "baseline check unexpected; rpm -K output may have changed"
+    fail "baseline check unexpected: ${DIGEST_OK_LINES} of ${DIGEST_LINES} digests OK, ${SIGNED_LINES} signature line(s) other than NOTFOUND; rpm -Kv output may have changed"
 fi
 
 # ----------------------------------------------------------------------
