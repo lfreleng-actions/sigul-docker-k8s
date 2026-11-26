@@ -1,0 +1,171 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Log why a subkey-only import was refused. Patch 21 accepts the FAILURE
+# that ends the passphrase edit of a key whose primary secret is a stub
+# only after checking the key, and refuses otherwise. One such refusal
+# in CI could not be explained afterwards (#187): the only message was
+# "Changing the key passphrase failed" or one of its two siblings, which
+# says neither which secret was refused nor what the check saw. Each
+# refusal now logs what it rested on: the listing the check used beside
+# one taken at that moment and the key files present; the secret that
+# does not accept the new passphrase, or still accepts the old; a
+# verifying agent that gave neither answer, with its exit status and
+# diagnostics; and how long the edit session took and which passphrase
+# answered each of its prompts. No passphrase or key material is
+# logged, and no check changes: what was refused is still refused. See
+# patches/README.md.
+#
+--- a/src/server_common.py
++++ b/src/server_common.py
+@@ -25,6 +25,7 @@ from six import StringIO
+ import shutil
+ import subprocess
+ import tempfile
++import time
+ from urllib import parse
+
+ from cryptography import x509
+@@ -597,6 +598,8 @@ class _ChangePasswordResponder(object):
+         self.sent_old_pw = False
+         # The edit session's FAILURE status, if GnuPG reported one
+         self.failure = None
++        # Which passphrase answered each prompt, in order: 'old' or 'new'
++        self.prompts = []
+         # pygpgme overrides any exceptions in the callback, store them here
+         self.exception = None
+
+@@ -625,8 +628,10 @@ class _ChangePasswordResponder(object):
+             elif status == ourgpg.constants.STATUS_GET_HIDDEN:
+                 if not self.want_new_passphrase:
+                     self.sent_old_pw = True
++                    self.prompts.append('old')
+                     return self.old_passphrase
+                 else:
++                    self.prompts.append('new')
+                     return self.new_passphrase
+             elif status == ourgpg.constants.STATUS_GOT_IT:
+                 # This is what GPG2 sends us
+@@ -661,6 +666,7 @@ def gpg_change_password(config, fingerprint, old_passphrase, new_passphrase):
+     ctx = _gpg_open(config)
+     key = ctx.get_key(fingerprint, True)
+     responder = _ChangePasswordResponder(old_passphrase, new_passphrase)
++    started = time.monotonic()
+     try:
+         ctx.edit(key, responder.callback, StringIO())
+     except ourgpg.GPGMEError:
+@@ -668,13 +674,23 @@ def gpg_change_password(config, fingerprint, old_passphrase, new_passphrase):
+             raise responder.exception
+         if responder.failure is None:
+             raise
++    elapsed = time.monotonic() - started
+     if (not responder.passwd_cmd_sent or not responder.want_new_passphrase
+             or not responder.quit_cmd_sent):
+         logging.error('Unexpected state when changing GPG key password')
+         raise NotImplementedError()
+     if responder.failure is not None:
+-        _check_subkey_only_rewrap(config, key, old_passphrase,
+-                                  new_passphrase, responder.failure)
++        try:
++            _check_subkey_only_rewrap(config, key, old_passphrase,
++                                      new_passphrase, responder.failure)
++        except GPGError:
++            # What the check and the session saw, to tell a refusal's
++            # causes apart (#187)
++            _log_secret_listing(config, key, fingerprint)
++            logging.error('The refused edit session took %.1f s; passphrase '
++                          'prompts answered, in order: %s', elapsed,
++                          ', '.join(responder.prompts) or 'none')
++            raise
+
+
+ def _check_subkey_only_rewrap(config, key, old_passphrase, new_passphrase,
+@@ -697,14 +713,49 @@ def _check_subkey_only_rewrap(config, key, old_passphrase, new_passphrase,
+     for subkey in secrets:
+         if not _gpg_passphrase_unlocks(config, subkey.keygrip,
+                                        new_passphrase):
++            logging.error('Secret %s (sign=%s), one of %d, does not accept '
++                          'the new passphrase', subkey.keygrip,
++                          bool(subkey.can_sign), len(secrets))
+             raise GPGError('The new passphrase does not unlock the key')
+         if (old_passphrase != new_passphrase
+                 and _gpg_passphrase_unlocks(config, subkey.keygrip,
+                                             old_passphrase)):
++            logging.error('Secret %s (sign=%s), one of %d, still accepts '
++                          'the old passphrase', subkey.keygrip,
++                          bool(subkey.can_sign), len(secrets))
+             raise GPGError('The key is still protected by its old passphrase')
+     logging.info('Re-protected a key whose primary secret is not present')
+
+
++def _log_secret_listing(config, key, fingerprint):
++    '''Log what a refused key's listing says about its secrets.
++
++    The check reads a listing taken before the edit session. Log it beside
++    a listing taken now and the key files the agent holds, so that a
++    listing which disagrees with the home can be told from a key that was
++    rightly refused. A keygrip names a secret; it is not secret itself.
++
++    '''
++    def describe(listed):
++        return '; '.join(
++            '%s secret=%s sign=%s file=%s' % (
++                getattr(subkey, 'keygrip', None), bool(subkey.secret),
++                bool(subkey.can_sign),
++                os.path.exists(os.path.join(
++                    config.gnupg_home, 'private-keys-v1.d',
++                    '%s.key' % getattr(subkey, 'keygrip', None))))
++            for subkey in listed.subkeys)
++
++    logging.error('Refused a key listed before the edit as: %s',
++                  describe(key))
++    try:
++        fresh = _gpg_open(config).get_key(fingerprint, True)
++    except ourgpg.GPGMEError as e:
++        logging.error('Listing the key again failed: %s', e)
++        return
++    logging.error('The same key listed now: %s', describe(fresh))
++
++
+ def _passphrase_bytes(passphrase):
+     if isinstance(passphrase, str):
+         return passphrase.encode('utf-8')
+@@ -738,10 +789,19 @@ def _gpg_passphrase_unlocks(config, keygrip, passphrase):
+              '/definqfile PASSPHRASE ' + passphrase_file,
+              'OPTION pinentry-mode=loopback',
+              'PASSWD --verify ' + keygrip, '/bye'],
+-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+-        lines = reply.decode('utf-8', 'replace').splitlines()
+-        return (len(lines) >= 2 and lines[-1] == 'OK'
+-                and not any(line.startswith('ERR') for line in lines))
++            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
++        lines = reply.stdout.decode('utf-8', 'replace').splitlines()
++        errors = [line for line in lines if line.startswith('ERR')]
++        unlocked = len(lines) >= 2 and lines[-1] == 'OK' and not errors
++        if not unlocked and not any(_is_bad_passphrase(line)
++                                    for line in errors):
++            # Neither answer: the question never reached the secret
++            logging.error('Could not verify a passphrase for secret %s: '
++                          'gpg-connect-agent exited %d with %d lines, '
++                          'errors %s, stderr %r', keygrip, reply.returncode,
++                          len(lines), errors,
++                          reply.stderr.decode('utf-8', 'replace').strip())
++        return unlocked
+     finally:
+         subprocess.call([os.path.join(bindir, 'gpgconf'), '--homedir', home,
+                          '--kill', 'all'],
+@@ -749,6 +809,14 @@ def _gpg_passphrase_unlocks(config, keygrip, passphrase):
+         shutil.rmtree(home, ignore_errors=True)
+
+
++def _is_bad_passphrase(line):
++    '''Return True if an agent ERR line reports a wrong passphrase.'''
++    fields = line.split()
++    # The low 16 bits are the error code; 11 is GPG_ERR_BAD_PASSPHRASE
++    return (len(fields) > 1 and fields[1].isdigit()
++            and int(fields[1]) & 0xFFFF == 11)
++
++
+ def gpg_encrypt_symmetric(config, cleartext, passphrase):
+     '''Return cleartext encrypted using passphrase.'''
+     ctx = _gpg_open(config)

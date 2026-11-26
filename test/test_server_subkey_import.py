@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 #
 # Regression test for importing keys whose primary secret is a stub
-# (patch 21, #96).
+# (patch 21, #96), and for what a refused import logs (patch 27, #187).
 #
 # A key exported with 'gpg --export-secret-subkeys' carries its primary
 # secret as a gnu-dummy stub: the shape in which a project hands over a
@@ -29,11 +29,13 @@
 # server_common is upstream code this repository only patches, and ships
 # no type stubs, so its members are untyped by nature.
 
+import logging
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+from typing import override
 
 sys.path.insert(0, os.environ.get("SIGUL_LIB", "/usr/share/sigul"))
 
@@ -57,8 +59,23 @@ class Config:
         self.gnupg_home: str = gnupg_home
 
 
+class Logged(logging.Handler):
+    """Keeps what server_common logs, so a check can read a refusal's reason."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.messages: list[str] = []
+
+    @override
+    def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append(record.getMessage())
+
+
 def check(label: str, ok: bool, detail: str) -> None:
-    print(f"{'PASS' if ok else 'FAIL'}  {label}: {detail}")
+    # Flushed, so each result stays beside the server's log lines for its
+    # case: standard output is otherwise held back until the test ends,
+    # and every log line appears to precede every result (#187).
+    print(f"{'PASS' if ok else 'FAIL'}  {label}: {detail}", flush=True)
     if not ok:
         FAILURES.append(label)
 
@@ -133,7 +150,9 @@ def import_key(config: Config, path: str, old: str) -> tuple[str, str]:
         server_common.gpg_change_password(config, fingerprint, old, NEW_PASSPHRASE)
     except Exception as error:
         # Any exception type is the result under test: a refused
-        # passphrase must surface as GPGError, never as a crash.
+        # passphrase must surface as GPGError, never as a crash. Callers
+        # keep its type alone, so say here what it reported.
+        print(f"NOTE  import refused: {error}", flush=True)
         server_common.gpg_delete_key(config, fingerprint)
         return fingerprint, type(error).__name__
     return fingerprint, ""
@@ -384,6 +403,8 @@ def test_partial_reprotect_is_refused(work: str) -> None:
         signing = [keygrip for keygrip, can_sign in secrets if can_sign]
         reprotect(config, signing[0], old, NEW_PASSPHRASE)
         stored = server_common._gpg_open(config).get_key(fingerprint, True)
+        logged = Logged()
+        logging.getLogger().addHandler(logged)
         try:
             server_common._check_subkey_only_rewrap(
                 config, stored, old.encode(), NEW_PASSPHRASE, "gpg-exit 33554433"
@@ -391,10 +412,18 @@ def test_partial_reprotect_is_refused(work: str) -> None:
             outcome = "accepted"
         except server_common.GPGError as error:
             outcome = f"refused: {error}"
+        finally:
+            logging.getLogger().removeHandler(logged)
         check(
             "a key with one secret left on the old passphrase is refused",
             outcome.startswith("refused"),
             f"signing secret re-protected, encryption secret not: {outcome}",
+        )
+        left_behind = [keygrip for keygrip, can_sign in secrets if not can_sign]
+        check(
+            "the refusal's log names the secret left behind",
+            any(left_behind[0] in message for message in logged.messages),
+            f"logged: {logged.messages or 'nothing'}",
         )
         for keygrip, can_sign in secrets:
             if not can_sign:
@@ -447,6 +476,10 @@ def test_complete_key_unchanged(full_key: str) -> None:
 
 
 def main() -> int:
+    # server_common logs through the root logger. Configure it here, as its
+    # first message otherwise would, so that capturing a refusal's log in
+    # one check does not take the others' off standard error.
+    logging.basicConfig()
     print("Server subkey-only import regression tests")
     print(f"server_common: {'PATCHED' if PATCHED else 'UNPATCHED'}")
     print()
