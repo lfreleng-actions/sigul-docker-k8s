@@ -13,7 +13,7 @@ ARG SIGUL_CLIENT_IMAGE=sigul-client:latest
 # uv installs the runner's tooling, mounted from this stage for that one
 # RUN, as Dockerfile.client does. Pinned by digest; Dependabot's docker
 # ecosystem keeps it current.
-FROM ghcr.io/astral-sh/uv:0.13.9@sha256:d3b601f0c7b118bc1753febf7c41cc80981df678445e0254284eecf84db79a7d AS uv
+FROM ghcr.io/astral-sh/uv:0.13.10@sha256:a3ea1357342c1a4bf9a0c53a3deb1b55379aefa037338d8113d5771efa01774f AS uv
 
 FROM ${SIGUL_CLIENT_IMAGE}
 
