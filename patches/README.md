@@ -1515,6 +1515,116 @@ in the log. It also prints each result as it happens, and the message
 of each refused import, so the server's log lines stay beside the case
 they belong to.
 
+### 28-fix-passphrase-change-each-secret.patch
+
+**Status:** HIGH - a valid key with two secrets can fail to import on a
+busy server
+**Upstream Status:** Local fork (upstream Sigul is unmaintained; see below)
+**Affects:** Server
+
+**Problem:**
+`gpg_change_password` drives `gpg --edit-key` `passwd`, and gpg calls
+the agent's `PASSWD` once for each secret the key holds. After the
+first, gpg-agent keeps the old and new passphrases under cache nonces,
+and gpg passes those back for the next secret, so normally nothing more
+is asked. Those entries expire with `max-cache-ttl`, which
+`generate_gpg_config` sets to 1 s. If gpg reaches the next secret later
+than that, the agent asks for its old passphrase again, with a
+`GET_HIDDEN passphrase.enter` like the first. `_ChangePasswordResponder`
+set `want_new_passphrase` once the first old passphrase was accepted and
+never cleared it, so it answered that prompt with the new passphrase.
+The agent refused it and left the secret on the old passphrase. For a
+subkey-only key, patch 21's check then refused the half-protected key;
+for a complete key, `gpg_change_password` raised `Changing the key
+passphrase failed`. Either way the client got `IMPORT_PASSPHRASE_ERROR`
+for a valid key. The usual case is a signing key with an encryption
+subkey, and a slow or busy runner was enough to hit it (#189). This is
+the cause patch 27's log describes but could not confirm: there it
+reads as prompts answered `old, new, new`.
+
+**Fix:**
+The responder tracks which passphrase the next `GET_HIDDEN` asks for in
+a new `awaiting_new` flag. It answers with the new passphrase only
+straight after the old one was accepted (`GOT_IT`) or on
+`NEED_PASSPHRASE_SYM`, and with the old one otherwise, so each secret's
+old-passphrase prompt gets the old passphrase. `want_new_passphrase`
+keeps its meaning for the state check in `gpg_change_password`: the
+session reached a new-passphrase prompt. The same stalled session now
+logs `old, new, old, new` in patch 27's prompt list. The other statuses,
+patch 21's `FAILURE` handling, patch 27's logging and
+`_check_subkey_only_rewrap` are unchanged. The
+agent's cache settings stay as they are: they keep it from caching
+signing passphrases, and the fault was in the responder.
+
+That leaves one prompt the responder cannot read. The agent reads the
+cached old passphrase before it decrypts the next secret and the cached
+new one after, so if the cache expires in between, it asks for the new
+passphrase alone. GnuPG relays the agent's `PASSPHRASE` and
+`NEW_PASSPHRASE` requests as the same `GET_HIDDEN passphrase.enter`, so
+the responder answers it with the old passphrase. The secret stays on
+the old passphrase, and the session still succeeds, so a complete key
+imports with one secret the new passphrase does not unlock (#190). Patch
+27's list reads `old, new, old` for it. A third prompt can only come
+from a secret after the first, so after a session that answered more
+than two, `gpg_change_password` checks each secret present. It
+re-protects any secret the old passphrase still unlocks through
+`gpg-connect-agent` `PASSWD`, which answers the two requests by name,
+and logs a warning naming it. If the old passphrase still unlocks that
+secret afterwards, the import is refused. Then each secret present must
+accept the new passphrase, or the import is refused: a probe that fails
+to reach the agent also reads as "not unlocked", so the old-passphrase
+probe alone never clears a secret.
+
+The same prompt can also fail the session. Once the responder has
+answered a new-passphrase-only prompt with the old passphrase, it
+expects the new passphrase next. On a key with three or more secrets,
+it then answers the next secret's old-passphrase prompt with the new
+passphrase, which the agent refuses, and gpg ends the session in
+`FAILURE`. The re-protection step repairs that secret like any other.
+A complete key whose session failed is then accepted with a warning,
+but only when the check has verified at least one secret and every
+secret it checked accepts the new passphrase and not the old one. A
+subkey-only key whose session failed still goes through patch 21's
+check, as before. The
+passphrases reach the agent through files in a private temporary
+directory, removed afterwards, as patch 21's check already does.
+
+**Test:** `test/test_server_subkey_import.py` pauses gpg between
+secrets in step with the agent, so the agent's cache expires before gpg
+reaches the next secret, on any runner and without retries. When the
+responder answers the secret's new-passphrase prompt, the test stops the
+agent (`SIGSTOP`), so it cannot finish that secret yet. Once gpg has
+sent the answer (`GOT_IT`) and sleeps waiting on the agent, the test
+stops gpg and resumes the agent. It then waits for the agent to rewrite
+the secret's key file, sleeps 2.5 s and resumes gpg. A check counts only
+when the next secret asks for a passphrase after the pause. A generated
+subkey-only key with signing and encryption secrets, and a generated
+complete key with a primary signing secret and an encryption subkey,
+must each come out with both secrets unlocked by the new passphrase and
+not by the old one. Without the patch both checks fail, with the
+encryption secret left on its old passphrase.
+
+The test also covers the re-protection step without racing the agent
+for the moment its cached new passphrase alone expires, which lasts a
+fraction of a second and depends on the runner. It re-protects a third
+generated complete key with gpg paused as above, and answers the
+session's fourth prompt, the second secret's new passphrase, with the
+old passphrase. That leaves the second secret where a session answering
+a new-passphrase-only prompt leaves it: on the old passphrase, with the
+session succeeding. Both secrets must come out on the new passphrase.
+Without the re-protection step the check fails with the encryption
+secret on the old passphrase and no error.
+
+A fourth generated complete key has three secrets: a primary signing
+secret, an encryption subkey and a signing subkey. The test pauses gpg
+after the first and second secrets, and sets the responder to take the
+fourth prompt as an old-passphrase prompt, as it does after answering a
+new-passphrase-only prompt. The responder then answers the third
+secret's old-passphrase prompt with the new passphrase, and the session
+fails. All three secrets must come out on the new passphrase, with no
+error. Without the acceptance of a repaired complete key, the import is
+refused with `GPGError`.
+
 ## Applying Patches
 
 The Docker build process automatically applies these patches:
