@@ -19,6 +19,9 @@
 #   printf '%s\0' "$KEY_PASSPHRASE" \
 #     | sigul --batch -c /etc/sigul/client.conf sign-text \
 #         -o <output> <key-name> <file>
+# The signing keys' expiry, non-zero when one is due (chart README,
+# "Key expiry"):
+#   bash /scripts/key-expiry.sh --warn-days 30
 # Admin credentials stay inside the cluster; disable when done.
 {{- if .Values.adminToolbox.enabled }}
 ---
@@ -123,7 +126,8 @@ spec:
             - name: config
               mountPath: /etc/sigul
               readOnly: true
-            # make-bundle.sh and the client.conf.template it renders.
+            # make-bundle.sh, the client.conf.template it renders, and
+            # key-expiry.sh.
             - name: scripts
               mountPath: /scripts
               readOnly: true

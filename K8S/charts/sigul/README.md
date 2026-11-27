@@ -664,6 +664,71 @@ consumer would unpack beside the database; GNU tar accepts both.
 certificate's CN - and the bridge, server name, `nss-dir` and NSS
 password filled in (EVALUATION.md §9 Phase 4).
 
+## Key expiry
+
+### Checking expiry
+
+`list-keys` gives key names only. `files/toolbox/key-expiry.sh`, which
+the admin toolbox mounts at `/scripts/key-expiry.sh`, reports when
+each signing key expires. It runs `list-keys` and then
+`get-public-key` for each key as the admin, and reads each public
+key's expiry with `gpg` in a throwaway home. It needs no access to the
+server's key volume and reads no private key.
+
+```sh
+kubectl exec -it deploy/<release>-admin-toolbox -- \
+  bash /scripts/key-expiry.sh --warn-days 30
+```
+
+The admin password comes from `SIGUL_ADMIN_PASSWORD`, which the
+toolbox sets, and reaches `sigul` on stdin as the other toolbox
+commands' passwords do. With that variable unset or empty, the script
+prompts on a terminal, or else reads the password from stdin up to the
+first NUL or newline. The script never prints the password and puts
+nothing secret on a command line.
+
+It prints one line per signing-capable key or subkey, the expired and
+the due first, each group by expiry, then a summary on stderr:
+
+<!-- markdownlint-disable MD013 -->
+
+```text
+EXPIRED key=old-release primary=3E21C652237F6BD826834AF1B99F4395C7E780A5 signing=3E21C652237F6BD826834AF1B99F4395C7E780A5 expires=2026-02-10T00:00:00Z days=-60
+DUE key=release primary=31166058BF4A09B9897638742D3E15F57A9064F6 signing=CAE259C15E1063977DCF2B016CCFDCE7E36B8B3B expires=2026-04-21T12:00:00Z days=10
+OK key=nightly primary=3D27E6E6D6A388E0C57F45A4CC553C19DC20A89B signing=3D27E6E6D6A388E0C57F45A4CC553C19DC20A89B expires=2026-10-28T00:00:00Z days=200
+OK key=archive primary=3F858C7A6C2A9356A08A984628C10DC0C17FDDB9 signing=3F858C7A6C2A9356A08A984628C10DC0C17FDDB9 expires=never days=never
+key-expiry.sh: 4 key(s), 4 signing (sub)key(s), 2 expired or due within 30 day(s)
+```
+
+<!-- markdownlint-enable MD013 -->
+
+- `primary` is the key's primary fingerprint, and `signing` that of the
+  primary or subkey able to sign. A key with a signing subkey lists
+  the subkey; a key with several lists each one.
+- `expires` is the expiry in UTC, ISO 8601, or `never`. A subkey
+  cannot sign once its primary key expires, so a subkey's `expires` is
+  the earlier of its own expiry and its primary's. `days` counts whole
+  days left, rounded down, and is zero or negative once the key has
+  expired.
+- `EXPIRED`: the key has expired. `DUE`: it expires within
+  `--warn-days`, default `30`. `OK`: it expires later, or never.
+- A key with no signing-capable key prints one `NOSIGN` line with
+  `signing=none` and does not affect the exit status.
+
+Options: `-c`/`--config` names the Sigul client configuration (default
+`/etc/sigul/client.conf`), `--warn-days` sets the threshold, and
+`--now <unix time>` judges expiry as of another time, to ask what will
+be due by a given date. `--help` describes each one.
+
+Exit status:
+
+- `0`: no signing key or subkey has expired or expires within
+  `--warn-days`
+- `1`: at least one has; those are the `EXPIRED` and `DUE` lines
+- `2`: the report could not be produced: a bad option, a failed
+  `sigul` command (a wrong admin password, say) or a public key `gpg`
+  cannot read
+
 ## Large files
 
 Two values bound how large a file the server signs. Each must be a
@@ -1167,6 +1232,7 @@ python3 test/test_chart_pki_clients.py      # helm + PyYAML
 python3 test/test_chart_large_file_limits.py  # helm + PyYAML
 python3 test/test_pki_bootstrap_clients.py  # certutil + pk12util
 python3 test/test_make_bundle.py            # certutil, gpg, xz + jq
+python3 test/test_key_expiry.py             # gpg + GNU date
 python3 test/test_k8s_pki_diagnostics.py    # bash; the kind test's diagnostics
 bash test/k8s_pki_clients.sh                # kind, images built locally
 ```

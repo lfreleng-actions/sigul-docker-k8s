@@ -16,6 +16,8 @@
 #     with that user's correct password
 #   - a bundle make-bundle.sh builds from the cluster, in either
 #     format, unpacks in the client image and signs through the bridge
+#   - key-expiry.sh, run in the admin toolbox, lists the test key's
+#     signing key and exits as its report implies
 #   - once a client's user is deleted its bundle can do nothing
 #
 # It also proves the chart's large-file limits (#156), which the same
@@ -872,6 +874,34 @@ if in_toolbox bash /scripts/make-bundle.sh --help >/dev/null; then
     pass "the admin toolbox carries make-bundle.sh"
 else
     fail "the admin toolbox carries make-bundle.sh"
+fi
+
+### Key expiry report (#204) #########################################
+
+# The toolbox's SIGUL_ADMIN_PASSWORD authenticates the report; its
+# exit status must agree with what it lists.
+expiry_status=0
+expiry_out="$(in_toolbox bash /scripts/key-expiry.sh)" || expiry_status=$?
+hex40_re='[0-9A-F]{40}'
+expiry_re="^(OK|DUE|EXPIRED) key=${KEY} primary=${hex40_re} signing=${hex40_re} expires=([0-9TZ:-]+|never) days=(-?[0-9]+|never)$"
+if grep -qE "${expiry_re}" <<< "${expiry_out}"; then
+    pass "key-expiry.sh lists ${KEY}'s signing key and its expiry"
+else
+    fail "key-expiry.sh lists ${KEY}'s signing key and its expiry"
+    printf '%s\n' "${expiry_out}"
+fi
+expiry_want=0
+! grep -qE '^(DUE|EXPIRED) ' <<< "${expiry_out}" || expiry_want=1
+if [ "${expiry_status}" -eq "${expiry_want}" ]; then
+    pass "key-expiry.sh exits ${expiry_want}, as its report implies"
+else
+    fail "key-expiry.sh exits ${expiry_status}, not the ${expiry_want} its report implies"
+    printf '%s\n' "${expiry_out}"
+fi
+if grep -qF -- "${ADMIN_PASSWORD}" <<< "${expiry_out}"; then
+    fail "key-expiry.sh prints no admin password"
+else
+    pass "key-expiry.sh prints no admin password"
 fi
 
 ### Cutting off a client (README runbook) ############################

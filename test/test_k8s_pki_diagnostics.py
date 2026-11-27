@@ -130,8 +130,9 @@ esac
 # With STUB_PASS the server takes an exec and the toolbox answers as
 # a working service would: a request naming another user (-u) is
 # refused and logged as a CN mismatch, the file over the limit is
-# refused and logged, and a deleted user's bundle no longer
-# authenticates. Signing the file under the limit writes the server
+# refused and logged, a deleted user's bundle no longer
+# authenticates, and key-expiry.sh reports the test key as never
+# expiring. Signing the file under the limit writes the server
 # log's two lines and, in a large-file run, holds the file in the
 # server's /tmp until the script's sampler has seen it there. /tmp
 # then holds the upload, as its own tmp* file, and 4096 bytes of
@@ -188,6 +189,10 @@ toolbox() {
     case " $* " in
         " df "*)
             echo "/dev/node 72G 30G 42G 42% /workspace" ;;
+        " bash /scripts/key-expiry.sh "*)
+            fingerprint=0123456789ABCDEF0123456789ABCDEF01234567
+            echo "OK key=pki-clients-test-key primary=${fingerprint} signing=${fingerprint}" \
+                "expires=never days=never" ;;
         " sigul "*" -u "*)
             echo "ERROR: Cert CN and user differ" >> "${server_log}"
             echo "Error: Authentication failed"

@@ -1883,6 +1883,20 @@ jobs:
             client-linux-amd64-image:test \
             /test/test_make_bundle.py
 
+      - name: 'Test the key expiry report'
+        shell: bash
+        run: |
+          # key-expiry.sh runs in the toolbox, so it is tested with the
+          # client image's gpg and date.
+          docker run --rm \
+            --user 1000:1000 \
+            -v "${PWD}/test:/test:ro" \
+            -v "${PWD}/K8S/charts/sigul/files:/chart-files:ro" \
+            -e KEY_EXPIRY=/chart-files/toolbox/key-expiry.sh \
+            --entrypoint python3 \
+            client-linux-amd64-image:test \
+            /test/test_key_expiry.py
+
       - name: 'Check whether NSS tools are needed'
         id: nss-tools
         shell: bash
