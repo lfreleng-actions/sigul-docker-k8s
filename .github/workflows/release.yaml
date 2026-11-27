@@ -1237,7 +1237,7 @@ jobs:
         # problem. The three image packages needed the same one-time
         # step. The summary step below repeats this.
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/helm-chart-publish-action@a5465127536053bc6039c6ec0fccc673f22e600b  # v0.2.1
+        uses: lfreleng-actions/helm-chart-publish-action@99c97177fcaaa499918bb4ded5a6167a9574d948  # v0.2.2
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
