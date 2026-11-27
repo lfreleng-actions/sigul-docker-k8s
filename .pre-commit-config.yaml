@@ -162,7 +162,7 @@ repos:
         #   its files (the chart scripts import their siblings; the
         #   harness runs as `python -m harness` from soak/). Chart
         #   scripts, crypt_compat.py and test/ run only inside the
-        #   Fedora 44 images, so are checked at Python 3.14.
+        #   Fedora 45 images, so are checked at Python 3.15.
         # - reportMissingImports off for test/ only: those scripts run
         #   inside the images and import Sigul's own modules (not on
         #   PyPI) and python-nss-ng (Linux manylinux_2_38 wheels only,
@@ -188,21 +188,21 @@ repos:
         # - docker, locust, matplotlib: soak/requirements.txt, which the
         #   soak image and soak-nightly's host venv install.
         # - passlib: the images' `pip3 install passlib==1.7.4`.
-        # - requests: the Fedora 44 python3-requests RPM the images
-        #   install (2.33.1).  It ships no inline types; 2.34 does.
+        # - requests: the Fedora 45 python3-requests RPM the images
+        #   install (2.34.2).  It ships inline types since 2.34.0, so
+        #   it takes no types-requests (typeshed says to uninstall it).
         # - types-*: the stubs release for that same API (typeshed:
-        #   requests ~=2.33.0, docker 7.2.*, passlib 1.7.*).  The
-        #   passlib stubs are final; typeshed has removed them.
+        #   docker 7.2.*, passlib 1.7.*).  The passlib stubs are
+        #   final; typeshed has removed them.
         # Bump each pin with its runtime, not on its own.
         additional_dependencies:
           - docker==7.2.0
           - locust==2.46.5
           - matplotlib==3.11.2
           - passlib==1.7.4
-          - requests==2.33.1
+          - requests==2.34.2
           - types-docker==7.2.0.20260923
           - types-passlib==1.7.7.20260211
-          - types-requests==2.33.0.20260906
 
   - repo: https://github.com/lfreleng-actions/gha-workflow-linter
     rev: 380c07e2a17ef43c3c5b8579db3b4a46af475bf5  # frozen: v1.12.0

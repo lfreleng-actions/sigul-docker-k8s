@@ -148,7 +148,7 @@ To use the action against a real signing server you need:
 
 ## Container architecture
 
-This repository builds three containers, all from `fedora:44`:
+This repository builds three containers, all from `fedora:45`:
 
 <!-- markdownlint-disable MD013 -->
 
