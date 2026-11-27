@@ -448,7 +448,8 @@ K8S/
       conf/                     # bridge/server config templates
       scripts/                  # pki-bootstrap.sh, nss-init.sh,
                                 # publish-secrets.py, k8s_api.py
-      toolbox/                  # make-bundle.sh (CI client bundles)
+      toolbox/                  # make-bundle.sh (CI client bundles),
+                                # key-expiry.sh (key expiry report)
     templates/
       pki-bootstrap-job.yaml    # + SA/Role/RoleBinding, sync-wave -1
       bridge-deployment.yaml    # wave 1

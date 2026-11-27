@@ -29,6 +29,8 @@ data:
 {{ .Files.Get "files/scripts/bridge-healthcheck.py" | indent 4 }}
   make-bundle.sh: |
 {{ .Files.Get "files/toolbox/make-bundle.sh" | indent 4 }}
+  key-expiry.sh: |
+{{ .Files.Get "files/toolbox/key-expiry.sh" | indent 4 }}
 ---
 apiVersion: v1
 kind: ConfigMap
