@@ -145,7 +145,7 @@ jobs:
       - name: 'Validate tag'
         id: validate
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/tag-validate-action@0c2ccc8074af58bc62d5eb30d07655e6e6069dd4  # v1.1.12
+        uses: lfreleng-actions/tag-validate-action@002348a258210065febb917602577a9f7664401f  # v1.1.14
         with:
           token: "${{ secrets.GITHUB_TOKEN }}"
           require_type: 'semver'
