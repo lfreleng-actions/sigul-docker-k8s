@@ -12,7 +12,7 @@ container) on a host with Docker. The same flow is used in CI by
 
 ## Architecture summary
 
-The stack is three containers built from `fedora:44`:
+The stack is three containers built from `fedora:45`:
 
 <!-- markdownlint-disable MD013 -->
 

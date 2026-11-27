@@ -9,7 +9,7 @@ This module provides a drop-in replacement for the standard library crypt module
 that was deprecated in Python 3.11 and removed in Python 3.13.
 
 The server and bridge images install it as the ``crypt`` module of their
-Python 3.14 interpreter, so it targets Python 3.13+ only and provides just
+Python 3.15 interpreter, so it targets Python 3.13+ only and provides just
 ``crypt()``, the function Sigul calls.  It uses passlib to provide
 SHA-512 password hashing compatible with the original crypt.crypt() function.
 """

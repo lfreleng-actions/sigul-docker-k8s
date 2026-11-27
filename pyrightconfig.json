@@ -11,18 +11,18 @@
   "executionEnvironments": [
     {
       "root": "K8S/charts/sigul/files/scripts",
-      "pythonVersion": "3.14"
+      "pythonVersion": "3.15"
     },
     {
       "root": "build-scripts/crypt_compat.py",
-      "pythonVersion": "3.14"
+      "pythonVersion": "3.15"
     },
     {
       "root": "soak"
     },
     {
       "root": "test",
-      "pythonVersion": "3.14",
+      "pythonVersion": "3.15",
       "reportMissingImports": "none"
     }
   ]

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 #
-# Python packages that fedora:44 ships with unpatched advisories.
+# Python packages that fedora:45 ships with unpatched advisories.
 # Dockerfile.{bridge,client,server} install the lock compiled from
 # this file (advisories.txt) ahead of the dnf tree; the comment there
 # covers the mechanism. Each entry is a floor at the first fixed
@@ -13,7 +13,7 @@
 # fix for GHSA-65pc-fj4g-8rjx.
 #
 # Compile the lock with:
-#   uv pip compile --generate-hashes --universal --python-version 3.14 \
+#   uv pip compile --generate-hashes --universal --python-version 3.15 \
 #     --output-file advisories.txt advisories.in
 
 # 80.10.2: CVE-2026-59890 / GHSA-h35f-9h28-mq5c, a MANIFEST.in
