@@ -3,7 +3,8 @@
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 #
 # Regression test for importing keys whose primary secret is a stub
-# (patch 21, #96), and for what a refused import logs (patch 27, #187).
+# (patch 21, #96), for what a refused import logs (patch 27, #187), and
+# for re-protecting every secret of a key under load (patch 28, #189).
 #
 # A key exported with 'gpg --export-secret-subkeys' carries its primary
 # secret as a gnu-dummy stub: the shape in which a project hands over a
@@ -20,6 +21,23 @@
 # code - the calls import_gnupg_key makes - against the publicly known
 # fixtures in test/fixtures, in a throwaway GnuPG home.
 #
+# A key with two secrets is also re-protected with gpg paused between its
+# secrets (patch 28, #189). The agent's cached passphrases expire
+# meanwhile, so it asks for the second secret's old passphrase again, as
+# on a busy runner; the server must answer with the old passphrase, not
+# the new one. The pause is synchronised with the agent: it is stopped
+# before a prompt's answer reaches it, and gpg is stopped once it waits
+# on the agent, so gpg cannot reach the next secret before the pause.
+# The agent can also lose only its cached new passphrase and ask for the
+# second secret's new passphrase alone. gpg relays that as the same
+# prompt, which the server answers with the old passphrase, leaving that
+# secret on it, and then answers the next secret's old-passphrase prompt
+# with the new one, which fails the session. Two checks arrange those
+# states without racing the agent: one answers the second secret's
+# new-passphrase prompt with the old passphrase, and one, on a key with
+# three secrets, makes the server take that prompt for an old-passphrase
+# prompt. The server must then re-protect each secret itself.
+#
 # Run inside the sigul server image, with the fixtures mounted:
 #   python3 test/test_server_subkey_import.py
 
@@ -32,9 +50,12 @@
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
+from collections.abc import Callable
 from typing import override
 
 sys.path.insert(0, os.environ.get("SIGUL_LIB", "/usr/share/sigul"))
@@ -294,7 +315,17 @@ def listed_fingerprints(home: str) -> list[str]:
 
 
 def make_two_secret_key(work: str, passphrase: str) -> str:
-    """Export a new subkey-only key holding a signing and an encryption secret.
+    """Export a new subkey-only key holding a signing and an encryption secret."""
+    return make_key(work, passphrase, ("sign", "encr"), subkeys_only=True)
+
+
+def make_key(
+    work: str, passphrase: str, usages: tuple[str, ...], subkeys_only: bool
+) -> str:
+    """Export a new key with a subkey for each usage; return its path.
+
+    With subkeys_only, only the subkeys' secrets are exported and the
+    primary secret is a stub; otherwise every secret is.
 
     Each call writes its own file: GnuPG in batch mode leaves an existing
     output file in place and still exits 0, which would hand a later caller
@@ -305,26 +336,29 @@ def make_two_secret_key(work: str, passphrase: str) -> str:
         _ = f.write("allow-loopback-pinentry\n")
     base = ["gpg", "--homedir", home, "--batch", "--pinentry-mode", "loopback"]
     base += ["--passphrase", passphrase]
-    output_fd, output = tempfile.mkstemp(prefix="two-secret-", suffix=".asc", dir=work)
+    output_fd, output = tempfile.mkstemp(prefix="key-", suffix=".asc", dir=work)
     os.close(output_fd)
     try:
-        user = "Two Secret Test (THROWAWAY) <two@example.invalid>"
+        user = "Re-protect Test (THROWAWAY) <reprotect@example.invalid>"
         _ = subprocess.run(
             [*base, "--quick-gen-key", user, "rsa2048", "sign,cert", "never"],
             capture_output=True,
             check=True,
         )
         primary = listed_fingerprints(home)[0]
-        for usage in ("sign", "encr"):
+        for usage in usages:
             _ = subprocess.run(
                 [*base, "--quick-add-key", primary, "rsa2048", usage, "5y"],
                 capture_output=True,
                 check=True,
             )
-        subkeys = [fingerprint + "!" for fingerprint in listed_fingerprints(home)[1:]]
+        if subkeys_only:
+            subkeys = [f + "!" for f in listed_fingerprints(home)[1:]]
+            export = ["--export-secret-subkeys", *subkeys]
+        else:
+            export = ["--export-secret-keys", primary]
         _ = subprocess.run(
-            [*base, "--yes", "--armor", "--output", output]
-            + ["--export-secret-subkeys", *subkeys],
+            [*base, "--yes", "--armor", "--output", output, *export],
             capture_output=True,
             check=True,
         )
@@ -390,6 +424,271 @@ def test_every_secret_is_reprotected(work: str) -> None:
         )
     finally:
         stop(config)
+
+
+# Longer than the server agent's max-cache-ttl of 1 s, which the agent
+# counts in whole seconds.
+PAUSE_SECONDS = 2.5
+# A bound on each wait while arranging a pause, so a gpg or agent that
+# never gets there cannot hang the test.
+SETTLE_SECONDS = 10.0
+
+
+def gpg_children() -> list[int]:
+    """Process IDs of the gpg processes this process started."""
+    found: list[int] = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat", encoding="utf-8") as handle:
+                stat = handle.read()
+            with open(f"/proc/{entry}/comm", encoding="utf-8") as handle:
+                comm = handle.read().strip()
+        except OSError:
+            continue
+        # The command name sits in parentheses and may hold spaces; the
+        # parent's ID is the second field after it.
+        parent = int(stat.rsplit(")", 1)[1].split()[1])
+        if parent == os.getpid() and comm in ("gpg", "gpg2"):
+            found.append(int(entry))
+    return found
+
+
+def sleeping(pid: int) -> bool:
+    """Whether the process is blocked waiting, or has exited."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
+            return handle.read().rsplit(")", 1)[1].split()[0] == "S"
+    except OSError:
+        return True
+
+
+def agent_pid(config: Config) -> int:
+    """Process ID of the home's gpg-agent, which the import started."""
+    reply = subprocess.run(
+        ["gpg-connect-agent", "--homedir", config.gnupg_home, "GETINFO pid", "/bye"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return int(next(line for line in reply.splitlines() if line.startswith("D "))[2:])
+
+
+class PausedSession:
+    """Answer the server's passphrase prompts with gpg paused between secrets.
+
+    gpg asks the agent to re-protect each secret in turn. After one, the
+    agent keeps the old and new passphrases cached and answers the next
+    secret from that cache. Pausing gpg there for longer than
+    max-cache-ttl lets the cache expire, so the agent asks for the next
+    secret's passphrases again: what a busy runner does by chance.
+
+    The pause is synchronised with the agent, not timed against it. When
+    the responder answers a prompt numbered in pause_after, the agent is
+    stopped first, so it cannot re-protect that secret yet. Once gpg has
+    read the answer (GOT_IT) and sleeps waiting on the agent, gpg is
+    stopped and the agent resumed: it re-protects the secret and replies
+    to a gpg that cannot ask for the next one. gpg resumes PAUSE_SECONDS
+    after the agent rewrites the key file. paused_at records when gpg was
+    last stopped, and times when each prompt was answered.
+
+    With misanswer_at, the prompt of that number is answered with the old
+    passphrase where the responder gives the new one. With take_as_old,
+    the responder takes the prompt of that number for an old-passphrase
+    prompt, as it does when the agent has lost only its cached new
+    passphrase. misanswered and taken record that each happened.
+
+    Every process stopped is resumed in a finally clause, so a failing
+    check never leaves gpg or the agent stopped.
+    """
+
+    def __init__(
+        self,
+        config: Config,
+        pause_after: tuple[int, ...] = (2,),
+        misanswer_at: int | None = None,
+        take_as_old: int | None = None,
+    ) -> None:
+        self.directory: str = os.path.join(config.gnupg_home, "private-keys-v1.d")
+        self.agent: int = agent_pid(config)
+        self.pause_after: tuple[int, ...] = pause_after
+        self.misanswer_at: int | None = misanswer_at
+        self.take_as_old: int | None = take_as_old
+        self.times: list[float] = []
+        self.paused_at: float | None = None
+        self.misanswered: bool = False
+        self.taken: bool = False
+        self.agent_stopped: bool = False
+        self.stopped: list[int] = []
+        self.before: dict[str, int] = {}
+        self.original: Callable[..., object] = (
+            server_common._ChangePasswordResponder.callback
+        )
+
+    def mtimes(self) -> dict[str, int]:
+        found: dict[str, int] = {}
+        for name in os.listdir(self.directory):
+            if name.endswith(".key"):
+                try:
+                    found[name] = os.stat(
+                        os.path.join(self.directory, name)
+                    ).st_mtime_ns
+                except FileNotFoundError:
+                    continue
+        return found
+
+    def stop_agent(self) -> None:
+        self.before = self.mtimes()
+        os.kill(self.agent, signal.SIGSTOP)
+        self.agent_stopped = True
+
+    def resume(self) -> None:
+        if self.agent_stopped:
+            os.kill(self.agent, signal.SIGCONT)
+            self.agent_stopped = False
+        for pid in self.stopped:
+            try:
+                os.kill(pid, signal.SIGCONT)
+            except ProcessLookupError:
+                pass
+        self.stopped = []
+
+    def pause_gpg(self) -> None:
+        deadline = time.monotonic() + SETTLE_SECONDS
+        children = gpg_children()
+        # Past GOT_IT, gpg sleeps only once it waits on the agent's reply
+        while (
+            not all(sleeping(pid) for pid in children) and time.monotonic() < deadline
+        ):
+            time.sleep(0.001)
+        for pid in children:
+            os.kill(pid, signal.SIGSTOP)
+            self.stopped.append(pid)
+        if self.stopped:
+            self.paused_at = time.monotonic()
+        os.kill(self.agent, signal.SIGCONT)
+        self.agent_stopped = False
+        while self.mtimes() == self.before and time.monotonic() < deadline:
+            time.sleep(0.005)
+        time.sleep(PAUSE_SECONDS)
+        self.resume()
+
+    def __enter__(self) -> "PausedSession":
+        original = self.original
+        constants = server_common.ourgpg.constants
+        hidden = constants.STATUS_GET_HIDDEN
+        got_it = constants.STATUS_GOT_IT
+
+        def callback(responder: object, status: object, *rest: object) -> object:
+            if (
+                status == hidden
+                and len(self.times) + 1 == self.take_as_old
+                and hasattr(responder, "awaiting_new")
+            ):
+                responder.awaiting_new = False
+                self.taken = True
+            answer = original(responder, status, *rest)
+            if status == got_it and self.agent_stopped:
+                self.pause_gpg()
+            if status != hidden:
+                return answer
+            self.times.append(time.monotonic())
+            old_passphrase: object = getattr(responder, "old_passphrase", None)
+            if (
+                len(self.times) == self.misanswer_at
+                and old_passphrase is not None
+                and answer == getattr(responder, "new_passphrase", None)
+            ):
+                self.misanswered = True
+                answer = old_passphrase
+            if len(self.times) in self.pause_after:
+                self.stop_agent()
+            return answer
+
+        server_common._ChangePasswordResponder.callback = callback
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        server_common._ChangePasswordResponder.callback = self.original
+        self.resume()
+
+    def asked_after_pause(self) -> bool:
+        """Whether a secret asked for a passphrase after the last pause.
+
+        Every secret's prompts come before the agent rewrites its key file,
+        so such a prompt is a later secret's: proof the pause outlasted the
+        agent's cache.
+        """
+        return self.paused_at is not None and any(
+            when > self.paused_at for when in self.times
+        )
+
+
+def secret_states(
+    config: Config, fingerprint: str, old: str
+) -> list[tuple[str, bool, bool]]:
+    """Return (usage, new unlocks, old unlocks) for each secret present."""
+    key = server_common._gpg_open(config).get_key(fingerprint, True)
+    return [
+        (
+            "sign" if subkey.can_sign else "encrypt",
+            server_common._gpg_passphrase_unlocks(
+                config, subkey.keygrip, NEW_PASSPHRASE.encode()
+            ),
+            server_common._gpg_passphrase_unlocks(config, subkey.keygrip, old.encode()),
+        )
+        for subkey in key.subkeys
+        if subkey.secret
+    ]
+
+
+def test_reprotected_with_gpg_paused(
+    label: str,
+    key: str,
+    old: str,
+    secrets: int,
+    pause_after: tuple[int, ...] = (2,),
+    misanswer_at: int | None = None,
+    take_as_old: int | None = None,
+) -> None:
+    """Re-protect key with gpg paused after the prompts in pause_after.
+
+    Every secret must come out unlocked by the new passphrase and not by
+    the old one, with the session's prompts arranged as asked.
+    """
+    config = server_home()
+    try:
+        with open(key, "rb") as key_file:
+            fingerprint = server_common.gpg_import_key(config, key_file)
+        error = ""
+        with PausedSession(config, pause_after, misanswer_at, take_as_old) as session:
+            try:
+                server_common.gpg_change_password(
+                    config, fingerprint, old, NEW_PASSPHRASE
+                )
+            except Exception as raised:
+                # A secret left on the old passphrase surfaces as GPGError.
+                error = type(raised).__name__
+        arranged = session.asked_after_pause()
+        if misanswer_at is not None:
+            arranged = arranged and session.misanswered
+        if take_as_old is not None:
+            arranged = arranged and session.taken
+        states = secret_states(config, fingerprint, old)
+    finally:
+        stop(config)
+    check(
+        f"{label} has every secret re-protected with gpg paused",
+        arranged
+        and not error
+        and len(states) == secrets
+        and all(new and not was_old for _, new, was_old in states),
+        f"{len(session.times)} prompts; "
+        + f"prompted after a {PAUSE_SECONDS} s pause: {arranged}; "
+        + f"error {error or 'none'}; "
+        + f"(secret, new unlocks, old unlocks): {states}",
+    )
 
 
 def test_partial_reprotect_is_refused(work: str) -> None:
@@ -489,6 +788,38 @@ def main() -> int:
         full_key = decode("sigul-import-test-key", work)
         test_subkey_only_import(subkey_key)
         test_every_secret_is_reprotected(work)
+        old = "two-secret-import-passphrase"
+        test_reprotected_with_gpg_paused(
+            "a subkey-only key with signing and encryption secrets",
+            make_two_secret_key(work, old),
+            old,
+            secrets=2,
+        )
+        test_reprotected_with_gpg_paused(
+            "a complete key with an encryption subkey",
+            make_key(work, old, ("encr",), subkeys_only=False),
+            old,
+            secrets=2,
+        )
+        # The fourth prompt is the second secret's new passphrase (#190)
+        test_reprotected_with_gpg_paused(
+            "a complete key whose second secret gets the old passphrase as new",
+            make_key(work, old, ("encr",), subkeys_only=False),
+            old,
+            secrets=2,
+            misanswer_at=4,
+        )
+        # Taken for an old-passphrase prompt, the fourth leaves the server
+        # expecting the new passphrase when the third secret asks for its
+        # old one, which fails the session (#190)
+        test_reprotected_with_gpg_paused(
+            "a complete key whose session fails at its third secret",
+            make_key(work, old, ("encr", "sign"), subkeys_only=False),
+            old,
+            secrets=3,
+            pause_after=(2, 4),
+            take_as_old=4,
+        )
         test_partial_reprotect_is_refused(work)
         test_wrong_passphrase("a subkey-only key", subkey_key)
         test_wrong_passphrase("a complete key", full_key)
