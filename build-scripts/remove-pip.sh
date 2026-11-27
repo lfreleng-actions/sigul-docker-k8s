@@ -11,10 +11,11 @@
 #
 # Shipping it is not harmless. pip vendors its own urllib3, msgpack and
 # setuptools under pip/_vendor/, and upgrading pip cannot fix them:
-# Fedora 44's python3-pip vendors urllib3 1.26.20 and the newest pip on
-# PyPI vendors 2.7.0, both affected by CVE-2026-97689 /
-# GHSA-vxq7-64xx-v4gw (fixed in urllib3 2.8.0). Those copies carry no
-# dist-info, so the SBOM omits them and the Grype gate cannot see them.
+# Fedora 44's python3-pip vendors urllib3 1.26.20, Fedora 45's vendors
+# 2.6.3, and the newest pip on PyPI vendors 2.7.0, all affected by
+# CVE-2026-97689 / GHSA-vxq7-64xx-v4gw (fixed in urllib3 2.8.0). Those
+# copies carry no dist-info, so the SBOM omits them and the Grype gate
+# cannot see them.
 #
 # Two installs exist: the /usr/local copy from the pip self-upgrade, and
 # the dnf python3-pip package beneath it. Both go. The checks then fail
